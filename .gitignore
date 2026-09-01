@@ -1,0 +1,94 @@
+# Node / JS
+node_modules/
+ui/node_modules/
+ui/dist/
+.npm/
+*.tsbuildinfo
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/target_nospace/
+target/
+Cargo.lock.backup
+
+# Release artifacts & Bundles
+dist/
+*.dmg
+*.app/
+*.pkg
+*.deb
+*.rpm
+*.msi
+*.exe
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+
+# Environment, Certificates & Local Secrets
+.env
+.env.*
+!.env.example
+auth.json
+vault.json
+secrets.vault.json*
+*.vault.json*
+credentials.json
+state.json
+*.p12
+*.pfx
+*.key
+*.pem
+*.cer
+*.crt
+.agent
+
+# Sensitive local data
+data/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Backups & Temporary files
+*.bak
+*.backup
+*.old
+*.orig
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+
+# Test & Coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Local tools & Index caches
+IMPLEMENTATION_PLAN.md
+graft/
+.codegraph/
+refs/

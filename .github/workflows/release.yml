@@ -1,0 +1,334 @@
+name: Release SwitchAI Account Manager
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify-and-build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix ui ci
+
+      - name: Verify
+        shell: pwsh
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          npm run verify:versions
+          if ($env:RELEASE_REF_TYPE -eq "tag") {
+            $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            if ($env:RELEASE_REF_NAME -ne "v$version") {
+              throw "Release tag $env:RELEASE_REF_NAME does not match package version $version."
+            }
+          }
+          npm audit --audit-level=high
+          npm --prefix ui run lint
+          npm --prefix ui run build
+          npm --prefix ui run test:quota
+          npm --prefix ui audit --audit-level=high
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Install cargo-audit
+        shell: pwsh
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Rust dependencies
+        shell: pwsh
+        run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Build Windows release executable
+        shell: pwsh
+        run: npm run build:release
+
+      - name: Verify Windows release executable
+        shell: pwsh
+        run: |
+          $exe = "dist/release/SwitchAI.exe"
+          if (!(Test-Path $exe)) {
+            throw "Release executable was not created: $exe"
+          }
+          if (Test-Path "dist/release/WebView2Loader.dll") {
+            throw "Release must not include WebView2Loader.dll; MSVC static loader build regressed."
+          }
+          if (Get-ChildItem dist/release -Filter "*_portable.zip" -ErrorAction SilentlyContinue) {
+            throw "Release must ship the .exe directly, not a portable ZIP."
+          }
+
+      - name: Check signing configuration
+        id: signing-config
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $hasCertificate = ![string]::IsNullOrWhiteSpace($env:WINDOWS_PFX_BASE64)
+          $hasPassword = ![string]::IsNullOrWhiteSpace($env:WINDOWS_PFX_PASSWORD)
+          if ($hasCertificate -ne $hasPassword) {
+            throw "Configure both WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD, or neither."
+          }
+          "configured=$($hasCertificate.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Sign Windows executable (when certificate secrets are configured)
+        if: steps.signing-config.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "switchai.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          try {
+            $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+            & $signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $certificatePath /p $env:WINDOWS_PFX_PASSWORD "dist/release/SwitchAI.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed" }
+          }
+          finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate Windows checksum
+        shell: pwsh
+        run: |
+          $artifact = "dist/release/SwitchAI.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact).Hash.ToLowerInvariant()
+          "$hash  SwitchAI.exe" | Set-Content -LiteralPath "dist/release/SHA256SUMS-win.txt" -Encoding ascii
+
+      - name: Upload Windows artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            dist/release/SwitchAI.exe
+            dist/release/SHA256SUMS-win.txt
+          if-no-files-found: error
+
+  verify-and-build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust (Universal Targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+          components: clippy, rustfmt
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix ui ci
+
+      - name: Verify
+        run: |
+          npm run verify:versions
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Import Apple Certificate (if configured)
+        id: macos-certs
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          required=(
+            APPLE_CERTIFICATE_BASE64
+            APPLE_CERTIFICATE_PASSWORD
+            APPLE_SIGNING_IDENTITY
+            APPLE_ID
+            APPLE_PASSWORD
+            APPLE_TEAM_ID
+          )
+          missing=()
+          configured=0
+          for name in "${required[@]}"; do
+            if [ -n "${!name:-}" ]; then
+              configured=$((configured + 1))
+            else
+              missing+=("$name")
+            fi
+          done
+
+          if [ "$configured" -gt 0 ] && [ ${#missing[@]} -gt 0 ]; then
+            echo "Incomplete macOS signing configuration. Missing: ${missing[*]}" >&2
+            exit 1
+          fi
+          if [ ${#missing[@]} -eq 0 ]; then
+            KEYCHAIN_PWD="${APPLE_KEYCHAIN_PASSWORD:-temporary-ci-password}"
+            KEYCHAIN_PATH="${RUNNER_TEMP}/app-signing.keychain-db"
+            CERT_PATH="${RUNNER_TEMP}/cert.p12"
+            echo "${APPLE_CERTIFICATE_BASE64}" | base64 --decode > "${CERT_PATH}"
+
+            security create-keychain -p "${KEYCHAIN_PWD}" "${KEYCHAIN_PATH}"
+            security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+            security unlock-keychain -p "${KEYCHAIN_PWD}" "${KEYCHAIN_PATH}"
+
+            security import "${CERT_PATH}" -k "${KEYCHAIN_PATH}" -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/security
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PWD}" "${KEYCHAIN_PATH}"
+
+            security list-keychains -d user -s "${KEYCHAIN_PATH}" $(security list-keychains -d user | tr -d '"')
+            rm -f "${CERT_PATH}"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Universal macOS DMG and App
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          chmod +x scripts/build-mac.sh
+          ./scripts/build-mac.sh --universal
+
+      - name: Notarize and Staple (when signed)
+        if: steps.macos-certs.outputs.signed == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for dmg in dist/release/*.dmg; do
+            if [ -f "$dmg" ]; then
+              echo "Submitting $dmg for Apple Notarization..."
+              xcrun notarytool submit "$dmg" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait
+              echo "Stapling notarization ticket to $dmg..."
+              xcrun stapler staple "$dmg"
+            fi
+          done
+
+          echo "Regenerating checksums after stapling..."
+          cd dist/release
+          rm -f SHA256SUMS-mac.txt
+          shopt -s nullglob
+          artifacts=( *.dmg *.tar.gz )
+          shopt -u nullglob
+          if [ ${#artifacts[@]} -gt 0 ]; then
+            shasum -a 256 "${artifacts[@]}" > SHA256SUMS-mac.txt
+          fi
+
+      - name: Clean up temporary keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="${RUNNER_TEMP}/app-signing.keychain-db"
+          if [ -f "${KEYCHAIN_PATH}" ]; then
+            security delete-keychain "${KEYCHAIN_PATH}" || true
+          fi
+
+      - name: Upload macOS artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            dist/release/*.dmg
+            dist/release/*.tar.gz
+            dist/release/SHA256SUMS-mac.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [verify-and-build-windows, verify-and-build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: dist/release
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: dist/release
+
+      - name: Aggregate SHA256SUMS
+        run: |
+          cd dist/release
+          touch SHA256SUMS.txt
+          for sumfile in SHA256SUMS-*.txt; do
+            if [ -f "$sumfile" ]; then
+              cat "$sumfile" >> SHA256SUMS.txt
+              rm -f "$sumfile"
+            fi
+          done
+
+      - name: Publish versioned GitHub Release (tags)
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SwitchAI Account Manager ${{ github.ref_name }}
+          body: |
+            First public release of SwitchAI Account Manager.
+
+            Manage and switch ChatGPT/Codex and Antigravity/Gemini accounts,
+            check quotas, and keep account data on your computer.
+
+            See the README for installation and usage instructions.
+          files: |
+            dist/release/SwitchAI.exe
+            dist/release/*.dmg
+            dist/release/*.tar.gz
+            dist/release/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
