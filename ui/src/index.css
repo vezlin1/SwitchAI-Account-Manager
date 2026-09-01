@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ag-bg: rgb(var(--ag-bg));
+  --color-ag-card: rgb(var(--ag-card));
+  --color-ag-surface: rgb(var(--ag-surface));
+  --color-ag-border: rgb(var(--ag-border));
+  --color-ag-text: rgb(var(--ag-text));
+  --color-ag-muted: rgb(var(--ag-muted));
+  --color-ag-primary: rgb(var(--ag-primary));
+  --color-ag-success: rgb(var(--ag-success));
+  --color-ag-danger: rgb(var(--ag-danger));
+  --color-ag-warning: rgb(var(--ag-warning));
+  --shadow-ag: 0 4px 24px rgba(0, 0, 0, 0.45);
+  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+:root {
+  --ag-bg: 10 11 15;
+  --ag-card: 17 19 26;
+  --ag-surface: 24 27 37;
+  --ag-border: 38 42 56;
+  --ag-text: 243 244 246;
+  --ag-muted: 139 148 158;
+  --ag-primary: 59 130 246;
+  --ag-success: 16 185 129;
+  --ag-danger: 239 68 68;
+  --ag-warning: 245 158 11;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior: none;
+  background: transparent;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  color: rgb(var(--ag-text));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  user-select: text;
+}
+
+button,
+[role="button"],
+input,
+textarea,
+select,
+option {
+  user-select: none;
+}
+
+.allow-select,
+input,
+textarea,
+select,
+option {
+  user-select: text;
+}
+
+/* Numeric & Tabular Alignment */
+.account-row-quota,
+.quota-cell-value,
+.account-filter-count,
+.provider-tab-count,
+.tabular-nums {
+  font-feature-settings: "tnum" 1, "cv02" 1, "cv03" 1, "cv04" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* macOS-styled overlay scrollbars */
+* {
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--ag-primary));
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  padding: 0 !important;
+}

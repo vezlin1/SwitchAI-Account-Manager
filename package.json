@@ -1,0 +1,23 @@
+{
+  "name": "switchai-account-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SwitchAI Account Manager - accounts and live quotas for AI coding assistants",
+  "scripts": {
+    "ui:dev": "npm --prefix ui run dev -- --host",
+    "ui:build": "npm --prefix ui run build",
+    "dev": "npm run tauri -- dev",
+    "build": "npm run build:release",
+    "bundle": "npm run tauri -- build",
+    "tauri": "tauri",
+    "build:release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1",
+    "build:mac": "bash scripts/build-mac.sh",
+    "build:mac:universal": "bash scripts/build-mac.sh --universal",
+    "build:mac:arm64": "bash scripts/build-mac.sh --arm64",
+    "build:mac:x64": "bash scripts/build-mac.sh --x64",
+    "verify:versions": "node scripts/verify-versions.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

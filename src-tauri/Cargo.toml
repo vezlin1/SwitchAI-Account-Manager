@@ -1,0 +1,47 @@
+[package]
+name = "switchai"
+version = "1.0.0"
+description = "SwitchAI Account Manager"
+authors = ["Asagiry"]
+license = "MIT"
+repository = "https://github.com/vezlin1/SwitchAI-Account-Manager"
+edition = "2024"
+rust-version = "1.96.1"
+
+[lib]
+name = "switchai_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+base64 = "0.22.1"
+aes-gcm = "0.10.3"
+chrono = { version = "0.4.45", features = ["serde", "clock"] }
+dirs = "6.0.0"
+keyring = "4.1.6"
+log = "0.4.33"
+rand = "0.10.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-log = "2.8.0"
+tauri-plugin-notification = "2.3.3"
+tauri-plugin-single-instance = "2.4.2"
+thiserror = "2.0.18"
+tokio = { version = "1", features = ["sync"] }
+url = "2.5.8"
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Credentials"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
