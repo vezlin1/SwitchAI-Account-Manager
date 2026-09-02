@@ -15,6 +15,7 @@
     "build:mac:universal": "bash scripts/build-mac.sh --universal",
     "build:mac:arm64": "bash scripts/build-mac.sh --arm64",
     "build:mac:x64": "bash scripts/build-mac.sh --x64",
+    "submit:wdsi": "powershell -ExecutionPolicy Bypass -File scripts/submit-wdsi.ps1",
     "verify:versions": "node scripts/verify-versions.mjs"
   },
   "devDependencies": {

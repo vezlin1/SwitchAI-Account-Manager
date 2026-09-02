@@ -205,24 +205,24 @@ export function AccountsToolbar({
         </button>
 
         {onSearchChange && (
-          <div className="relative inline-flex items-center min-w-[180px] max-w-[280px]">
+          <div className="account-search-wrapper">
             <Search size={14} className="absolute left-2.5 text-ag-muted pointer-events-none" />
             <input
               type="text"
               placeholder="Search accounts..."
               value={searchTerm}
               onChange={(e) => onSearchChange(e.target.value)}
-              className="h-9 w-full pl-8 pr-8 rounded-lg bg-ag-surface/80 border border-ag-border text-xs text-ag-text placeholder:text-ag-muted/60 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
+              className="account-search-input"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => onSearchChange('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded text-ag-muted hover:text-ag-text hover:bg-white/[0.1] active:scale-90 transition-all cursor-pointer"
+                className="account-search-clear"
                 title="Clear search"
                 aria-label="Clear search"
               >
-                <X size={13} />
+                <X size={12} strokeWidth={2} />
               </button>
             )}
           </div>

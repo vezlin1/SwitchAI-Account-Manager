@@ -794,12 +794,10 @@ pub fn restart_antigravity_process() -> AppResult<()> {
             "Antigravity executable was not found in LocalAppData or Program Files. Launch Antigravity manually to use the selected account.",
         )
     })?;
-    Command::new(executable)
-        .spawn()
-        .map_err(|source| AppError::Io {
-            context: "Failed to launch Antigravity",
-            source,
-        })?;
+    crate::shell::open_target(
+        &executable.to_string_lossy(),
+        "Failed to launch Antigravity",
+    )?;
     Ok(())
 }
 
@@ -966,12 +964,10 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
             "Antigravity IDE executable was not found in LocalAppData or Program Files. Launch Antigravity IDE manually to use the selected account.",
         )
     })?;
-    Command::new(executable)
-        .spawn()
-        .map_err(|source| AppError::Io {
-            context: "Failed to launch Antigravity IDE",
-            source,
-        })?;
+    crate::shell::open_target(
+        &executable.to_string_lossy(),
+        "Failed to launch Antigravity IDE",
+    )?;
     Ok(())
 }
 
