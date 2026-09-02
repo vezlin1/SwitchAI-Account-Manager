@@ -71,7 +71,7 @@ export const AccountCard = memo(function AccountCard({
             </span>
             <span className="account-card-subline">
               {isActive ? 'Active' : ''}
-              {hiddenFromAll ? (isActive ? ' · Hidden from All' : 'Hidden from All') : ''}
+              {hiddenFromAll ? (isActive ? ' · Hidden' : 'Hidden') : ''}
             </span>
           </span>
           <ChevronRight size={17} className="account-card-arrow" aria-hidden="true" />
@@ -114,8 +114,8 @@ export const AccountCard = memo(function AccountCard({
             className="account-card-icon-action"
             onClick={() => onToggleInAll(account.id)}
             aria-pressed={hiddenFromAll}
-            title={hiddenFromAll ? 'Show in All' : 'Hide from All'}
-            aria-label={hiddenFromAll ? `Show ${account.email ?? 'account'} in All` : `Hide ${account.email ?? 'account'} from All`}
+            title={hiddenFromAll ? 'Unhide' : 'Hide'}
+            aria-label={hiddenFromAll ? `Unhide ${account.email ?? 'account'}` : `Hide ${account.email ?? 'account'}`}
           >
             {hiddenFromAll ? <Eye size={16} aria-hidden="true" /> : <EyeOff size={16} aria-hidden="true" />}
           </button>

@@ -67,58 +67,29 @@ test('filtering preserves original account order', () => {
   )
 })
 
-test('categories hidden from All remain available as direct filters', () => {
+test('hidden accounts are excluded from all regular tabs and appear only in Hidden tab', () => {
   const accounts = [
-    account('plus', 'Plus'),
-    account('free-1', 'Free'),
-    account('free-2', 'Free')
+    account('plus-1', 'Plus'),
+    account('plus-2', 'Plus'),
+    account('free-1', 'Free')
   ]
-  const filters = subscriptionFiltersForAccounts(accounts, ['free'])
+  const hiddenIds = ['plus-1']
+  const filters = subscriptionFiltersForAccounts(accounts, hiddenIds)
 
   assert.deepEqual(
     filters.map(({ id, count }) => [id, count]),
-    [['all', 1], ['plus', 1], ['free', 2]]
+    [['all', 2], ['plus', 1], ['free', 1], ['hidden', 1]]
   )
   assert.deepEqual(
-    filterAccountsBySubscription(accounts, 'all', ['free']).map(({ id }) => id),
-    ['plus']
+    filterAccountsBySubscription(accounts, 'all', hiddenIds).map(({ id }) => id),
+    ['plus-2', 'free-1']
   )
   assert.deepEqual(
-    filterAccountsBySubscription(accounts, 'free', ['free']).map(({ id }) => id),
-    ['free-1', 'free-2']
-  )
-})
-
-test('hiding monthly-only Free accounts removes the monthly column from All', () => {
-  const weekly = {
-    ...account('plus', 'Plus'),
-    quota: {
-      primary: { usedPercent: 20, limitWindowSeconds: 604800 },
-      secondary: { usedPercent: null, limitWindowSeconds: null }
-    }
-  }
-  const monthly = {
-    ...account('free', 'Free'),
-    quota: {
-      primary: { usedPercent: 30, limitWindowSeconds: 2592000 },
-      secondary: { usedPercent: null, limitWindowSeconds: null }
-    }
-  }
-
-  const visible = filterAccountsBySubscription([weekly, monthly], 'all', ['free'])
-  assert.deepEqual(quotaColumnsForAccounts(visible).map(({ key }) => key), ['weekly'])
-})
-
-test('an account hidden individually disappears only from All', () => {
-  const accounts = [account('plus-1', 'Plus'), account('plus-2', 'Plus')]
-
-  assert.deepEqual(
-    filterAccountsBySubscription(accounts, 'all', [], ['plus-1']).map(({ id }) => id),
+    filterAccountsBySubscription(accounts, 'plus', hiddenIds).map(({ id }) => id),
     ['plus-2']
   )
   assert.deepEqual(
-    filterAccountsBySubscription(accounts, 'plus', [], ['plus-1']).map(({ id }) => id),
-    ['plus-1', 'plus-2']
+    filterAccountsBySubscription(accounts, 'hidden', hiddenIds).map(({ id }) => id),
+    ['plus-1']
   )
-  assert.equal(subscriptionFiltersForAccounts(accounts, [], ['plus-1'])[0].count, 1)
 })

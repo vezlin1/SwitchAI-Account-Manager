@@ -145,7 +145,7 @@ export function AccountContextMenu({
           ) : (
             <EyeOff size={14} aria-hidden="true" />
           )}
-          <span>{hiddenFromAll ? 'Show in All' : 'Hide from All'}</span>
+          <span>{hiddenFromAll ? 'Unhide' : 'Hide'}</span>
         </div>
         <Kbd combo="H" />
       </button>

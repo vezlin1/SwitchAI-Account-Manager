@@ -115,7 +115,7 @@ export const AccountRow = memo(function AccountRow({
             </div>
             {hiddenFromAll && (
               <span className="account-hidden-badge">
-                <EyeOff size={10} aria-hidden="true" /> Hidden from All
+                <EyeOff size={10} aria-hidden="true" /> Hidden
               </span>
             )}
           </div>

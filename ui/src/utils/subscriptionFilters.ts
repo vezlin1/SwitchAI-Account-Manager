@@ -3,6 +3,7 @@ import { formatSubscriptionPlan } from './dateUtils.ts'
 
 export type SubscriptionFilterId =
   | 'all'
+  | 'hidden'
   | 'plus'
   | 'free'
   | 'pro-x20'
@@ -14,7 +15,7 @@ export type SubscriptionFilterId =
   | 'workspace'
   | 'developer'
 
-export type SubscriptionCategoryId = Exclude<SubscriptionFilterId, 'all'>
+export type SubscriptionCategoryId = Exclude<SubscriptionFilterId, 'all' | 'hidden'>
 
 export type SubscriptionFilter = {
   id: SubscriptionFilterId
@@ -55,45 +56,46 @@ export function subscriptionCategoryForAccount(account: Account): SubscriptionCa
 
 export function subscriptionFiltersForAccounts(
   accounts: Account[],
-  hiddenCategoriesFromAll: string[] = [],
   hiddenAccountIds: string[] = []
 ): SubscriptionFilter[] {
+  const hiddenAccounts = new Set(hiddenAccountIds)
   const counts = new Map<SubscriptionCategoryId, number>()
   for (const account of accounts) {
+    if (hiddenAccounts.has(account.id)) continue
     const category = subscriptionCategoryForAccount(account)
     if (category) counts.set(category, (counts.get(category) ?? 0) + 1)
   }
 
-  const hiddenCategories = new Set(hiddenCategoriesFromAll)
-  const hiddenAccounts = new Set(hiddenAccountIds)
-  const allCount = accounts.filter((account) => {
-    const category = subscriptionCategoryForAccount(account)
-    return !hiddenAccounts.has(account.id)
-      && (category == null || !hiddenCategories.has(category))
-  }).length
+  const allCount = accounts.filter((account) => !hiddenAccounts.has(account.id)).length
+  const hiddenCount = accounts.filter((account) => hiddenAccounts.has(account.id)).length
 
-  return [
+  const filtersList: SubscriptionFilter[] = [
     { id: 'all', label: 'All', count: allCount },
     ...FILTER_ORDER
       .filter(({ id }) => counts.has(id))
       .map(({ id, label }) => ({ id, label, count: counts.get(id) ?? 0 }))
   ]
+
+  if (hiddenCount > 0) {
+    filtersList.push({ id: 'hidden', label: 'Hidden', count: hiddenCount })
+  }
+
+  return filtersList
 }
 
 export function filterAccountsBySubscription(
   accounts: Account[],
   filter: SubscriptionFilterId,
-  hiddenCategoriesFromAll: string[] = [],
   hiddenAccountIds: string[] = []
 ): Account[] {
+  const hiddenAccounts = new Set(hiddenAccountIds)
   if (filter === 'all') {
-    const hiddenCategories = new Set(hiddenCategoriesFromAll)
-    const hiddenAccounts = new Set(hiddenAccountIds)
-    return accounts.filter((account) => {
-      const category = subscriptionCategoryForAccount(account)
-      return !hiddenAccounts.has(account.id)
-        && (category == null || !hiddenCategories.has(category))
-    })
+    return accounts.filter((account) => !hiddenAccounts.has(account.id))
   }
-  return accounts.filter((account) => subscriptionCategoryForAccount(account) === filter)
+  if (filter === 'hidden') {
+    return accounts.filter((account) => hiddenAccounts.has(account.id))
+  }
+  return accounts.filter(
+    (account) => !hiddenAccounts.has(account.id) && subscriptionCategoryForAccount(account) === filter
+  )
 }

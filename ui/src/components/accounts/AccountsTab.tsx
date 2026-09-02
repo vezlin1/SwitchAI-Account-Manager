@@ -1,5 +1,4 @@
 import { Suspense, lazy, useMemo, useRef, useState } from 'react'
-import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
@@ -88,15 +87,11 @@ export function AccountsTab({
   const activeAccountId = currentProvider === 'gemini'
     ? (data.activeGeminiAccountId ?? null)
     : data.activeAccountId
-  const hiddenCategories = data.appSettings.hiddenSubscriptionCategories
   const hiddenAccountIds = data.appSettings.hiddenAccountIds
   const filters = useMemo(
-    () => subscriptionFiltersForAccounts(accounts, hiddenCategories, hiddenAccountIds),
-    [accounts, hiddenCategories, hiddenAccountIds]
+    () => subscriptionFiltersForAccounts(accounts, hiddenAccountIds),
+    [accounts, hiddenAccountIds]
   )
-  const hiddenVisibleCategoryCount = filters
-    .filter((filter) => filter.id !== 'all' && hiddenCategories.includes(filter.id))
-    .length
   const effectiveSubscriptionFilter = filters.some((filter) => filter.id === subscriptionFilter)
     ? subscriptionFilter
     : 'all'
@@ -104,10 +99,9 @@ export function AccountsTab({
     () => filterAccountsBySubscription(
       accounts,
       effectiveSubscriptionFilter,
-      hiddenCategories,
       hiddenAccountIds
     ),
-    [accounts, effectiveSubscriptionFilter, hiddenCategories, hiddenAccountIds]
+    [accounts, effectiveSubscriptionFilter, hiddenAccountIds]
   )
 
   const searchedAccounts = useMemo(() => {
@@ -142,28 +136,9 @@ export function AccountsTab({
     oauth.clearError(currentProvider)
     onClearAutoRefreshError?.()
   }
-  const settingsBusy = actions.busyKeys.has('settings:subscription-visibility')
-
   const openDetails = (account: Account, opener: HTMLElement) => {
     detailsReturnFocusRef.current = opener
     setDetailsAccountId(account.id)
-  }
-
-  const toggleCategoryInAll = (categoryId: string) => {
-    const next = setData((latest) => {
-      const hidden = new Set(latest.appSettings.hiddenSubscriptionCategories)
-      if (hidden.has(categoryId)) hidden.delete(categoryId)
-      else hidden.add(categoryId)
-
-      return {
-        ...latest,
-        appSettings: {
-          ...latest.appSettings,
-          hiddenSubscriptionCategories: [...hidden]
-        }
-      }
-    })
-    if (next) void actions.saveAppSettings(next.appSettings)
   }
 
   const toggleAccountInAll = (accountId: string) => {
@@ -211,8 +186,9 @@ export function AccountsTab({
     }
   }
 
-  const specificCategoryCount = filters.filter((filter) => filter.id !== 'all').length
-  const showSubscriptionFilters = specificCategoryCount > 1
+  const specificCategoryCount = filters.filter((filter) => filter.id !== 'all' && filter.id !== 'hidden').length
+  const totalHiddenCount = filters.find((f) => f.id === 'hidden')?.count ?? 0
+  const showSubscriptionFilters = specificCategoryCount > 1 || totalHiddenCount > 0
 
   return (
     <div className="page-fade h-full min-w-0 flex flex-col gap-4">
@@ -339,45 +315,6 @@ export function AccountsTab({
                     <span className="account-filter-count">{filter.count}</span>
                   </button>
                 ))}
-                {filters.length > 1 && (
-                  <details className="account-visibility-menu">
-                    <summary>
-                      {hiddenVisibleCategoryCount > 0
-                        ? <EyeOff size={15} aria-hidden="true" />
-                        : <Eye size={15} aria-hidden="true" />}
-                      <span>All visibility</span>
-                      {hiddenVisibleCategoryCount > 0 && (
-                        <span className="account-filter-count">{hiddenVisibleCategoryCount}</span>
-                      )}
-                    </summary>
-                    <div className="account-visibility-popover">
-                      <div className="account-visibility-heading">
-                        <strong>Shown in All</strong>
-                        <span>Category tabs remain available.</span>
-                      </div>
-                      {filters.filter((filter) => filter.id !== 'all').map((filter) => {
-                        const visible = !hiddenCategories.includes(filter.id)
-                        return (
-                          <label key={filter.id} className="account-visibility-option">
-                            <input
-                              type="checkbox"
-                              checked={visible}
-                              disabled={settingsBusy}
-                              onChange={() => toggleCategoryInAll(filter.id)}
-                            />
-                            <span>{filter.label}</span>
-                            <span>{filter.count}</span>
-                          </label>
-                        )
-                      })}
-                      {settingsBusy && (
-                        <div className="account-visibility-saving" role="status">
-                          <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Saving…
-                        </div>
-                      )}
-                    </div>
-                  </details>
-                )}
               </div>
             </nav>
           )}

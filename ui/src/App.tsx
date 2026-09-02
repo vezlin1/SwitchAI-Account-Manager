@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getVersion } from '@tauri-apps/api/app'
 import './App.css'
 import appLogo from './assets/app-icon.png'
-import { ErrorBanner } from './components/common'
+import { ErrorBanner, TextInputContextMenu } from './components/common'
 import { AccountsTab } from './components/accounts/AccountsTab'
 import { warmUpAntigravitySurfacesCache } from './components/accounts/GeminiSwitchTargetsBar'
 import { useAutoRefreshStatus } from './hooks/useAutoRefreshStatus'
@@ -260,6 +260,8 @@ function App() {
           />
         </Suspense>
       )}
+
+      <TextInputContextMenu />
 
       <div className="app-shell h-full w-full flex flex-col">
         <header
