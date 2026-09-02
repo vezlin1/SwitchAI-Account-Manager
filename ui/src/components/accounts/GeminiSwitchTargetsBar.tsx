@@ -14,11 +14,57 @@ const SURFACE_ICONS: Record<AntigravitySurfaceId, typeof AppWindow> = {
   cli: Terminal
 }
 
+const CACHE_KEY = 'switchai.antigravity_surfaces_cache'
+
+const DEFAULT_SURFACES: AntigravitySurface[] = [
+  { id: 'antigravity', name: 'Antigravity', description: 'Desktop App', installed: true, running: false, path: null },
+  { id: 'ide', name: 'Antigravity IDE', description: 'AI Code Editor', installed: true, running: false, path: null },
+  { id: 'cli', name: 'Antigravity CLI', description: 'agy command-line', installed: true, running: false, path: null }
+]
+
+let globalCachedSurfaces: AntigravitySurface[] | null = null
+
+function getInitialSurfaces(): AntigravitySurface[] {
+  if (globalCachedSurfaces && globalCachedSurfaces.length > 0) {
+    return globalCachedSurfaces
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw) as AntigravitySurface[]
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          globalCachedSurfaces = parsed
+          return parsed
+        }
+      }
+    } catch {
+      // ignore parse error
+    }
+  }
+  return DEFAULT_SURFACES
+}
+
+export function warmUpAntigravitySurfacesCache(): void {
+  void api.getAntigravitySurfaces()
+    .then((data) => {
+      if (data && data.length > 0) {
+        globalCachedSurfaces = data
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify(data))
+        } catch {
+          // ignore
+        }
+      }
+    })
+    .catch(() => undefined)
+}
+
 export function GeminiSwitchTargetsBar({
   appSettings,
   onSaveAppSettings
 }: GeminiSwitchTargetsBarProps) {
-  const [surfaces, setSurfaces] = useState<AntigravitySurface[]>([])
+  const [surfaces, setSurfaces] = useState<AntigravitySurface[]>(getInitialSurfaces)
   const [lastToggleWarning, setLastToggleWarning] = useState<string | null>(null)
 
   const activeTargets: string[] = appSettings.geminiSwitchTargets && appSettings.geminiSwitchTargets.length > 0
@@ -27,16 +73,59 @@ export function GeminiSwitchTargetsBar({
 
   useEffect(() => {
     let cancelled = false
-    void api.getAntigravitySurfaces()
-      .then((data) => {
-        if (!cancelled) {
-          setSurfaces(data)
+
+    const fetchSurfaces = async () => {
+      try {
+        const data = await api.getAntigravitySurfaces()
+        if (cancelled || !data || data.length === 0) return
+
+        globalCachedSurfaces = data
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify(data))
+        } catch {
+          // ignore storage error
         }
-      })
-      .catch(() => undefined)
+
+        setSurfaces((prev) => {
+          // Avoid re-render if data is identical
+          if (
+            prev.length === data.length &&
+            prev.every((s, i) =>
+              s.id === data[i].id &&
+              s.running === data[i].running &&
+              s.installed === data[i].installed &&
+              s.name === data[i].name
+            )
+          ) {
+            return prev
+          }
+          return data
+        })
+      } catch {
+        // preserve existing cache on error
+      }
+    }
+
+    // Immediate background fetch
+    void fetchSurfaces()
+
+    // Smooth background polling every 5s while mounted
+    const interval = setInterval(() => {
+      void fetchSurfaces()
+    }, 5000)
+
+    // Immediate refresh on window focus / tab visibility
+    const handleFocus = () => {
+      void fetchSurfaces()
+    }
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleFocus)
 
     return () => {
       cancelled = true
+      clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleFocus)
     }
   }, [])
 
@@ -62,11 +151,7 @@ export function GeminiSwitchTargetsBar({
 
   const surfaceItems: AntigravitySurface[] = surfaces.length > 0
     ? surfaces
-    : [
-        { id: 'antigravity', name: 'Antigravity', description: 'Desktop App', installed: true, running: false, path: null },
-        { id: 'ide', name: 'Antigravity IDE', description: 'AI Code Editor', installed: true, running: false, path: null },
-        { id: 'cli', name: 'Antigravity CLI', description: 'agy terminal', installed: true, running: false, path: null }
-      ]
+    : getInitialSurfaces()
 
   return (
     <div className="gemini-targets-bar flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-ag-surface/60 border border-ag-border/70 flex-wrap text-xs select-none">
@@ -93,10 +178,10 @@ export function GeminiSwitchTargetsBar({
               key={surface.id}
               type="button"
               onClick={() => handleToggle(surface.id)}
-              className={`gemini-target-pill inline-flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
+              className={`gemini-target-pill inline-flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
                 isActive
-                  ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-sm'
-                  : 'bg-ag-card/40 border-ag-border/60 text-ag-muted hover:text-ag-text hover:border-ag-border hover:bg-ag-card'
+                  ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-sm hover:bg-blue-500/25 hover:border-blue-500/60 hover:text-blue-200 active:scale-95'
+                  : 'bg-ag-card/40 border-ag-border/60 text-ag-muted hover:text-ag-text hover:border-ag-border hover:bg-ag-card active:scale-95'
               }`}
               title={`${surface.name} (${surface.description})${surface.running ? ' · Currently running' : surface.installed ? ' · Detected' : ''}${isOnlyActive ? ' · At least one target must remain active' : ''}`}
               aria-pressed={isActive}

@@ -39,6 +39,7 @@ export const AccountCard = memo(function AccountCard({
   const { privacyMode, maskEmail } = usePrivacy()
   const switching = busyKeys.has(`switch:${account.id}`)
   const removing = busyKeys.has(`delete:${account.id}`)
+  const relogining = busyKeys.has(`relogin:${account.id}`)
   const needsRelogin = account.tokenHealth?.status === 'needs_relogin'
   const detectedSubscriptionDate = account.subscriptionDetectedAt ? account.subscriptionExpiresAt : null
 
@@ -81,7 +82,13 @@ export const AccountCard = memo(function AccountCard({
             className={`account-card-icon-action${isActive ? ' account-card-icon-action-active' : ''}`}
             onClick={() => onSwitch(account)}
             disabled={isActive || needsRelogin || switching || refreshingAll || autoRefreshing}
-            title={account.provider === 'gemini' ? 'Switch active Antigravity account' : 'Switch active Codex account'}
+            title={
+              isActive
+                ? (account.provider === 'gemini' ? 'Currently active in Antigravity / Gemini' : 'Currently active in Codex / ChatGPT')
+                : needsRelogin
+                  ? 'Re-login required before switching'
+                  : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
+            }
             aria-label={`Switch to ${account.email ?? 'account'}`}
           >
             {switching
@@ -93,11 +100,13 @@ export const AccountCard = memo(function AccountCard({
               type="button"
               className="account-card-icon-action account-card-icon-action-warning"
               onClick={() => onRelogin(account)}
-              disabled={switching || removing || refreshingAll || autoRefreshing}
+              disabled={relogining || switching || removing || refreshingAll || autoRefreshing}
               title="Re-login account"
               aria-label={`Re-login ${account.email ?? 'account'}`}
             >
-              <KeyRound size={16} aria-hidden="true" />
+              {relogining
+                ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                : <KeyRound size={16} aria-hidden="true" />}
             </button>
           )}
           <button

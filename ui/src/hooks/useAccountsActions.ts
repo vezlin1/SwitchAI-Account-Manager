@@ -103,8 +103,10 @@ export function useAccountsActions({
   }, [setProviderError])
 
   const reportWarnings = useCallback((warnings: CommandWarning[], defaultProvider: AccountProvider = 'codex') => {
-    for (const warning of warnings) {
-      reportWarning(warningMessage(warning, 'Operation completed with a warning'), defaultProvider)
+    if (!warnings || warnings.length === 0) return
+    const messages = warnings.map((w) => warningMessage(w, 'Operation completed with a warning')).filter(Boolean)
+    if (messages.length > 0) {
+      reportWarning(messages.join(' · '), defaultProvider)
     }
   }, [reportWarning])
 

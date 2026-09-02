@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Eye, EyeOff } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff } from 'lucide-react'
 import { Kbd } from '../common'
 import type { Account } from '../../types'
 
@@ -16,7 +16,7 @@ type AccountContextMenuProps = {
 }
 
 const MENU_WIDTH = 224
-const MENU_HEIGHT = 56
+const MENU_HEIGHT = 120
 const VIEWPORT_GAP = 8
 
 export function AccountContextMenu({
@@ -30,6 +30,7 @@ export function AccountContextMenu({
   onClose
 }: AccountContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const [copiedKey, setCopiedKey] = useState<'email' | 'id' | null>(null)
   const left = Math.max(VIEWPORT_GAP, Math.min(x, window.innerWidth - MENU_WIDTH - VIEWPORT_GAP))
   const top = Math.max(VIEWPORT_GAP, Math.min(y, window.innerHeight - MENU_HEIGHT - VIEWPORT_GAP))
 
@@ -73,6 +74,22 @@ export function AccountContextMenu({
     }
   }, [onClose, opener, account.id, onToggleInAll])
 
+  const copyText = async (key: 'email' | 'id', text?: string | null) => {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      setTimeout(() => {
+        onClose()
+        if (keyboardTriggered) {
+          window.requestAnimationFrame(() => opener.focus())
+        }
+      }, 500)
+    } catch {
+      onClose()
+    }
+  }
+
   return createPortal(
     <div
       ref={menuRef}
@@ -82,6 +99,34 @@ export function AccountContextMenu({
       style={{ left, top }}
       onContextMenu={(event) => event.preventDefault()}
     >
+      {account.email && (
+        <button
+          type="button"
+          role="menuitem"
+          className="account-context-menu-item"
+          onClick={() => void copyText('email', account.email)}
+        >
+          <div className="flex items-center gap-2">
+            {copiedKey === 'email' ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+            <span>{copiedKey === 'email' ? 'Email copied!' : 'Copy email'}</span>
+          </div>
+        </button>
+      )}
+
+      {account.accountId && (
+        <button
+          type="button"
+          role="menuitem"
+          className="account-context-menu-item"
+          onClick={() => void copyText('id', account.accountId)}
+        >
+          <div className="flex items-center gap-2">
+            {copiedKey === 'id' ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+            <span>{copiedKey === 'id' ? 'ID copied!' : 'Copy account ID'}</span>
+          </div>
+        </button>
+      )}
+
       <button
         type="button"
         role="menuitem"

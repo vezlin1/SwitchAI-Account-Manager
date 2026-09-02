@@ -51,8 +51,14 @@ export function AccountsTab({
   const [pendingDelete, setPendingDelete] = useState<Account | null>(null)
   const [pendingSwitch, setPendingSwitch] = useState<Account | null>(null)
   const [detailsAccountId, setDetailsAccountId] = useState<string | null>(null)
-  const [subscriptionFilter, setSubscriptionFilter] = useState<SubscriptionFilterId>('all')
-  const [searchTerm, setSearchTerm] = useState('')
+  const [subscriptionFilters, setSubscriptionFilters] = useState<Record<AccountProvider, SubscriptionFilterId>>({
+    codex: 'all',
+    gemini: 'all'
+  })
+  const [searchTerms, setSearchTerms] = useState<Record<AccountProvider, string>>({
+    codex: '',
+    gemini: ''
+  })
   const detailsReturnFocusRef = useRef<HTMLElement | null>(null)
   const reorderVersionRef = useRef(0)
   const pendingSwitchResolveRef = useRef<((confirmed: boolean) => void) | null>(null)
@@ -69,6 +75,12 @@ export function AccountsTab({
   })
   const oauth = useOAuthLogin({ onCompleted: reload })
   const currentProvider = activeProvider ?? 'codex'
+  const searchTerm = searchTerms[currentProvider] ?? ''
+  const setSearchTerm = (val: string) => setSearchTerms((prev) => ({ ...prev, [currentProvider]: val }))
+  const subscriptionFilter = subscriptionFilters[currentProvider] ?? 'all'
+  const setSubscriptionFilter = (filter: SubscriptionFilterId) =>
+    setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter }))
+
   const accounts = useMemo(
     () => data.accounts.filter((account) => (account.provider ?? 'codex') === currentProvider),
     [data.accounts, currentProvider]
@@ -177,6 +189,7 @@ export function AccountsTab({
   }
 
   const reorderAccounts = async (activeId: string, overId: string) => {
+    if (searchTerm.trim()) return
     const current = getData()
     if (!current) return
     const nextAccounts = reorderFilteredAccounts(current.accounts, filteredAccounts, activeId, overId)
@@ -273,7 +286,7 @@ export function AccountsTab({
             accountCount={accounts.length}
             provider={currentProvider}
             refreshingAll={actions.refreshingAll}
-            addingAccount={oauth.busy}
+            addingAccount={oauth.isProviderBusy(currentProvider)}
             importingSession={
               currentProvider === 'gemini'
                 ? actions.busyKeys.has('import:antigravity')
@@ -284,7 +297,7 @@ export function AccountsTab({
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
             onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
-            onCancelAddAccount={oauth.cancelLogin}
+            onCancelAddAccount={() => oauth.cancelLogin(currentProvider)}
             onImportSession={
               currentProvider === 'gemini'
                 ? () => void actions.importAntigravity()
@@ -296,7 +309,7 @@ export function AccountsTab({
           {currentProvider === 'gemini' && (
             <GeminiSwitchTargetsBar
               appSettings={data.appSettings}
-              onSaveAppSettings={actions.saveAppSettings}
+              onSaveAppSettings={(settings) => actions.saveAppSettings(settings, 'gemini')}
             />
           )}
 
@@ -375,7 +388,13 @@ export function AccountsTab({
             totalAccountCount={accounts.length}
             activeFilter={effectiveSubscriptionFilter}
             hiddenAccountCount={hiddenAccountIds.length}
-            addingAccount={oauth.busy}
+            addingAccount={oauth.isProviderBusy(currentProvider)}
+            isSearching={Boolean(searchTerm.trim())}
+            importingSession={
+              currentProvider === 'gemini'
+                ? actions.busyKeys.has('import:antigravity')
+                : actions.busyKeys.has('import:codex')
+            }
             activeAccountId={activeAccountId}
             busyKeys={actions.busyKeys}
             refreshingAll={actions.refreshingAll}
@@ -388,7 +407,15 @@ export function AccountsTab({
             onRemove={(account) => setPendingDelete(account)}
             onToggleAccountInAll={toggleAccountInAll}
             onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
-            onClearFilter={() => setSubscriptionFilter('all')}
+            onImportSession={
+              currentProvider === 'gemini'
+                ? () => void actions.importAntigravity()
+                : () => void actions.importCodex()
+            }
+            onClearFilter={() => {
+              setSubscriptionFilter('all')
+              setSearchTerm('')
+            }}
             onShowHiddenAccounts={() => {
               const next = setData((latest) => ({
                 ...latest,

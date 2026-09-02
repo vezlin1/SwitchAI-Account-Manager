@@ -55,6 +55,18 @@ export type AccountSnapshot = {
   account: Account
 }
 
+export type AppSettings = {
+  autoRefreshEnabled: boolean
+  autoRefreshIntervalMinutes: number
+  closeToTray: boolean
+  skipUnsupportedRegionRefresh: boolean
+  hiddenSubscriptionCategories: string[]
+  hiddenAccountIds: string[]
+  lastActiveProvider?: AccountProvider
+  geminiSwitchTargets?: string[]
+  enabledProviders?: AccountProvider[]
+}
+
 export type AppData = {
   revision: number
   accounts: Account[]
@@ -118,17 +130,6 @@ export type AntigravitySurface = {
   installed: boolean
   running: boolean
   path: string | null
-}
-
-export type AppSettings = {
-  autoRefreshEnabled: boolean
-  autoRefreshIntervalMinutes: number
-  closeToTray: boolean
-  skipUnsupportedRegionRefresh: boolean
-  hiddenSubscriptionCategories: string[]
-  hiddenAccountIds: string[]
-  lastActiveProvider?: AccountProvider
-  geminiSwitchTargets?: string[]
 }
 
 export type RefreshRunSummary = {

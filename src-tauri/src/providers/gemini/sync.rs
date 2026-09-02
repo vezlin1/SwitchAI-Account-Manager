@@ -602,12 +602,53 @@ pub fn detect_installed_antigravity_surfaces() -> Vec<String> {
     detected
 }
 
+#[cfg(target_os = "windows")]
+pub fn check_running_antigravity_surfaces() -> (bool, bool) {
+    let output = match Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Antigravity*", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return (false, false),
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut app_running = false;
+    let mut ide_running = false;
+
+    for line in text.lines() {
+        let lower = line.trim().to_ascii_lowercase();
+        if lower.starts_with("antigravity ide.exe") || lower.contains("antigravity ide.exe") {
+            ide_running = true;
+        } else if lower.starts_with("antigravity.exe") || lower.contains("antigravity.exe") {
+            app_running = true;
+        }
+    }
+
+    (app_running, ide_running)
+}
+
+#[cfg(target_os = "macos")]
+pub fn check_running_antigravity_surfaces() -> (bool, bool) {
+    (
+        is_antigravity_running().unwrap_or(false),
+        is_antigravity_ide_running().unwrap_or(false),
+    )
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn check_running_antigravity_surfaces() -> (bool, bool) {
+    (false, false)
+}
+
 pub fn get_antigravity_surfaces() -> Vec<crate::dto::AntigravitySurfaceDto> {
+    let (app_running, ide_running) = check_running_antigravity_surfaces();
+
     let mut surfaces = Vec::new();
 
     let app_path = antigravity_executable_path();
     let app_installed = app_path.is_some();
-    let app_running = is_antigravity_running().unwrap_or(false);
     surfaces.push(crate::dto::AntigravitySurfaceDto {
         id: "antigravity".to_string(),
         name: "Antigravity".to_string(),
@@ -619,7 +660,6 @@ pub fn get_antigravity_surfaces() -> Vec<crate::dto::AntigravitySurfaceDto> {
 
     let ide_path = antigravity_ide_executable_path();
     let ide_installed = ide_path.is_some();
-    let ide_running = is_antigravity_ide_running().unwrap_or(false);
     surfaces.push(crate::dto::AntigravitySurfaceDto {
         id: "ide".to_string(),
         name: "Antigravity IDE".to_string(),

@@ -146,6 +146,12 @@ struct PersistedAppSettings {
     last_active_provider: Option<String>,
     #[serde(default = "default_gemini_switch_targets")]
     gemini_switch_targets: Vec<String>,
+    #[serde(default = "default_enabled_providers")]
+    enabled_providers: Vec<String>,
+}
+
+fn default_enabled_providers() -> Vec<String> {
+    vec!["codex".to_string(), "gemini".to_string()]
 }
 
 fn default_gemini_switch_targets() -> Vec<String> {
@@ -259,6 +265,7 @@ impl From<&AppSettings> for PersistedAppSettings {
             hidden_account_ids: settings.hidden_account_ids.clone(),
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
+            enabled_providers: settings.enabled_providers.clone(),
         }
     }
 }
@@ -274,6 +281,7 @@ impl From<PersistedAppSettings> for AppSettings {
             hidden_account_ids: settings.hidden_account_ids,
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
+            enabled_providers: settings.enabled_providers,
         }
     }
 }

@@ -160,6 +160,7 @@ pub struct AppSettings {
     pub hidden_account_ids: Vec<String>,
     pub last_active_provider: Option<String>,
     pub gemini_switch_targets: Vec<String>,
+    pub enabled_providers: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -179,6 +180,7 @@ impl Default for AppSettings {
             hidden_account_ids: Vec::new(),
             last_active_provider: Some("codex".to_string()),
             gemini_switch_targets,
+            enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
         }
     }
 }
@@ -232,15 +234,28 @@ impl AppSettings {
         }
         self.hidden_account_ids = hidden_account_ids;
 
+        const VALID_PROVIDERS: [&str; 2] = ["codex", "gemini"];
+        let mut normalized_providers = Vec::new();
+        for provider in std::mem::take(&mut self.enabled_providers) {
+            let lower = provider.trim().to_ascii_lowercase();
+            if VALID_PROVIDERS.contains(&lower.as_str()) && !normalized_providers.contains(&lower) {
+                normalized_providers.push(lower);
+            }
+        }
+        if normalized_providers.is_empty() {
+            normalized_providers = vec!["codex".to_string(), "gemini".to_string()];
+        }
+        self.enabled_providers = normalized_providers;
+
         if let Some(ref provider) = self.last_active_provider {
             let lower = provider.trim().to_ascii_lowercase();
-            if lower == "gemini" || lower == "codex" {
+            if self.enabled_providers.contains(&lower) {
                 self.last_active_provider = Some(lower);
             } else {
-                self.last_active_provider = Some("codex".to_string());
+                self.last_active_provider = Some(self.enabled_providers[0].clone());
             }
         } else {
-            self.last_active_provider = Some("codex".to_string());
+            self.last_active_provider = Some(self.enabled_providers[0].clone());
         }
 
         const VALID_TARGETS: [&str; 3] = ["antigravity", "ide", "cli"];

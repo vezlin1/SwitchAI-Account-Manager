@@ -1,7 +1,8 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { formatRemainingPercent, formatTimeUntil, isTimePast, remainingPercent } from '../../utils/format'
 
-function quotaClass(remaining: number): string {
+function quotaClass(remaining: number, hasQuota: boolean): string {
+  if (!hasQuota) return ''
   if (remaining <= 10) return 'quota-fill-danger'
   if (remaining <= 30) return 'quota-fill-warn'
   return 'quota-fill-good'
@@ -15,9 +16,18 @@ type QuotaCellProps = {
 }
 
 export const QuotaCell = memo(function QuotaCell({ value, resetAt, title, isRefreshing = false }: QuotaCellProps) {
+  const [, setTick] = useState(0)
   const remaining = remainingPercent(value)
   const barPercent = remaining ?? 0
   const hasQuota = remaining != null
+
+  useEffect(() => {
+    if (!resetAt) return
+    const interval = setInterval(() => {
+      setTick((t) => (t + 1) % 10000)
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [resetAt])
 
   return (
     <div className="min-w-[160px]">
@@ -37,7 +47,7 @@ export const QuotaCell = memo(function QuotaCell({ value, resetAt, title, isRefr
         aria-valuetext={hasQuota ? `${Math.round(barPercent)}% remaining` : 'Not available'}
       >
         <div
-          className={`quota-fill ${quotaClass(barPercent)}`}
+          className={`quota-fill ${quotaClass(barPercent, hasQuota)}`}
           style={{ transform: `scaleX(${barPercent / 100})` }}
         />
       </div>

@@ -53,6 +53,7 @@ export const AccountRow = memo(function AccountRow({
   const quota = account.quota
   const switching = busyKeys.has(`switch:${account.id}`)
   const removing = busyKeys.has(`delete:${account.id}`)
+  const relogining = busyKeys.has(`relogin:${account.id}`)
   const needsRelogin = account.tokenHealth?.status === 'needs_relogin'
   const detectedSubscriptionDate = account.subscriptionDetectedAt ? account.subscriptionExpiresAt : null
 
@@ -152,7 +153,13 @@ export const AccountRow = memo(function AccountRow({
             className={`account-action${isActive ? ' account-action-active' : ''}`}
             onClick={() => onSwitch(account)}
             disabled={isActive || needsRelogin || switching || refreshingAll || autoRefreshing || orderBusy}
-            title={account.provider === 'gemini' ? 'Switch active Antigravity account' : 'Switch active Codex account'}
+            title={
+              isActive
+                ? (account.provider === 'gemini' ? 'Currently active in Antigravity / Gemini' : 'Currently active in Codex / ChatGPT')
+                : needsRelogin
+                  ? 'Re-login required before switching'
+                  : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
+            }
             aria-label={`Switch to ${account.email ?? 'account'}`}
           >
             {switching
@@ -165,11 +172,13 @@ export const AccountRow = memo(function AccountRow({
               type="button"
               className="account-action account-action-relogin"
               onClick={() => onRelogin(account)}
-              disabled={switching || removing || refreshingAll || autoRefreshing || orderBusy}
+              disabled={relogining || switching || removing || refreshingAll || autoRefreshing || orderBusy}
               title="Re-login account"
               aria-label={`Re-login ${account.email ?? 'account'}`}
             >
-              <KeyRound size={14} aria-hidden="true" />
+              {relogining
+                ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                : <KeyRound size={14} aria-hidden="true" />}
             </button>
           )}
 

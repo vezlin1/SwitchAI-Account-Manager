@@ -79,7 +79,7 @@ export function AccountsToolbar({
           <div className="relative inline-flex items-center" ref={dropdownRef}>
             <button
               type="button"
-              className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+              className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 active:bg-blue-700 active:scale-[0.98] inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-sm cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
               onClick={() => {
                 if (accountActionBusy) return
                 setDropdownOpen((prev) => !prev)
@@ -112,19 +112,19 @@ export function AccountsToolbar({
 
             {dropdownOpen && !accountActionBusy && (
               <div
-                className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 animate-fadeIn"
+                className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 origin-top-left animate-in fade-in-0 zoom-in-95 duration-100"
                 role="menu"
               >
                 <button
                   type="button"
                   role="menuitem"
-                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.06] transition-colors cursor-pointer group"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
                   onClick={() => {
                     setDropdownOpen(false)
                     onAddAccount()
                   }}
                 >
-                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 transition-colors mt-0.5 shrink-0">
+                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 group-hover:text-blue-300 transition-colors mt-0.5 shrink-0">
                     <LogIn size={15} />
                   </div>
                   <div className="flex flex-col min-w-0">
@@ -140,13 +140,13 @@ export function AccountsToolbar({
                 <button
                   type="button"
                   role="menuitem"
-                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.06] transition-colors cursor-pointer group"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
                   onClick={() => {
                     setDropdownOpen(false)
                     handleImport()
                   }}
                 >
-                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 transition-colors mt-0.5 shrink-0">
+                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300 transition-colors mt-0.5 shrink-0">
                     <ArrowDownToLine size={15} />
                   </div>
                   <div className="flex flex-col min-w-0">
@@ -166,7 +166,7 @@ export function AccountsToolbar({
         ) : (
           <button
             type="button"
-            className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+            className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 active:bg-blue-700 active:scale-[0.98] inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-sm cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
             onClick={onAddAccount}
             disabled={accountActionBusy || refreshingAll}
             title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
@@ -182,7 +182,7 @@ export function AccountsToolbar({
 
         {accountActionBusy && (
           <button
-            className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface transition-all cursor-pointer"
+            className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface hover:border-white/20 active:scale-95 active:bg-ag-surface/80 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary"
             onClick={onCancelAddAccount}
             title="Cancel"
             aria-label="Cancel"
@@ -194,7 +194,7 @@ export function AccountsToolbar({
 
         <button
           type="button"
-          className="h-9 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface inline-flex items-center gap-2 transition-all"
+          className="h-9 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface hover:border-white/20 hover:text-white active:scale-[0.98] active:bg-ag-surface/80 inline-flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-ag-border disabled:hover:bg-transparent disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary select-none"
           onClick={onRefreshAll}
           disabled={refreshingAll || autoRefreshStatus?.inFlight || accountCount === 0}
         >
@@ -212,14 +212,15 @@ export function AccountsToolbar({
               placeholder="Search accounts..."
               value={searchTerm}
               onChange={(e) => onSearchChange(e.target.value)}
-              className="h-9 w-full pl-8 pr-7 rounded-lg bg-ag-surface/80 border border-ag-border text-xs text-ag-text placeholder:text-ag-muted/60 focus:outline-none focus:border-blue-500 transition-colors"
+              className="h-9 w-full pl-8 pr-8 rounded-lg bg-ag-surface/80 border border-ag-border text-xs text-ag-text placeholder:text-ag-muted/60 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => onSearchChange('')}
-                className="absolute right-2 text-ag-muted hover:text-ag-text p-0.5"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded text-ag-muted hover:text-ag-text hover:bg-white/[0.1] active:scale-90 transition-all cursor-pointer"
                 title="Clear search"
+                aria-label="Clear search"
               >
                 <X size={13} />
               </button>

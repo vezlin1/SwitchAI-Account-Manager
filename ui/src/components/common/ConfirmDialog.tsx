@@ -27,7 +27,13 @@ export function ConfirmDialog({
   const confirmButtonClass = variant === 'danger' ? 'confirm-danger' : 'confirm-primary'
 
   return (
-    <div className="confirm-backdrop">
+    <div
+      className="confirm-backdrop"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onCancel()
+      }}
+    >
       <div
         ref={dialogRef}
         className="confirm-dialog"

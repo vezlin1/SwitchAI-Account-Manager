@@ -101,6 +101,8 @@ export function AccountDetails({
   const { privacyMode, maskEmail, maskAccountId } = usePrivacy()
   const headingRef = useRef<HTMLHeadingElement>(null)
   const [copiedId, setCopiedId] = useState(false)
+  const [copiedEmail, setCopiedEmail] = useState(false)
+  const [copiedStatus, setCopiedStatus] = useState(false)
   const quotaColumns = useMemo(() => quotaColumnsForAccounts([account]), [account])
   const refreshingQuota = busyKeys.has(`quota:${account.id}`)
   const detectingSubscription = busyKeys.has(`subscription-detect:${account.id}`)
@@ -128,12 +130,45 @@ export function AccountDetails({
     headingRef.current?.focus()
   }, [account.id])
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onBack()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onBack])
+
   const copyAccountId = async () => {
     if (!account.accountId) return
     try {
       await navigator.clipboard.writeText(account.accountId)
       setCopiedId(true)
       setTimeout(() => setCopiedId(false), 2000)
+    } catch {
+      // Ignore clipboard write failures
+    }
+  }
+
+  const copyEmail = async () => {
+    if (!account.email) return
+    try {
+      await navigator.clipboard.writeText(account.email)
+      setCopiedEmail(true)
+      setTimeout(() => setCopiedEmail(false), 2000)
+    } catch {
+      // Ignore clipboard write failures
+    }
+  }
+
+  const copyStatusMessage = async () => {
+    if (!status.message) return
+    try {
+      await navigator.clipboard.writeText(status.message)
+      setCopiedStatus(true)
+      setTimeout(() => setCopiedStatus(false), 2000)
     } catch {
       // Ignore clipboard write failures
     }
@@ -158,6 +193,17 @@ export function AccountDetails({
             >
               {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unnamed account')}
             </h2>
+            {account.email && (
+              <button
+                type="button"
+                onClick={() => void copyEmail()}
+                className="inline-flex items-center justify-center w-6 h-6 rounded-md text-ag-muted hover:text-white hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer select-none"
+                title={copiedEmail ? 'Copied!' : 'Copy email'}
+                aria-label="Copy email"
+              >
+                {copiedEmail ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+              </button>
+            )}
             {isActive && (
               <span className="account-detail-badge">
                 {account.provider === 'gemini' ? 'Active in Antigravity' : 'Active in Codex'}
@@ -231,6 +277,7 @@ export function AccountDetails({
                         value={window?.usedPercent}
                         resetAt={window?.resetAt}
                         title={column.cellTitle}
+                        isRefreshing={isRefreshingAccount}
                       />
                     </div>
                   )
@@ -285,7 +332,7 @@ export function AccountDetails({
                     <button
                       type="button"
                       onClick={() => void copyAccountId()}
-                      className="text-ag-muted hover:text-white transition-colors p-0.5"
+                      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-ag-muted hover:text-white hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer select-none"
                       title={copiedId ? 'Copied!' : 'Copy Account ID'}
                       aria-label="Copy Account ID"
                     >
@@ -303,7 +350,20 @@ export function AccountDetails({
 
           {status.tone !== 'healthy' && (
             <section className={`account-detail-sidebar-section account-detail-health account-detail-health-${status.tone}`}>
-              <h2>Connection status</h2>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <h2>Connection status</h2>
+                {status.message && (
+                  <button
+                    type="button"
+                    onClick={() => void copyStatusMessage()}
+                    className="inline-flex items-center gap-1 text-[11px] text-ag-muted hover:text-white transition-colors cursor-pointer"
+                    title={copiedStatus ? 'Copied!' : 'Copy error message'}
+                  >
+                    {copiedStatus ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                    <span>{copiedStatus ? 'Copied' : 'Copy'}</span>
+                  </button>
+                )}
+              </div>
               <p className="allow-select">{status.message}</p>
             </section>
           )}

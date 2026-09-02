@@ -15,7 +15,7 @@ type ActivePoll = {
 }
 
 export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
-  const [busy, setBusy] = useState(false)
+  const [busyProvider, setBusyProvider] = useState<AccountProvider | null>(null)
   const [errors, setErrors] = useState<Record<AccountProvider, string | null>>({
     codex: null,
     gemini: null
@@ -53,19 +53,26 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
     return errors[provider]
   }, [errors])
 
-  const cancelLogin = useCallback(() => {
+  const isProviderBusy = useCallback((provider: AccountProvider) => {
+    return busyProvider === provider
+  }, [busyProvider])
+
+  const cancelLogin = useCallback((provider?: AccountProvider) => {
     const active = activePollRef.current
+    if (provider && active && active.provider !== provider) {
+      return
+    }
     startAttemptRef.current += 1
     startingRef.current = false
     stopPolling()
-    setBusy(false)
+    setBusyProvider(null)
     if (active) {
       setProviderError(active.provider, null)
       void api.cancelOAuthFlow(active.flowId).catch(() => undefined)
     }
   }, [stopPolling, setProviderError])
 
-  useEffect(() => cancelLogin, [cancelLogin])
+  useEffect(() => () => cancelLogin(), [cancelLogin])
 
   const startLogin = useCallback(async (targetAccount?: Account, provider?: string) => {
     if (startingRef.current || activePollRef.current) return
@@ -75,7 +82,7 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
     const currentProv: AccountProvider = (targetAccount?.provider ?? provider ?? 'codex') === 'gemini' ? 'gemini' : 'codex'
 
     try {
-      setBusy(true)
+      setBusyProvider(currentProv)
       setProviderError(currentProv, null)
       stopPolling()
 
@@ -107,7 +114,7 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
         active.cancelled = true
         activePollRef.current = null
         void api.cancelOAuthFlow(active.flowId).catch(() => undefined)
-        setBusy(false)
+        setBusyProvider(null)
         setProviderError(currentProv, describeIpcError(err))
         return
       }
@@ -115,7 +122,7 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
       const result = await poll
       if (activePollRef.current !== active) return
       activePollRef.current = null
-      setBusy(false)
+      setBusyProvider(null)
 
       if (result.terminal === 'completed') {
         await onCompletedRef.current()
@@ -131,13 +138,15 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
       if (startAttemptRef.current !== attempt) return
       startingRef.current = false
       stopPolling()
-      setBusy(false)
+      setBusyProvider(null)
       setProviderError(currentProv, describeIpcError(err))
     }
   }, [stopPolling, setProviderError])
 
   return {
-    busy,
+    busy: busyProvider !== null,
+    busyProvider,
+    isProviderBusy,
     errors,
     error: errors.codex ?? errors.gemini,
     getError,

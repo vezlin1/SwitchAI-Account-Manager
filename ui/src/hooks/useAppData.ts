@@ -42,6 +42,9 @@ function settingsPatch(previous: AppSettings, next: AppSettings): SettingsPatch 
   if (JSON.stringify(previous.geminiSwitchTargets) !== JSON.stringify(next.geminiSwitchTargets)) {
     patch.geminiSwitchTargets = next.geminiSwitchTargets
   }
+  if (JSON.stringify(previous.enabledProviders) !== JSON.stringify(next.enabledProviders)) {
+    patch.enabledProviders = next.enabledProviders
+  }
   return patch
 }
 

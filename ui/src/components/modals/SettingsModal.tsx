@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Download, Loader2, Settings, Upload, X } from 'lucide-react'
-import type { Account, AppData, AppSettings, AutoRefreshStatus } from '../../types'
+import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus } from '../../types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { Switch } from '../common/Switch'
 
@@ -30,7 +30,11 @@ export function SettingsModal({
   onRefreshStatus,
   onImportAccounts
 }: SettingsModalProps) {
-  const [draft, setDraft] = useState<AppSettings>(settings)
+  const [draft, setDraft] = useState<AppSettings>(() => ({
+    ...settings,
+    enabledProviders: settings.enabledProviders ?? ['codex', 'gemini']
+  }))
+  const [intervalText, setIntervalText] = useState(() => String(settings.autoRefreshIntervalMinutes ?? 15))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [vaultSuccess, setVaultSuccess] = useState<string | null>(null)
@@ -41,11 +45,13 @@ export function SettingsModal({
     try {
       setBusy(true)
       setError(null)
-      const interval = Math.round(Number(draft.autoRefreshIntervalMinutes))
+      const raw = parseInt(intervalText, 10)
+      const interval = Math.min(1440, Math.max(15, isNaN(raw) ? (Number(draft.autoRefreshIntervalMinutes) || 15) : raw))
       const nextSettings: AppSettings = {
         ...draft,
-        autoRefreshIntervalMinutes: Math.min(1440, Math.max(15, Number.isFinite(interval) ? interval : 15)),
-        skipUnsupportedRegionRefresh: draft.skipUnsupportedRegionRefresh ?? true
+        autoRefreshIntervalMinutes: interval,
+        skipUnsupportedRegionRefresh: draft.skipUnsupportedRegionRefresh ?? true,
+        enabledProviders: draft.enabledProviders ?? ['codex', 'gemini']
       }
 
       await onSave(nextSettings)
@@ -152,7 +158,13 @@ export function SettingsModal({
   }
 
   return (
-    <div className="settings-backdrop">
+    <div
+      className="settings-backdrop"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose()
+      }}
+    >
       <div
         ref={dialogRef}
         className="settings-dialog"
@@ -205,9 +217,12 @@ export function SettingsModal({
                         type="button"
                         className="settings-pill"
                         aria-pressed={draft.autoRefreshIntervalMinutes === minutes}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDraft((prev) => ({ ...prev, autoRefreshIntervalMinutes: minutes }))
+                        onClick={() => {
+                          setDraft((prev) => ({
+                            ...prev,
+                            autoRefreshIntervalMinutes: minutes
+                          }))
+                          setIntervalText(String(minutes))
                         }}
                       >
                         {label}
@@ -224,11 +239,26 @@ export function SettingsModal({
                         max={1440}
                         step={1}
                         className="settings-number-input"
-                        value={draft.autoRefreshIntervalMinutes}
-                        onChange={(event) => setDraft((prev) => ({
-                          ...prev,
-                          autoRefreshIntervalMinutes: Math.max(15, Math.min(1440, Number(event.target.value) || 15))
-                        }))}
+                        value={intervalText}
+                        onChange={(event) => {
+                          setIntervalText(event.target.value)
+                          const num = parseInt(event.target.value, 10)
+                          if (!isNaN(num)) {
+                            setDraft((prev) => ({
+                              ...prev,
+                              autoRefreshIntervalMinutes: num
+                            }))
+                          }
+                        }}
+                        onBlur={() => {
+                          const num = parseInt(intervalText, 10)
+                          const clamped = Math.min(1440, Math.max(15, isNaN(num) ? 15 : num))
+                          setDraft((prev) => ({
+                            ...prev,
+                            autoRefreshIntervalMinutes: clamped
+                          }))
+                          setIntervalText(String(clamped))
+                        }}
                         aria-label="Custom refresh interval in minutes"
                       />
                       <div className="settings-stepper-controls">
@@ -236,10 +266,15 @@ export function SettingsModal({
                           type="button"
                           className="settings-stepper-btn"
                           tabIndex={-1}
-                          onClick={() => setDraft((prev) => ({
-                            ...prev,
-                            autoRefreshIntervalMinutes: Math.min(1440, (Number(prev.autoRefreshIntervalMinutes) || 15) + 1)
-                          }))}
+                          onClick={() => {
+                            const currentVal = parseInt(intervalText, 10) || 15
+                            const nextVal = Math.min(1440, currentVal + 1)
+                            setDraft((prev) => ({
+                              ...prev,
+                              autoRefreshIntervalMinutes: nextVal
+                            }))
+                            setIntervalText(String(nextVal))
+                          }}
                           title="Increase interval"
                           aria-label="Increase interval"
                         >
@@ -249,10 +284,15 @@ export function SettingsModal({
                           type="button"
                           className="settings-stepper-btn"
                           tabIndex={-1}
-                          onClick={() => setDraft((prev) => ({
-                            ...prev,
-                            autoRefreshIntervalMinutes: Math.max(15, (Number(prev.autoRefreshIntervalMinutes) || 15) - 1)
-                          }))}
+                          onClick={() => {
+                            const currentVal = parseInt(intervalText, 10) || 15
+                            const nextVal = Math.max(15, currentVal - 1)
+                            setDraft((prev) => ({
+                              ...prev,
+                              autoRefreshIntervalMinutes: nextVal
+                            }))
+                            setIntervalText(String(nextVal))
+                          }}
                           title="Decrease interval"
                           aria-label="Decrease interval"
                         >
@@ -265,6 +305,102 @@ export function SettingsModal({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* AI Providers & Tabs */}
+          <div className="settings-card">
+            <div className="settings-card-header">
+              <span className="settings-card-label">Visible tabs</span>
+            </div>
+            <div className="settings-card-content border-t border-white/[0.04] pt-1 mt-1 flex flex-col divide-y divide-white/[0.04]">
+              {/* ChatGPT Row */}
+              {(() => {
+                const enabled = (draft.enabledProviders ?? ['codex', 'gemini']).includes('codex')
+                const isOnly = enabled && (draft.enabledProviders ?? ['codex', 'gemini']).length <= 1
+                const count = accounts.filter((a) => (a.provider ?? 'codex') === 'codex').length
+
+                const toggle = () => {
+                  if (isOnly) return
+                  const current = draft.enabledProviders ?? ['codex', 'gemini']
+                  const next = enabled
+                    ? (current.filter((p) => p !== 'codex') as AccountProvider[])
+                    : ([...current.filter((p) => p !== 'codex'), 'codex'] as AccountProvider[])
+                  setDraft((prev) => ({ ...prev, enabledProviders: next }))
+                }
+
+                return (
+                  <div
+                    className={`flex items-center justify-between py-2 px-2 -mx-2 rounded-lg select-none transition-all ${
+                      isOnly
+                        ? 'cursor-not-allowed opacity-60'
+                        : 'cursor-pointer hover:bg-white/[0.04] hover:text-white active:bg-white/[0.07]'
+                    }`}
+                    onClick={toggle}
+                    title={isOnly ? 'At least one provider tab must remain enabled' : undefined}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium ${enabled ? 'text-ag-text' : 'text-ag-muted'}`}>
+                        ChatGPT
+                      </span>
+                      <span className="text-[11px] text-ag-muted">
+                        ({count} {count === 1 ? 'account' : 'accounts'})
+                      </span>
+                    </div>
+                    <Switch
+                      id="provider-switch-codex"
+                      checked={enabled}
+                      onChange={toggle}
+                      disabled={isOnly}
+                      ariaLabel="Enable ChatGPT tab"
+                    />
+                  </div>
+                )
+              })()}
+
+              {/* Gemini Row */}
+              {(() => {
+                const enabled = (draft.enabledProviders ?? ['codex', 'gemini']).includes('gemini')
+                const isOnly = enabled && (draft.enabledProviders ?? ['codex', 'gemini']).length <= 1
+                const count = accounts.filter((a) => a.provider === 'gemini').length
+
+                const toggle = () => {
+                  if (isOnly) return
+                  const current = draft.enabledProviders ?? ['codex', 'gemini']
+                  const next = enabled
+                    ? (current.filter((p) => p !== 'gemini') as AccountProvider[])
+                    : ([...current.filter((p) => p !== 'gemini'), 'gemini'] as AccountProvider[])
+                  setDraft((prev) => ({ ...prev, enabledProviders: next }))
+                }
+
+                return (
+                  <div
+                    className={`flex items-center justify-between py-2 px-2 -mx-2 rounded-lg select-none transition-all ${
+                      isOnly
+                        ? 'cursor-not-allowed opacity-60'
+                        : 'cursor-pointer hover:bg-white/[0.04] hover:text-white active:bg-white/[0.07]'
+                    }`}
+                    onClick={toggle}
+                    title={isOnly ? 'At least one provider tab must remain enabled' : undefined}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium ${enabled ? 'text-ag-text' : 'text-ag-muted'}`}>
+                        Gemini
+                      </span>
+                      <span className="text-[11px] text-ag-muted">
+                        ({count} {count === 1 ? 'account' : 'accounts'})
+                      </span>
+                    </div>
+                    <Switch
+                      id="provider-switch-gemini"
+                      checked={enabled}
+                      onChange={toggle}
+                      disabled={isOnly}
+                      ariaLabel="Enable Gemini tab"
+                    />
+                  </div>
+                )
+              })()}
+            </div>
           </div>
 
           {/* Close to Tray */}
@@ -294,19 +430,32 @@ export function SettingsModal({
                 <button
                   type="button"
                   onClick={exportVault}
-                  className="h-8 px-3 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface inline-flex items-center gap-1.5 transition-all"
+                  disabled={busy}
+                  className="h-8 px-3 rounded-lg border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-ag-text hover:bg-white/[0.09] hover:border-white/[0.22] hover:text-white active:scale-[0.97] active:bg-white/[0.14] inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 select-none shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
                 >
                   <Download size={13} />
                   Export backup ({accounts.length})
                 </button>
-                <label className="h-8 px-3 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface inline-flex items-center gap-1.5 cursor-pointer transition-all">
+                <label
+                  tabIndex={busy ? -1 : 0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      e.currentTarget.querySelector('input')?.click()
+                    }
+                  }}
+                  className={`h-8 px-3 rounded-lg border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-ag-text hover:bg-white/[0.09] hover:border-white/[0.22] hover:text-white active:scale-[0.97] active:bg-white/[0.14] inline-flex items-center gap-1.5 transition-all select-none shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 ${
+                    busy ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
+                >
                   <Upload size={13} />
                   Import backup
                   <input
                     type="file"
                     accept=".json"
+                    disabled={busy}
                     onChange={(e) => void importVault(e)}
-                    className="hidden"
+                    className="sr-only"
                   />
                 </label>
               </div>

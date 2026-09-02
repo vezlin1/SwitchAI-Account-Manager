@@ -15,7 +15,7 @@ import {
   verticalListSortingStrategy
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Loader2, LogIn, Sparkles, UserPlus, Users } from 'lucide-react'
+import { ArrowDownToLine, Loader2, LogIn, Sparkles, UserPlus, Users } from 'lucide-react'
 import type { Account, AccountProvider } from '../../types'
 import { AccountCard } from './AccountCard'
 import { AccountContextMenu } from './AccountContextMenu'
@@ -32,6 +32,8 @@ type AccountsTableProps = {
   activeFilter: SubscriptionFilterId
   hiddenAccountCount: number
   addingAccount: boolean
+  isSearching?: boolean
+  importingSession?: boolean
   busyKeys: ReadonlySet<string>
   refreshingAll: boolean
   autoRefreshing: boolean
@@ -43,6 +45,7 @@ type AccountsTableProps = {
   onRemove: (account: Account) => void
   onToggleAccountInAll: (accountId: string) => void
   onAddAccount: () => void
+  onImportSession?: () => void
   onClearFilter: () => void
   onShowHiddenAccounts: () => void
 }
@@ -53,7 +56,10 @@ function AccountsEmptyState({
   activeFilter,
   hiddenAccountCount,
   addingAccount,
+  isSearching = false,
+  importingSession = false,
   onAddAccount,
+  onImportSession,
   onClearFilter,
   onShowHiddenAccounts
 }: {
@@ -62,7 +68,10 @@ function AccountsEmptyState({
   activeFilter: SubscriptionFilterId
   hiddenAccountCount: number
   addingAccount: boolean
+  isSearching?: boolean
+  importingSession?: boolean
   onAddAccount: () => void
+  onImportSession?: () => void
   onClearFilter: () => void
   onShowHiddenAccounts: () => void
 }) {
@@ -82,18 +91,47 @@ function AccountsEmptyState({
             ? 'Sign in with your Google account or import your Antigravity session to start managing quotas.'
             : 'Add your first ChatGPT account to start tracking weekly limits, switching sessions, and managing subscriptions.'}
         </p>
-        <button
-          type="button"
-          className="h-9 px-4 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
-          onClick={onAddAccount}
-          disabled={addingAccount}
-        >
-          {addingAccount
-            ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-            : isGoogle
-              ? <LogIn size={14} aria-hidden="true" />
-              : <UserPlus size={14} aria-hidden="true" />}
-          {isGoogle ? 'Sign in with Google' : 'Add account'}
+        <div className="flex items-center gap-2.5 flex-wrap justify-center">
+          <button
+            type="button"
+            className="h-9 px-4 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+            onClick={onAddAccount}
+            disabled={addingAccount || importingSession}
+          >
+            {addingAccount
+              ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+              : isGoogle
+                ? <LogIn size={14} aria-hidden="true" />
+                : <UserPlus size={14} aria-hidden="true" />}
+            {isGoogle ? 'Sign in with Google' : 'Add account'}
+          </button>
+          {onImportSession && (
+            <button
+              type="button"
+              className="h-9 px-4 rounded-lg bg-ag-surface border border-ag-border text-ag-text text-xs font-semibold hover:bg-white/[0.06] inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+              onClick={onImportSession}
+              disabled={addingAccount || importingSession}
+            >
+              {importingSession ? (
+                <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <ArrowDownToLine size={14} aria-hidden="true" />
+              )}
+              {isGoogle ? 'Import active session' : 'Import active session'}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (isSearching) {
+    return (
+      <div className="accounts-empty py-14 px-6 text-center flex flex-col items-center justify-center max-w-md mx-auto" role="status">
+        <h3 className="text-sm font-semibold text-ag-text mb-1">No accounts match your search</h3>
+        <p className="text-xs text-ag-muted mb-4">Check the spelling or clear the search query to view all accounts.</p>
+        <button type="button" className="h-8 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface transition-all cursor-pointer" onClick={onClearFilter}>
+          Clear search & filters
         </button>
       </div>
     )
@@ -130,6 +168,8 @@ export function AccountsTable({
   activeFilter,
   hiddenAccountCount,
   addingAccount,
+  isSearching = false,
+  importingSession = false,
   busyKeys,
   refreshingAll,
   autoRefreshing,
@@ -141,6 +181,7 @@ export function AccountsTable({
   onRemove,
   onToggleAccountInAll,
   onAddAccount,
+  onImportSession,
   onClearFilter,
   onShowHiddenAccounts
 }: AccountsTableProps) {
@@ -178,7 +219,7 @@ export function AccountsTable({
     return () => media.removeEventListener('change', handler)
   }, [])
 
-  const desktopDraggingEnabled = accounts.length > 1 && !orderBusy
+  const desktopDraggingEnabled = accounts.length > 1 && !orderBusy && !isSearching
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveDragId(String(event.active.id))
@@ -222,7 +263,10 @@ export function AccountsTable({
             activeFilter={activeFilter}
             hiddenAccountCount={hiddenAccountCount}
             addingAccount={addingAccount}
+            isSearching={isSearching}
+            importingSession={importingSession}
             onAddAccount={onAddAccount}
+            onImportSession={onImportSession}
             onClearFilter={onClearFilter}
             onShowHiddenAccounts={onShowHiddenAccounts}
           />
@@ -263,7 +307,7 @@ export function AccountsTable({
                       autoRefreshing={autoRefreshing}
                       hiddenFromAll={hiddenAccountIds.includes(account.id)}
                       quotaColumns={quotaColumns}
-                      orderBusy={orderBusy}
+                      orderBusy={orderBusy || isSearching}
                       onOpenDetails={onOpenDetails}
                       onSwitch={onSwitch}
                       onRelogin={onRelogin}

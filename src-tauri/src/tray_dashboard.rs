@@ -102,12 +102,15 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
     let rec_codex = recommended_account_for_provider(data, AccountProvider::Codex);
     let rec_gemini = recommended_account_for_provider(data, AccountProvider::Gemini);
 
+    let codex_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "codex");
+    let gemini_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "gemini");
+
     let mut builder = MenuBuilder::new(app);
-    let has_codex = data
+    let has_codex = codex_enabled && data
         .accounts
         .iter()
         .any(|a| a.provider == AccountProvider::Codex);
-    let has_gemini = data
+    let has_gemini = gemini_enabled && data
         .accounts
         .iter()
         .any(|a| a.provider == AccountProvider::Gemini);
@@ -158,6 +161,10 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
         .accounts
         .iter()
         .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
+        .filter(|a| match a.provider {
+            AccountProvider::Codex => codex_enabled,
+            AccountProvider::Gemini => gemini_enabled,
+        })
     {
         let (provider_label, prefix, active_id) = match account.provider {
             AccountProvider::Codex => (
@@ -172,11 +179,17 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             ),
         };
         let is_active = active_id == Some(account.id.as_str());
+        let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
         let active_marker = if is_active { " (active)" } else { "" };
-        let quota = remaining_percent(account)
-            .map(|remaining| format!(" · {remaining:.0}% left"))
-            .unwrap_or_else(|| " · quota unavailable".to_string());
-        let is_recommended = match account.provider {
+        let relogin_marker = if needs_relogin { " (re-login required)" } else { "" };
+        let quota = if needs_relogin {
+            String::new()
+        } else {
+            remaining_percent(account)
+                .map(|remaining| format!(" · {remaining:.0}% left"))
+                .unwrap_or_else(|| " · quota unavailable".to_string())
+        };
+        let is_recommended = !needs_relogin && match account.provider {
             AccountProvider::Codex => rec_codex.is_some_and(|item| item.id == account.id),
             AccountProvider::Gemini => rec_gemini.is_some_and(|item| item.id == account.id),
         };
@@ -184,11 +197,11 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
         let item = MenuItemBuilder::with_id(
             format!("{prefix}{}", account.id),
             format!(
-                "[{provider_label}] {}{active_marker}{quota}{recommended_marker}",
+                "[{provider_label}] {}{active_marker}{relogin_marker}{quota}{recommended_marker}",
                 account_label(account),
             ),
         )
-        .enabled(!is_active)
+        .enabled(!is_active && !needs_relogin)
         .build(app)
         .map_err(|error| AppError::msg(format!("Failed to build tray account item: {error}")))?;
         builder = builder.item(&item);
@@ -206,27 +219,37 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
 }
 
 pub fn tray_tooltip(data: &AppData) -> String {
-    let rec_codex = recommended_account_for_provider(data, AccountProvider::Codex);
-    let rec_gemini = recommended_account_for_provider(data, AccountProvider::Gemini);
+    let codex_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "codex");
+    let gemini_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "gemini");
+    let rec_codex = if codex_enabled {
+        recommended_account_for_provider(data, AccountProvider::Codex)
+    } else {
+        None
+    };
+    let rec_gemini = if gemini_enabled {
+        recommended_account_for_provider(data, AccountProvider::Gemini)
+    } else {
+        None
+    };
     match (rec_codex, rec_gemini) {
         (Some(c), Some(g)) => format!(
-            "VG Account Manager — Codex: {} ({:.0}%) · Antigravity: {} ({:.0}%)",
+            "SwitchAI — Codex: {} ({:.0}%) · Antigravity: {} ({:.0}%)",
             account_label(c),
             remaining_percent(c).unwrap_or_default(),
             account_label(g),
             remaining_percent(g).unwrap_or_default()
         ),
         (Some(c), None) => format!(
-            "VG Account Manager — [Codex] {} ({:.0}% left)",
+            "SwitchAI — [Codex] {} ({:.0}% left)",
             account_label(c),
             remaining_percent(c).unwrap_or_default()
         ),
         (None, Some(g)) => format!(
-            "VG Account Manager — [Antigravity] {} ({:.0}% left)",
+            "SwitchAI — [Antigravity] {} ({:.0}% left)",
             account_label(g),
             remaining_percent(g).unwrap_or_default()
         ),
-        (None, None) => "VG Account Manager".to_string(),
+        (None, None) => "SwitchAI".to_string(),
     }
 }
 
@@ -467,7 +490,7 @@ mod tests {
         let tooltip = tray_tooltip(&data);
         assert_eq!(
             tooltip,
-            "VG Account Manager — [Antigravity] gemini@google.com (70% left)"
+            "SwitchAI — [Antigravity] gemini@google.com (70% left)"
         );
     }
 }

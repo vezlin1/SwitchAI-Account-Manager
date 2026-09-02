@@ -94,6 +94,7 @@ export function RecoveryModal({
             className="recovery-primary"
             onClick={() => void run('restore', onRestore)}
             disabled={busy != null || loading || !recovery.backupAvailable}
+            data-autofocus
           >
             {busy === 'restore'
               ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />

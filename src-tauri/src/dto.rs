@@ -60,6 +60,10 @@ fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
 
+fn default_enabled_providers() -> Vec<String> {
+    vec!["codex".to_string(), "gemini".to_string()]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsDto {
@@ -76,6 +80,8 @@ pub struct AppSettingsDto {
     pub last_active_provider: Option<String>,
     #[serde(default)]
     pub gemini_switch_targets: Vec<String>,
+    #[serde(default = "default_enabled_providers")]
+    pub enabled_providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +246,7 @@ impl From<&AppSettings> for AppSettingsDto {
             hidden_account_ids: settings.hidden_account_ids.clone(),
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
+            enabled_providers: settings.enabled_providers.clone(),
         }
     }
 }
@@ -255,6 +262,7 @@ impl From<AppSettingsDto> for AppSettings {
             hidden_account_ids: settings.hidden_account_ids,
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
+            enabled_providers: settings.enabled_providers,
         }
     }
 }

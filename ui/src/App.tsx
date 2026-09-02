@@ -6,6 +6,7 @@ import './App.css'
 import appLogo from './assets/app-icon.png'
 import { ErrorBanner } from './components/common'
 import { AccountsTab } from './components/accounts/AccountsTab'
+import { warmUpAntigravitySurfacesCache } from './components/accounts/GeminiSwitchTargetsBar'
 import { useAutoRefreshStatus } from './hooks/useAutoRefreshStatus'
 import { useAppData } from './hooks/useAppData'
 import { usePlatform } from './hooks/usePlatform'
@@ -63,8 +64,34 @@ function App() {
   const syncedProviderRef = useRef<AccountProvider | null>(null)
 
   useEffect(() => {
+    warmUpAntigravitySurfacesCache()
+  }, [])
+
+  const enabledProviders = useMemo<AccountProvider[]>(() => {
+    const list = data?.appSettings?.enabledProviders
+    if (Array.isArray(list) && list.length > 0) {
+      const filtered = list.filter((p): p is AccountProvider => p === 'codex' || p === 'gemini')
+      if (filtered.length > 0) return filtered
+    }
+    return ['codex', 'gemini']
+  }, [data?.appSettings?.enabledProviders])
+
+  useEffect(() => {
+    if (enabledProviders.length > 0 && !enabledProviders.includes(activeProvider)) {
+      const fallback = enabledProviders[0]
+      setActiveProvider(fallback)
+      syncedProviderRef.current = fallback
+      try {
+        localStorage.setItem('switchai:last-active-provider', fallback)
+      } catch {
+        // ignore
+      }
+    }
+  }, [enabledProviders, activeProvider])
+
+  useEffect(() => {
     const serverProv = data?.appSettings?.lastActiveProvider
-    if (serverProv && syncedProviderRef.current !== serverProv) {
+    if (serverProv && syncedProviderRef.current !== serverProv && enabledProviders.includes(serverProv)) {
       syncedProviderRef.current = serverProv
       setActiveProvider(serverProv)
       try {
@@ -73,7 +100,7 @@ function App() {
         // ignore
       }
     }
-  }, [data?.appSettings?.lastActiveProvider])
+  }, [data?.appSettings?.lastActiveProvider, enabledProviders])
 
   const handleSelectProvider = useCallback(
     (provider: AccountProvider) => {
@@ -238,6 +265,17 @@ function App() {
         <header
           className="app-header w-full flex items-center justify-between sticky top-0 z-30 select-none"
           data-tauri-drag-region
+          onDoubleClick={(e) => {
+            const target = e.target as HTMLElement
+            if (
+              target === e.currentTarget ||
+              target.hasAttribute('data-tauri-drag-region') ||
+              target.classList.contains('app-header') ||
+              target.classList.contains('app-title')
+            ) {
+              void toggleMaximizeWindow()
+            }
+          }}
         >
           {/* Left: Branding */}
           <div
@@ -262,39 +300,56 @@ function App() {
 
           {/* Center: Tabs */}
           <div className="flex-1 flex justify-center min-w-0 px-4" data-tauri-drag-region>
-            <div className="provider-tabs-nav" role="tablist" aria-label="Provider selection" data-no-drag>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeProvider === 'codex'}
-                className={`provider-tab-pill ${activeProvider === 'codex' ? 'provider-tab-pill-active' : ''}`}
-                onClick={() => handleSelectProvider('codex')}
-              >
-                <span className="provider-tab-title">ChatGPT</span>
-                <span className="provider-tab-count">
-                  {data?.accounts.filter((a) => (a.provider ?? 'codex') === 'codex').length ?? 0}
-                </span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeProvider === 'gemini'}
-                className={`provider-tab-pill ${activeProvider === 'gemini' ? 'provider-tab-pill-active' : ''}`}
-                onClick={() => handleSelectProvider('gemini')}
-              >
-                <span className="provider-tab-title">Gemini</span>
-                <span className="provider-tab-count">
-                  {data?.accounts.filter((a) => a.provider === 'gemini').length ?? 0}
-                </span>
-              </button>
-            </div>
+            {enabledProviders.length > 1 ? (
+              <div className="provider-tabs-nav" role="tablist" aria-label="Provider selection" data-no-drag>
+                {enabledProviders.includes('codex') && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeProvider === 'codex'}
+                    className={`provider-tab-pill ${activeProvider === 'codex' ? 'provider-tab-pill-active' : ''}`}
+                    onClick={() => handleSelectProvider('codex')}
+                  >
+                    <span className="provider-tab-title">ChatGPT</span>
+                    <span className="provider-tab-count">
+                      {data?.accounts.filter((a) => (a.provider ?? 'codex') === 'codex').length ?? 0}
+                    </span>
+                  </button>
+                )}
+                {enabledProviders.includes('gemini') && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeProvider === 'gemini'}
+                    className={`provider-tab-pill ${activeProvider === 'gemini' ? 'provider-tab-pill-active' : ''}`}
+                    onClick={() => handleSelectProvider('gemini')}
+                  >
+                    <span className="provider-tab-title">Gemini</span>
+                    <span className="provider-tab-count">
+                      {data?.accounts.filter((a) => a.provider === 'gemini').length ?? 0}
+                    </span>
+                  </button>
+                )}
+              </div>
+            ) : enabledProviders.length === 1 ? (
+              <div className="provider-tabs-nav" data-no-drag>
+                <div className="provider-tab-pill provider-tab-pill-active cursor-default">
+                  <span className="provider-tab-title">
+                    {enabledProviders[0] === 'codex' ? 'ChatGPT' : 'Gemini'}
+                  </span>
+                  <span className="provider-tab-count">
+                    {data?.accounts.filter((a) => (a.provider ?? 'codex') === enabledProviders[0]).length ?? 0}
+                  </span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Right: Actions / Controls */}
           <div className="flex items-center justify-end h-full shrink-0" data-no-drag>
             <button
               type="button"
-              className={`header-icon-btn ${privacyMode ? 'text-blue-400 bg-white/[0.08]' : ''} mr-1`}
+              className={`header-icon-btn ${privacyMode ? 'header-icon-btn-active' : ''} mr-1`}
               onClick={togglePrivacyMode}
               title={
                 privacyMode
