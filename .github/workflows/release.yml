@@ -256,7 +256,7 @@ jobs:
           cd dist/release
           rm -f SHA256SUMS-mac.txt
           shopt -s nullglob
-          artifacts=( *.dmg *.tar.gz )
+          artifacts=( *.dmg )
           shopt -u nullglob
           if [ ${#artifacts[@]} -gt 0 ]; then
             shasum -a 256 "${artifacts[@]}" > SHA256SUMS-mac.txt
@@ -277,7 +277,6 @@ jobs:
           name: macos-release
           path: |
             dist/release/*.dmg
-            dist/release/*.tar.gz
             dist/release/SHA256SUMS-mac.txt
           if-no-files-found: error
 
@@ -320,7 +319,6 @@ jobs:
           files: |
             dist/release/SwitchAI.exe
             dist/release/*.dmg
-            dist/release/*.tar.gz
             dist/release/SHA256SUMS.txt
           draft: false
           prerelease: false

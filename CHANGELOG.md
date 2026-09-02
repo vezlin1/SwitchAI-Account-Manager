@@ -5,6 +5,21 @@
 This file lists changes that are useful to SwitchAI users. Release dates are
 added when a version is published.
 
+## 1.1.0 — 2026-09-02
+
+### What's New:
+* **Session Import:** 1-click import to quickly pull active sessions from ChatGPT (Codex) or Google (Antigravity).
+* Revamped Hidden accounts tab.
+* Enhanced context menus with custom text field actions (Cut, Copy, Paste, Clear) and email/ID copying.
+* Improved real-time quota reset countdown timers.
+* Improved Antigravity process management (status is preserved when switching tabs).
+* Scoped search and subscription filters per provider (ChatGPT vs Gemini).
+* Protected drag-and-drop reordering during active search.
+* Added `Esc` key and backdrop click dismissal for modals.
+* Added titlebar double-click to maximize and restore the window.
+* Added 1-click technical error message copying.
+* General UI polish and stability improvements.
+
 ## 1.0.0 — 2026-09-02
 
 ### Main features

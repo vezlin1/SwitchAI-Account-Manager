@@ -100,27 +100,14 @@ if [[ -z "${BUNDLE_FLAG}" ]]; then
   BUNDLE_OUT="${REPO_ROOT}/src-tauri/target/${TARGET}/release/bundle"
 
   # Clean old artifacts
-  rm -f "${DIST_DIR}/"*.dmg "${DIST_DIR}/"*.tar.gz "${DIST_DIR}/SHA256SUMS-mac.txt"
+  rm -f "${DIST_DIR}/"*.dmg "${DIST_DIR}/SHA256SUMS-mac.txt"
 
-  # Copy DMG artifacts if present
+  # Copy DMG artifacts if present as SwitchAI_macos.dmg
   if [[ -d "${BUNDLE_OUT}/dmg" ]]; then
-    echo "==> [build-mac] Copying DMG artifacts..."
+    echo "==> [build-mac] Copying DMG artifact as SwitchAI_macos.dmg..."
     shopt -s nullglob
     for dmg_path in "${BUNDLE_OUT}/dmg/"*.dmg; do
-      cp -f "${dmg_path}" "${DIST_DIR}/"
-    done
-    shopt -u nullglob
-  fi
-
-  # Archive .app bundles
-  if [[ -d "${BUNDLE_OUT}/macos" ]]; then
-    echo "==> [build-mac] Archiving .app bundle to .tar.gz..."
-    shopt -s nullglob
-    for app_path in "${BUNDLE_OUT}/macos/"*.app; do
-      if [[ -d "${app_path}" ]]; then
-        app_name="$(basename "${app_path}")"
-        tar -czf "${DIST_DIR}/${app_name}.tar.gz" -C "${BUNDLE_OUT}/macos" "${app_name}"
-      fi
+      cp -f "${dmg_path}" "${DIST_DIR}/SwitchAI_macos.dmg"
     done
     shopt -u nullglob
   fi
@@ -131,7 +118,7 @@ echo "==> [build-mac] Generating SHA256 checksums..."
 cd "${DIST_DIR}"
 rm -f SHA256SUMS-mac.txt
 shopt -s nullglob
-artifacts=( *.dmg *.tar.gz )
+artifacts=( *.dmg )
 shopt -u nullglob
 
 if [[ ${#artifacts[@]} -gt 0 ]]; then
