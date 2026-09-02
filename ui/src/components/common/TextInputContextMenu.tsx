@@ -113,7 +113,9 @@ export function TextInputContextMenu() {
       setNativeInputValue(target, nextValue)
       target.setSelectionRange(selStart, selStart)
       target.focus()
-    } catch {}
+    } catch {
+      /* ignore clipboard permission error */
+    }
     setMenu(null)
   }
 
@@ -122,7 +124,9 @@ export function TextInputContextMenu() {
     try {
       await navigator.clipboard.writeText(selectedText)
       target.focus()
-    } catch {}
+    } catch {
+      /* ignore clipboard permission error */
+    }
     setMenu(null)
   }
 
@@ -136,7 +140,9 @@ export function TextInputContextMenu() {
         target.setSelectionRange(nextCursor, nextCursor)
         target.focus()
       }
-    } catch {}
+    } catch {
+      /* ignore clipboard permission error */
+    }
     setMenu(null)
   }
 

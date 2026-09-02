@@ -102,18 +102,28 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
     let rec_codex = recommended_account_for_provider(data, AccountProvider::Codex);
     let rec_gemini = recommended_account_for_provider(data, AccountProvider::Gemini);
 
-    let codex_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "codex");
-    let gemini_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "gemini");
+    let codex_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "codex");
+    let gemini_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "gemini");
 
     let mut builder = MenuBuilder::new(app);
-    let has_codex = codex_enabled && data
-        .accounts
-        .iter()
-        .any(|a| a.provider == AccountProvider::Codex);
-    let has_gemini = gemini_enabled && data
-        .accounts
-        .iter()
-        .any(|a| a.provider == AccountProvider::Gemini);
+    let has_codex = codex_enabled
+        && data
+            .accounts
+            .iter()
+            .any(|a| a.provider == AccountProvider::Codex);
+    let has_gemini = gemini_enabled
+        && data
+            .accounts
+            .iter()
+            .any(|a| a.provider == AccountProvider::Gemini);
 
     if has_codex || has_gemini {
         if has_codex {
@@ -181,7 +191,11 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
         let is_active = active_id == Some(account.id.as_str());
         let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
         let active_marker = if is_active { " (active)" } else { "" };
-        let relogin_marker = if needs_relogin { " (re-login required)" } else { "" };
+        let relogin_marker = if needs_relogin {
+            " (re-login required)"
+        } else {
+            ""
+        };
         let quota = if needs_relogin {
             String::new()
         } else {
@@ -189,10 +203,11 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 .map(|remaining| format!(" · {remaining:.0}% left"))
                 .unwrap_or_else(|| " · quota unavailable".to_string())
         };
-        let is_recommended = !needs_relogin && match account.provider {
-            AccountProvider::Codex => rec_codex.is_some_and(|item| item.id == account.id),
-            AccountProvider::Gemini => rec_gemini.is_some_and(|item| item.id == account.id),
-        };
+        let is_recommended = !needs_relogin
+            && match account.provider {
+                AccountProvider::Codex => rec_codex.is_some_and(|item| item.id == account.id),
+                AccountProvider::Gemini => rec_gemini.is_some_and(|item| item.id == account.id),
+            };
         let recommended_marker = if is_recommended { " (recommended)" } else { "" };
         let item = MenuItemBuilder::with_id(
             format!("{prefix}{}", account.id),
@@ -219,8 +234,16 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
 }
 
 pub fn tray_tooltip(data: &AppData) -> String {
-    let codex_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "codex");
-    let gemini_enabled = data.app_settings.enabled_providers.iter().any(|p| p == "gemini");
+    let codex_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "codex");
+    let gemini_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "gemini");
     let rec_codex = if codex_enabled {
         recommended_account_for_provider(data, AccountProvider::Codex)
     } else {

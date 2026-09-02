@@ -79,7 +79,9 @@ function App() {
   useEffect(() => {
     if (enabledProviders.length > 0 && !enabledProviders.includes(activeProvider)) {
       const fallback = enabledProviders[0]
-      setActiveProvider(fallback)
+      queueMicrotask(() => {
+        setActiveProvider(fallback)
+      })
       syncedProviderRef.current = fallback
       try {
         localStorage.setItem('switchai:last-active-provider', fallback)

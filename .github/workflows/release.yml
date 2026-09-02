@@ -316,13 +316,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: SwitchAI Account Manager ${{ github.ref_name }}
-          body: |
-            First public release of SwitchAI Account Manager.
-
-            Manage and switch ChatGPT/Codex and Antigravity/Gemini accounts,
-            check quotas, and keep account data on your computer.
-
-            See the README for installation and usage instructions.
+          body_path: RELEASE_NOTES.md
           files: |
             dist/release/SwitchAI.exe
             dist/release/*.dmg
