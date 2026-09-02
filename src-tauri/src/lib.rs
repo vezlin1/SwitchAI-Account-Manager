@@ -262,6 +262,7 @@ pub fn run() {
             commands::switch_active_gemini_account_and_restart_antigravity,
             commands::get_antigravity_surfaces,
             commands::import_antigravity_account,
+            commands::import_codex_account,
             commands::set_account_order,
             commands::refresh_account_subscription,
             commands::refresh_account_quota,

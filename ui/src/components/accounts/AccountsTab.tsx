@@ -207,7 +207,7 @@ export function AccountsTab({
         <Suspense fallback={null}>
           <ConfirmDialog
             title="Delete account?"
-          message={`Delete ${pendingDelete.email ?? 'this account'} from SwitchAI? This permanently deletes stored tokens and settings for this account.`}
+            message={`Delete ${pendingDelete.email ?? 'this account'} from SwitchAI? This permanently deletes stored tokens and settings for this account.`}
             confirmLabel="Delete"
             variant="danger"
             busy={actions.busyKeys.has(`delete:${pendingDelete.id}`)}
@@ -274,14 +274,22 @@ export function AccountsTab({
             provider={currentProvider}
             refreshingAll={actions.refreshingAll}
             addingAccount={oauth.busy}
-            importingAntigravity={actions.busyKeys.has('import:antigravity')}
+            importingSession={
+              currentProvider === 'gemini'
+                ? actions.busyKeys.has('import:antigravity')
+                : actions.busyKeys.has('import:codex')
+            }
             appSettings={data.appSettings}
             autoRefreshStatus={autoRefreshStatus}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
             onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
             onCancelAddAccount={oauth.cancelLogin}
-            onImportAntigravity={currentProvider === 'gemini' ? () => void actions.importAntigravity() : undefined}
+            onImportSession={
+              currentProvider === 'gemini'
+                ? () => void actions.importAntigravity()
+                : () => void actions.importCodex()
+            }
             onRefreshAll={() => void actions.refreshAll(currentProvider)}
           />
 

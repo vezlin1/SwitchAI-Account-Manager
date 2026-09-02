@@ -271,6 +271,21 @@ export function useAccountsActions({
     }
   }, [beginOp, endOp, reportWarnings, setData, setProviderError])
 
+  const importCodex = useCallback(async () => {
+    const key: BusyKey = 'import:codex'
+    beginOp(key)
+    try {
+      setProviderError('codex', null)
+      const response = await api.importCodexAccount()
+      setData(response.state)
+      reportWarnings(response.warnings, 'codex')
+    } catch (err) {
+      setProviderError('codex', describeIpcError(err))
+    } finally {
+      endOp(key)
+    }
+  }, [beginOp, endOp, reportWarnings, setData, setProviderError])
+
   return {
     busyKeys,
     refreshingAll,
@@ -287,6 +302,7 @@ export function useAccountsActions({
     refreshAccount,
     saveAppSettings,
     refreshAll,
-    importAntigravity
+    importAntigravity,
+    importCodex
   }
 }

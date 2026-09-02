@@ -377,7 +377,7 @@ fn authenticated_account_label(email: Option<&str>, account_id: Option<&str>) ->
         .to_string()
 }
 
-fn save_authenticated_account(
+pub fn save_authenticated_account(
     data: &mut AppData,
     tokens: Tokens,
     email: Option<String>,

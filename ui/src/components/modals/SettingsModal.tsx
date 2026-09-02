@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Download, Loader2, Settings, Upload, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Download, Loader2, Settings, Upload, X } from 'lucide-react'
 import type { Account, AppData, AppSettings, AutoRefreshStatus } from '../../types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { Switch } from '../common/Switch'
@@ -58,7 +58,7 @@ export function SettingsModal({
     }
   }
 
-  const exportVault = () => {
+  const exportVault = async () => {
     try {
       const payload = JSON.stringify({
         version: 1,
@@ -66,19 +66,64 @@ export function SettingsModal({
         accountCount: accounts.length,
         accounts
       }, null, 2)
+      const defaultFileName = `switchai_accounts_backup_${new Date().toISOString().slice(0, 10)}.json`
+
+      // Try native OS "Save As" file picker dialog
+      const win = window as unknown as {
+        showSaveFilePicker?: (options: {
+          suggestedName?: string
+          types?: Array<{
+            description?: string
+            accept: Record<string, string[]>
+          }>
+        }) => Promise<{
+          createWritable: () => Promise<{
+            write: (data: string) => Promise<void>
+            close: () => Promise<void>
+          }>
+        }>
+      }
+
+      if (typeof win.showSaveFilePicker === 'function') {
+        try {
+          const handle = await win.showSaveFilePicker({
+            suggestedName: defaultFileName,
+            types: [
+              {
+                description: 'JSON Backup (*.json)',
+                accept: { 'application/json': ['.json'] }
+              }
+            ]
+          })
+          const writable = await handle.createWritable()
+          await writable.write(payload)
+          await writable.close()
+          setVaultSuccess(`Backup exported successfully (${accounts.length} accounts)`)
+          setTimeout(() => setVaultSuccess(null), 3000)
+          return
+        } catch (pickerErr: unknown) {
+          // If the user cancelled the dialog, do not show an error
+          if (pickerErr instanceof Error && pickerErr.name === 'AbortError') {
+            return
+          }
+          console.warn('showSaveFilePicker error, falling back to download:', pickerErr)
+        }
+      }
+
+      // Fallback for browsers / environments without showSaveFilePicker
       const blob = new Blob([payload], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `codex_accounts_backup_${new Date().toISOString().slice(0, 10)}.json`
+      link.download = defaultFileName
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
-      setVaultSuccess('Backup exported successfully')
+      setVaultSuccess(`Backup exported successfully (${accounts.length} accounts)`)
       setTimeout(() => setVaultSuccess(null), 3000)
     } catch (err) {
-      setError(`Export failed: ${err}`)
+      setError(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -171,20 +216,50 @@ export function SettingsModal({
                   </div>
 
                   <div className="settings-interval-custom" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      id="refresh-interval"
-                      type="number"
-                      min={15}
-                      max={1440}
-                      step={1}
-                      className="settings-number-input"
-                      value={draft.autoRefreshIntervalMinutes}
-                      onChange={(event) => setDraft((prev) => ({
-                        ...prev,
-                        autoRefreshIntervalMinutes: Number(event.target.value)
-                      }))}
-                      aria-label="Custom refresh interval in minutes"
-                    />
+                    <div className="settings-stepper-box">
+                      <input
+                        id="refresh-interval"
+                        type="number"
+                        min={15}
+                        max={1440}
+                        step={1}
+                        className="settings-number-input"
+                        value={draft.autoRefreshIntervalMinutes}
+                        onChange={(event) => setDraft((prev) => ({
+                          ...prev,
+                          autoRefreshIntervalMinutes: Math.max(15, Math.min(1440, Number(event.target.value) || 15))
+                        }))}
+                        aria-label="Custom refresh interval in minutes"
+                      />
+                      <div className="settings-stepper-controls">
+                        <button
+                          type="button"
+                          className="settings-stepper-btn"
+                          tabIndex={-1}
+                          onClick={() => setDraft((prev) => ({
+                            ...prev,
+                            autoRefreshIntervalMinutes: Math.min(1440, (Number(prev.autoRefreshIntervalMinutes) || 15) + 1)
+                          }))}
+                          title="Increase interval"
+                          aria-label="Increase interval"
+                        >
+                          <ChevronUp size={10} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="settings-stepper-btn"
+                          tabIndex={-1}
+                          onClick={() => setDraft((prev) => ({
+                            ...prev,
+                            autoRefreshIntervalMinutes: Math.max(15, (Number(prev.autoRefreshIntervalMinutes) || 15) - 1)
+                          }))}
+                          title="Decrease interval"
+                          aria-label="Decrease interval"
+                        >
+                          <ChevronDown size={10} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
                     <span className="settings-interval-unit">min</span>
                   </div>
                 </div>

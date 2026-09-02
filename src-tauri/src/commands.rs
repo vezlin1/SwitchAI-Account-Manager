@@ -670,6 +670,84 @@ pub async fn import_antigravity_account(
 }
 
 #[tauri::command]
+pub async fn import_codex_account(
+    state: State<'_, Arc<SharedState>>,
+) -> Result<StateResultDto, IpcErrorDto> {
+    command_result(
+        async {
+            let external = crate::codex::read_codex_auth()?.ok_or_else(|| {
+                AppError::msg(
+                    "No active ChatGPT session was found in ~/.codex/auth.json. Sign in to ChatGPT or use Sign in with ChatGPT."
+                )
+            })?;
+
+            let tokens = external.tokens;
+            let account_id = external.account_id;
+            let email = external.email;
+
+            let saved_id = {
+                let mut data = lock_data(state.inner())?;
+                let mut next = data.clone();
+                let account = crate::oauth::save_authenticated_account(
+                    &mut next,
+                    tokens,
+                    email,
+                    account_id,
+                    None,
+                )?;
+
+                next.active_account_id = Some(account.id.clone());
+                commit_active_selection_changes(&mut data, next, true, false)?;
+                account.id
+            };
+
+            let refresh_result = RefreshService::new(Arc::clone(state.inner()))
+                .refresh_account_subscription(&saved_id)
+                .await;
+
+            let mut warnings = Vec::new();
+            let final_state = match refresh_result {
+                Ok(result) => {
+                    if let Some(msg) = result.warning {
+                        warnings.push(warning(
+                            "subscription_refresh_warning",
+                            "account",
+                            msg,
+                            Some(saved_id.clone()),
+                            true,
+                        ));
+                    }
+                    result.state
+                }
+                Err(err) => {
+                    warnings.push(warning(
+                        "subscription_refresh_warning",
+                        "account",
+                        err.user_message(),
+                        Some(saved_id.clone()),
+                        true,
+                    ));
+                    lock_data(state.inner())?.clone()
+                }
+            };
+
+            crate::tray_dashboard::refresh_dashboard(state.inner());
+            crate::tray_dashboard::emit_state_changed(
+                state.inner(),
+                "accounts",
+                vec![saved_id],
+            );
+
+            Ok(StateResultDto {
+                state: AppDataDto::from(&final_state),
+                warnings,
+            })
+        }
+        .await,
+    )
+}
+
+#[tauri::command]
 pub fn set_account_order(
     account_ids: Vec<String>,
     state: State<'_, Arc<SharedState>>,

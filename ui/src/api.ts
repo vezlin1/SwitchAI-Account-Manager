@@ -96,6 +96,7 @@ export const api = {
   getAntigravitySurfaces: () =>
     invoke<AntigravitySurface[]>('get_antigravity_surfaces'),
   importAntigravityAccount: () => invoke<StateResult>('import_antigravity_account'),
+  importCodexAccount: () => invoke<StateResult>('import_codex_account'),
   setAccountOrder: (accountIds: string[]) =>
     invoke<AppData>('set_account_order', { accountIds }),
   refreshAccountSubscription: (accountId: string) =>

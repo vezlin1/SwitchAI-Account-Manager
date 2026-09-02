@@ -52,6 +52,15 @@ SwitchAI also helps you find a healthy account with the most useful remaining
 quota, refreshes account information in the background, and stays available
 from the system tray.
 
+## Supported Applications & Environments
+
+SwitchAI seamlessly manages authentication and quotas across your AI development toolchain:
+
+| Ecosystem | Supported Tools & Surfaces | Integration Details |
+| --- | --- | --- |
+| **OpenAI / ChatGPT** | • **ChatGPT Desktop** (Windows & macOS)<br>• **Codex CLI** (`~/.codex/auth.json`) | Instant session switching, real-time rate limit monitoring, automatic desktop app restart |
+| **Google / Antigravity** | • **Antigravity 2.0**<br>• **Antigravity CLI** (`agy`)<br>• **Antigravity IDE** | Multi-surface target switching, OS Credential Vault integration, 5h & weekly quota breakdown |
+
 ## Download
 
 Download the latest version from

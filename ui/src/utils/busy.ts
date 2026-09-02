@@ -3,6 +3,7 @@ export type BusyKey =
   | 'settings:subscription-visibility'
   | 'refresh-all'
   | 'import:antigravity'
+  | 'import:codex'
   | 'usage:clear'
   | 'usage:all'
   | `delete:${string}`

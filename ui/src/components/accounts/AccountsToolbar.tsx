@@ -1,4 +1,5 @@
-import { ArrowDownToLine, Loader2, LogIn, RefreshCw, Search, UserPlus, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowDownToLine, ChevronDown, Loader2, LogIn, RefreshCw, Search, UserPlus, X } from 'lucide-react'
 import type { AccountProvider, AppSettings, AutoRefreshStatus } from '../../types'
 
 type AccountsToolbarProps = {
@@ -6,6 +7,7 @@ type AccountsToolbarProps = {
   provider?: AccountProvider
   refreshingAll: boolean
   addingAccount: boolean
+  importingSession?: boolean
   importingAntigravity?: boolean
   appSettings: AppSettings
   autoRefreshStatus: AutoRefreshStatus | null
@@ -13,6 +15,7 @@ type AccountsToolbarProps = {
   onSearchChange?: (value: string) => void
   onAddAccount: () => void
   onCancelAddAccount: () => void
+  onImportSession?: () => void
   onImportAntigravity?: () => void
   onRefreshAll: () => void
 }
@@ -28,6 +31,7 @@ export function AccountsToolbar({
   provider,
   refreshingAll,
   addingAccount,
+  importingSession,
   importingAntigravity = false,
   appSettings,
   autoRefreshStatus,
@@ -35,56 +39,156 @@ export function AccountsToolbar({
   onSearchChange,
   onAddAccount,
   onCancelAddAccount,
+  onImportSession,
   onImportAntigravity,
   onRefreshAll
 }: AccountsToolbarProps) {
   const isGoogle = provider === 'gemini'
-  const accountActionBusy = addingAccount || importingAntigravity
+  const isImporting = importingSession ?? importingAntigravity
+  const accountActionBusy = addingAccount || isImporting
+  const handleImport = onImportSession ?? onImportAntigravity
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!dropdownOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!dropdownRef.current?.contains(event.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setDropdownOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [dropdownOpen])
 
   return (
     <div className="accounts-toolbar flex items-center justify-between gap-3 flex-wrap">
       <div className="accounts-toolbar-primary inline-flex items-center gap-2 flex-wrap">
-        <button
-          type="button"
-          className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm"
-          onClick={onAddAccount}
-          disabled={accountActionBusy || refreshingAll}
-          title={isGoogle ? 'Add an Antigravity account with Google OAuth' : 'Add a ChatGPT account'}
-        >
-          {addingAccount
-            ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-            : isGoogle
-              ? <LogIn size={15} aria-hidden="true" />
-              : <UserPlus size={15} aria-hidden="true" />}
-          {addingAccount
-            ? (isGoogle ? 'Waiting for Google…' : 'Waiting for sign-in…')
-            : (isGoogle ? 'Sign in with Google' : 'Add account')}
-        </button>
+        {handleImport ? (
+          <div className="relative inline-flex items-center" ref={dropdownRef}>
+            <button
+              type="button"
+              className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+              onClick={() => {
+                if (accountActionBusy) return
+                setDropdownOpen((prev) => !prev)
+              }}
+              disabled={accountActionBusy || refreshingAll}
+              aria-haspopup="menu"
+              aria-expanded={dropdownOpen}
+              title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
+            >
+              {accountActionBusy ? (
+                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <UserPlus size={15} aria-hidden="true" />
+              )}
+              <span>
+                {addingAccount
+                  ? (isGoogle ? 'Waiting for Google…' : 'Waiting for sign-in…')
+                  : isImporting
+                    ? 'Importing session…'
+                    : 'Add Account'}
+              </span>
+              {!accountActionBusy && (
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform duration-150 opacity-80 ${dropdownOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              )}
+            </button>
 
-        {addingAccount && (
+            {dropdownOpen && !accountActionBusy && (
+              <div
+                className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 animate-fadeIn"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.06] transition-colors cursor-pointer group"
+                  onClick={() => {
+                    setDropdownOpen(false)
+                    onAddAccount()
+                  }}
+                >
+                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 transition-colors mt-0.5 shrink-0">
+                    <LogIn size={15} />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                      {isGoogle ? 'Sign in with Google' : 'Sign in with ChatGPT'}
+                    </span>
+                    <span className="text-[11px] text-ag-muted leading-snug">
+                      Authorize account via browser OAuth
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.06] transition-colors cursor-pointer group"
+                  onClick={() => {
+                    setDropdownOpen(false)
+                    handleImport()
+                  }}
+                >
+                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 transition-colors mt-0.5 shrink-0">
+                    <ArrowDownToLine size={15} />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                      Import current session
+                    </span>
+                    <span className="text-[11px] text-ag-muted leading-snug">
+                      {isGoogle
+                        ? 'Import active Antigravity credentials'
+                        : 'Import active session from ~/.codex/auth.json'}
+                    </span>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
           <button
-            className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface transition-all"
-            onClick={onCancelAddAccount}
-            title="Cancel sign-in"
-            aria-label="Cancel sign-in"
             type="button"
+            className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 inline-flex items-center gap-2 disabled:opacity-60 transition-all shadow-sm cursor-pointer"
+            onClick={onAddAccount}
+            disabled={accountActionBusy || refreshingAll}
+            title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
           >
-            <X size={15} aria-hidden="true" />
+            {addingAccount ? (
+              <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+            ) : (
+              <UserPlus size={15} aria-hidden="true" />
+            )}
+            {addingAccount ? 'Waiting for sign-in…' : 'Add account'}
           </button>
         )}
 
-        {isGoogle && onImportAntigravity && (
+        {accountActionBusy && (
           <button
+            className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface transition-all cursor-pointer"
+            onClick={onCancelAddAccount}
+            title="Cancel"
+            aria-label="Cancel"
             type="button"
-            className="h-9 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface inline-flex items-center gap-2 disabled:opacity-60 transition-all"
-            onClick={onImportAntigravity}
-            disabled={accountActionBusy || refreshingAll}
-            title="Import the Google account currently active in Antigravity"
           >
-            {importingAntigravity
-              ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-              : <ArrowDownToLine size={15} aria-hidden="true" />}
-            {importingAntigravity ? 'Importing…' : 'Import current session'}
+            <X size={15} aria-hidden="true" />
           </button>
         )}
 
