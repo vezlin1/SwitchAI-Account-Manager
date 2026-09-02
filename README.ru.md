@@ -33,6 +33,16 @@ SwitchAI — приложение для управления аккаунтам
 Приложение бесплатное, с открытым исходным кодом и не требует отдельного
 аккаунта SwitchAI.
 
+<p align="center">
+  <a href="docs/switchai-gemini-accounts.png">
+    <img src="docs/switchai-gemini-accounts.png" alt="SwitchAI: аккаунты Antigravity/Gemini, доступные лимиты, время сброса и подписки" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Аккаунты Antigravity/Gemini: лимиты, время сброса и переключение на одном экране. Нажмите, чтобы увеличить.</sub>
+</p>
+
 ## Зачем нужен SwitchAI
 
 | Все аккаунты вместе | Лимиты перед глазами | Простое переключение |

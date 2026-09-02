@@ -32,6 +32,16 @@ each one, and switch without copying authentication files by hand.
 
 It is free, open source, and does not require a separate SwitchAI account.
 
+<p align="center">
+  <a href="docs/switchai-gemini-accounts.png">
+    <img src="docs/switchai-gemini-accounts.png" alt="SwitchAI account manager showing Antigravity/Gemini accounts, available quotas, reset times, and subscription plans" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Antigravity/Gemini accounts: quotas, reset times, and switching in one view. Click to enlarge.</sub>
+</p>
+
 ## Why SwitchAI
 
 | All accounts together | Limits at a glance | Safer switching |
