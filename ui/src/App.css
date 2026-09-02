@@ -92,7 +92,7 @@ a {
 
 .provider-tab-pill:hover {
   color: rgb(var(--ag-text));
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .provider-tab-pill-active {
@@ -122,7 +122,7 @@ a {
   color: #ffffff;
 }
 
-/* Header Icon Button (e.g. Settings) */
+/* Header Icon Button (e.g. Settings, Privacy) */
 .header-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -138,9 +138,9 @@ a {
 }
 
 .header-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
   color: rgb(var(--ag-text));
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.05);
 }
 
 /* Standard Windows Caption Control Buttons */
@@ -456,7 +456,7 @@ a {
 }
 
 .account-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .account-row-active {
@@ -464,7 +464,7 @@ a {
 }
 
 .account-row-active:hover {
-  background: rgba(59, 130, 246, 0.05);
+  background: rgba(59, 130, 246, 0.045);
 }
 
 .account-row td {
@@ -542,7 +542,7 @@ a {
 }
 
 .account-identity-button:hover .account-identity-email {
-  color: rgb(var(--ag-primary));
+  color: #ffffff;
 }
 
 .account-identity-arrow {
@@ -554,8 +554,8 @@ a {
 }
 
 .account-identity-button:hover .account-identity-arrow {
-  color: rgb(var(--ag-primary));
-  transform: translateX(3px);
+  color: rgb(var(--ag-text));
+  transform: translateX(2px);
 }
 
 
@@ -1257,8 +1257,8 @@ a {
 }
 
 .settings-card:hover {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.015);
+  border-color: rgba(255, 255, 255, 0.07);
 }
 
 .settings-card-header {
@@ -1320,7 +1320,7 @@ a {
 }
 
 .settings-pill:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.04);
   color: rgb(var(--ag-text));
 }
 
@@ -1821,4 +1821,20 @@ a {
 .gemini-target-pill:active:not(:disabled) {
   transform: translateY(0.5px);
 }
+
+/* ==========================================================================
+   Privacy Mode Styles
+   ========================================================================== */
+.privacy-masked {
+  filter: blur(4.5px);
+  user-select: none;
+  transition: filter 0.15s ease;
+  display: inline-block;
+  letter-spacing: 0.02em;
+}
+
+.privacy-masked:hover {
+  filter: blur(2px);
+}
+
 

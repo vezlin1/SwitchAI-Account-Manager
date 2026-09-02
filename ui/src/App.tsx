@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Maximize2, Minimize2, Minus, Settings, X } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Maximize2, Minimize2, Minus, Settings, X } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getVersion } from '@tauri-apps/api/app'
 import './App.css'
@@ -10,6 +10,7 @@ import { useAutoRefreshStatus } from './hooks/useAutoRefreshStatus'
 import { useAppData } from './hooks/useAppData'
 import { usePlatform } from './hooks/usePlatform'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { usePrivacy } from './context/PrivacyContext.tsx'
 import type { Account, AccountProvider } from './types'
 
 const RecoveryModal = lazy(() =>
@@ -42,6 +43,7 @@ function App() {
   } = useAppData()
   const autoRefresh = useAutoRefreshStatus()
   const { isMac } = usePlatform()
+  const { privacyMode, togglePrivacyMode } = usePrivacy()
   const [activeProvider, setActiveProvider] = useState<AccountProvider>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -178,9 +180,10 @@ function App() {
       'mod+,': () => setSettingsOpen((prev) => !prev),
       'mod+1': () => handleSelectProvider('codex'),
       'mod+2': () => handleSelectProvider('gemini'),
+      'mod+shift+p': () => togglePrivacyMode(),
       'mod+w': () => void closeWindow()
     }),
-    [handleSelectProvider]
+    [handleSelectProvider, togglePrivacyMode]
   )
   useKeyboardShortcuts(shortcuts, !isModalOpen)
 
@@ -204,7 +207,7 @@ function App() {
   )
 
   return (
-    <div className="app-outer h-full w-full text-ag-text">
+    <div className={`app-outer h-full w-full text-ag-text ${privacyMode ? 'privacy-mode' : ''}`}>
       <a className="skip-link" href="#main-content">Skip to accounts</a>
       {startup?.mode === 'recovery_required' && recovery && (
         <Suspense fallback={null}>
@@ -289,6 +292,25 @@ function App() {
 
           {/* Right: Actions / Controls */}
           <div className="flex items-center justify-end h-full shrink-0" data-no-drag>
+            <button
+              type="button"
+              className={`header-icon-btn ${privacyMode ? 'text-blue-400 bg-white/[0.08]' : ''} mr-1`}
+              onClick={togglePrivacyMode}
+              title={
+                privacyMode
+                  ? isMac
+                    ? 'Privacy Mode: ON (Click to reveal sensitive data · ⇧⌘P)'
+                    : 'Privacy Mode: ON (Click to reveal sensitive data · Ctrl+Shift+P)'
+                  : isMac
+                    ? 'Privacy Mode: OFF (Click to hide sensitive data · ⇧⌘P)'
+                    : 'Privacy Mode: OFF (Click to hide sensitive data · Ctrl+Shift+P)'
+              }
+              aria-label={privacyMode ? 'Disable privacy mode' : 'Enable privacy mode'}
+              aria-pressed={privacyMode}
+            >
+              {privacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+
             <button
               className={`header-icon-btn ${isMac ? 'mr-3' : 'mr-1'}`}
               onClick={() => setSettingsOpen(true)}

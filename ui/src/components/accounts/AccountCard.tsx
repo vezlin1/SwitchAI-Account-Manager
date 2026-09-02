@@ -5,6 +5,7 @@ import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
 import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
+import { usePrivacy } from '../../context/PrivacyContext.tsx'
 
 type AccountCardProps = {
   account: Account
@@ -35,6 +36,7 @@ export const AccountCard = memo(function AccountCard({
   onRemove,
   onToggleInAll
 }: AccountCardProps) {
+  const { privacyMode, maskEmail } = usePrivacy()
   const switching = busyKeys.has(`switch:${account.id}`)
   const removing = busyKeys.has(`delete:${account.id}`)
   const needsRelogin = account.tokenHealth?.status === 'needs_relogin'
@@ -57,11 +59,14 @@ export const AccountCard = memo(function AccountCard({
           type="button"
           className="account-card-identity"
           onClick={(event) => onOpenDetails(account, event.currentTarget)}
-          aria-label={`Open details for ${account.email ?? 'account'}`}
+          aria-label={privacyMode ? 'Open details for account' : `Open details for ${account.email ?? 'account'}`}
         >
           <span className="account-card-identity-copy">
-            <span className="allow-select account-card-email" title={account.email ?? 'Unknown email'}>
-              {account.email ?? 'Unknown email'}
+            <span
+              className={`allow-select account-card-email ${privacyMode ? 'privacy-masked' : ''}`}
+              title={privacyMode ? 'Sensitive data hidden (Privacy Mode)' : (account.email ?? 'Unknown email')}
+            >
+              {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unknown email')}
             </span>
             <span className="account-card-subline">
               {isActive ? 'Active' : ''}

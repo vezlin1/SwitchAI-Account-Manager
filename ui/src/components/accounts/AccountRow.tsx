@@ -6,6 +6,7 @@ import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
 import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
+import { usePrivacy } from '../../context/PrivacyContext.tsx'
 
 type AccountRowProps = {
   account: Account
@@ -48,6 +49,7 @@ export const AccountRow = memo(function AccountRow({
   onRemove,
   onOpenContextMenu
 }: AccountRowProps) {
+  const { privacyMode, maskEmail } = usePrivacy()
   const quota = account.quota
   const switching = busyKeys.has(`switch:${account.id}`)
   const removing = busyKeys.has(`delete:${account.id}`)
@@ -77,7 +79,7 @@ export const AccountRow = memo(function AccountRow({
           ref={setDragHandleRef}
           className={`account-drag-handle${orderBusy ? ' account-drag-handle-disabled' : ''}`}
           title="Drag to reorder"
-          aria-label={`Reorder ${account.email ?? 'account'}`}
+          aria-label={`Reorder ${privacyMode ? 'account' : (account.email ?? 'account')}`}
           disabled={orderBusy}
           {...dragHandleAttributes}
           {...dragHandleListeners}
@@ -94,12 +96,15 @@ export const AccountRow = memo(function AccountRow({
             if (selection && selection.trim().length > 0) return
             onOpenDetails(account, event.currentTarget)
           }}
-          aria-label={`Open details for ${account.email ?? 'account'}`}
+          aria-label={privacyMode ? 'Open details for account' : `Open details for ${account.email ?? 'account'}`}
         >
           <div className="account-identity-copy min-w-0 flex-1 flex flex-col gap-0.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="allow-select account-identity-email font-semibold text-xs text-ag-text truncate" title={account.email ?? 'Unknown email'}>
-                {account.email ?? 'Unknown email'}
+              <span
+                className={`allow-select account-identity-email font-semibold text-xs text-ag-text truncate ${privacyMode ? 'privacy-masked' : ''}`}
+                title={privacyMode ? 'Sensitive data hidden (Privacy Mode)' : (account.email ?? 'Unknown email')}
+              >
+                {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unknown email')}
               </span>
               {isActive && (
                 <span className="account-active-badge">

@@ -17,6 +17,7 @@ import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUti
 import { QuotaCell } from './QuotaCell'
 import { quotaColumnsForAccounts, quotaWindowForColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
+import { usePrivacy } from '../../context/PrivacyContext.tsx'
 
 type AccountDetailsProps = {
   account: Account
@@ -97,8 +98,9 @@ export function AccountDetails({
   onRefreshQuota,
   onDetectSubscription
 }: AccountDetailsProps) {
-  const [copiedId, setCopiedId] = useState(false)
+  const { privacyMode, maskEmail, maskAccountId } = usePrivacy()
   const headingRef = useRef<HTMLHeadingElement>(null)
+  const [copiedId, setCopiedId] = useState(false)
   const quotaColumns = useMemo(() => quotaColumnsForAccounts([account]), [account])
   const refreshingQuota = busyKeys.has(`quota:${account.id}`)
   const detectingSubscription = busyKeys.has(`subscription-detect:${account.id}`)
@@ -147,8 +149,14 @@ export function AccountDetails({
 
         <div className="account-details-title-group">
           <div className="account-details-title-line">
-            <h2 id="account-details-title" ref={headingRef} tabIndex={-1}>
-              {account.email ?? 'Unnamed account'}
+            <h2
+              id="account-details-title"
+              ref={headingRef}
+              tabIndex={-1}
+              className={privacyMode ? 'privacy-masked' : ''}
+              title={privacyMode ? 'Sensitive data hidden (Privacy Mode)' : (account.email ?? 'Unnamed account')}
+            >
+              {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unnamed account')}
             </h2>
             {isActive && (
               <span className="account-detail-badge">
@@ -270,7 +278,9 @@ export function AccountDetails({
               <div>
                 <dt>Account ID</dt>
                 <dd className="allow-select flex items-center justify-between gap-1.5">
-                  <span className="truncate">{account.accountId ?? 'Not reported'}</span>
+                  <span className={`truncate ${privacyMode ? 'privacy-masked' : ''}`}>
+                    {privacyMode ? maskAccountId(account.accountId) : (account.accountId ?? 'Not reported')}
+                  </span>
                   {account.accountId && (
                     <button
                       type="button"

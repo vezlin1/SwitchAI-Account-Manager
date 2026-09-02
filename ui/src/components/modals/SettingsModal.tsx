@@ -206,61 +206,6 @@ export function SettingsModal({
             />
           </div>
 
-          {/* Antigravity Target Surfaces */}
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <span className="settings-card-label">Antigravity switch targets</span>
-            </div>
-            <div className="settings-card-content border-t border-white/[0.04] pt-3 mt-1.5 flex flex-col gap-2">
-              <p className="text-xs text-ag-muted leading-relaxed">
-                Choose which environments switch active accounts when activating a Gemini account.
-              </p>
-              <div className="flex flex-col gap-2 pt-1">
-                {[
-                  { id: 'antigravity', label: 'Antigravity (Desktop App)', desc: 'Restarts Antigravity.exe' },
-                  { id: 'ide', label: 'Antigravity IDE', desc: 'Restarts Antigravity IDE.exe' },
-                  { id: 'cli', label: 'Antigravity CLI', desc: 'Updates credentials for agy terminal' }
-                ].map((surface) => {
-                  const currentTargets = draft.geminiSwitchTargets ?? ['antigravity', 'ide', 'cli']
-                  const isChecked = currentTargets.includes(surface.id)
-                  const isOnly = isChecked && currentTargets.length <= 1
-
-                  return (
-                    <div
-                      key={surface.id}
-                      className="flex items-center justify-between py-1 px-1.5 rounded-lg hover:bg-white/[0.02] cursor-pointer"
-                      onClick={() => {
-                        if (isChecked && isOnly) return
-                        const next = isChecked
-                          ? currentTargets.filter((t) => t !== surface.id)
-                          : [...currentTargets, surface.id]
-                        setDraft((prev) => ({ ...prev, geminiSwitchTargets: next }))
-                      }}
-                    >
-                      <div className="flex flex-col">
-                        <span className="text-xs font-medium text-ag-text">{surface.label}</span>
-                        <span className="text-[11px] text-ag-muted">{surface.desc}</span>
-                      </div>
-                      <Switch
-                        id={`surface-${surface.id}`}
-                        checked={isChecked}
-                        disabled={isChecked && isOnly}
-                        onChange={(checked) => {
-                          if (!checked && isOnly) return
-                          const next = checked
-                            ? [...currentTargets, surface.id]
-                            : currentTargets.filter((t) => t !== surface.id)
-                          setDraft((prev) => ({ ...prev, geminiSwitchTargets: next }))
-                        }}
-                        ariaLabel={surface.label}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-
           {/* Backup & Vault */}
           <div className="settings-card">
             <div className="settings-card-header">

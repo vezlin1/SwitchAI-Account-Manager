@@ -1,4 +1,4 @@
-import { ArrowDownToLine, Loader2, LogIn, RefreshCw, Search, ShieldCheck, UserPlus, X } from 'lucide-react'
+import { ArrowDownToLine, Loader2, LogIn, RefreshCw, Search, UserPlus, X } from 'lucide-react'
 import type { AccountProvider, AppSettings, AutoRefreshStatus } from '../../types'
 
 type AccountsToolbarProps = {
@@ -131,14 +131,6 @@ export function AccountsToolbar({
       </div>
 
       <div className="accounts-toolbar-status ml-auto text-xs text-ag-muted flex items-center gap-2.5 flex-wrap justify-end">
-        <div
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-ag-surface/50 border border-ag-border/70 text-xs text-ag-muted cursor-default"
-          title="Network connectivity: Endpoints operational"
-        >
-          <ShieldCheck size={13} className="text-emerald-400" />
-          <span className="hidden sm:inline font-medium text-[11px] text-ag-text">Network Ready</span>
-        </div>
-
         <div
           className="inline-flex items-center gap-1.5 cursor-default select-none"
           title={
