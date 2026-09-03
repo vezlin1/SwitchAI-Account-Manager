@@ -173,6 +173,13 @@ pub struct StateResultDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountRefreshResultDto {
+    pub account: AccountDto,
+    pub warnings: Vec<CommandWarningDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecoveryStatusDto {
     pub error: String,
     pub data_directory: String,

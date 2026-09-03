@@ -8,6 +8,7 @@ import {
   type BusyCounters,
   type BusyKey
 } from '../utils/busy'
+import { mergeAccountSnapshot } from '../utils/stateMerge'
 
 type UseAccountsActionsArgs = {
   setData: (next: AppDataUpdater) => AppData | null
@@ -200,7 +201,14 @@ export function useAccountsActions({
     try {
       setProviderError(provider, null)
       const response = await api.refreshAccountSubscription(accountId)
-      setData(response.state)
+      setData((latest) => {
+        if (!latest) return latest
+        const index = latest.accounts.findIndex((a) => a.id === response.account.id)
+        if (index === -1) return latest
+        const accounts = [...latest.accounts]
+        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
+        return { ...latest, accounts }
+      })
       reportWarnings(response.warnings, provider)
     } catch (err) {
       setProviderError(provider, describeIpcError(err))
@@ -216,7 +224,14 @@ export function useAccountsActions({
     try {
       setProviderError(provider, null)
       const response = await api.refreshAccountQuota(accountId)
-      setData(response.state)
+      setData((latest) => {
+        if (!latest) return latest
+        const index = latest.accounts.findIndex((a) => a.id === response.account.id)
+        if (index === -1) return latest
+        const accounts = [...latest.accounts]
+        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
+        return { ...latest, accounts }
+      })
       reportWarnings(response.warnings, provider)
     } catch (err) {
       setProviderError(provider, describeIpcError(err))

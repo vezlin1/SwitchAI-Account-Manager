@@ -14,9 +14,16 @@ const LEGACY_STORAGE_DIR_NAME: &str = "CodexAccountManagerLite";
 const STATE_FILE_NAME: &str = "state.json";
 
 fn base_data_dir() -> AppResult<PathBuf> {
-    dirs::data_local_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| AppError::msg("Cannot determine data directory"))
+    #[cfg(test)]
+    {
+        return Ok(std::env::temp_dir().join("switchai-test-app-data"));
+    }
+    #[allow(unreachable_code)]
+    {
+        dirs::data_local_dir()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| AppError::msg("Cannot determine data directory"))
+    }
 }
 
 pub fn app_storage_dir() -> AppResult<PathBuf> {
@@ -81,8 +88,9 @@ fn read_persisted_state(path: &Path) -> AppResult<(PersistedAppData, String)> {
         context: "Failed to read state file",
         source,
     })?;
+    let sanitized = text.trim_start_matches('\u{feff}');
     let parsed =
-        serde_json::from_str::<PersistedAppData>(&text).map_err(|source| AppError::Json {
+        serde_json::from_str::<PersistedAppData>(sanitized).map_err(|source| AppError::Json {
             context: "Failed to parse state file",
             source,
         })?;
@@ -396,7 +404,7 @@ fn with_rollback_error(primary: AppError, failures: Vec<String>) -> AppError {
     ))
 }
 
-pub fn persist_app_data(current: &AppData, next: &AppData) -> AppResult<()> {
+pub(crate) fn persist_app_data_at(current: &AppData, next: &AppData, path: &Path) -> AppResult<()> {
     let mut changed_secrets: Vec<(String, Option<Tokens>)> = Vec::new();
 
     for next_account in &next.accounts {
@@ -419,8 +427,7 @@ pub fn persist_app_data(current: &AppData, next: &AppData) -> AppResult<()> {
         changed_secrets.push((next_account.id.clone(), previous));
     }
 
-    let path = app_storage_file()?;
-    if let Err(error) = write_serialized_state(&path, next, true) {
+    if let Err(error) = write_serialized_state(path, next, true) {
         let failures = rollback_secrets(&changed_secrets);
         return Err(with_rollback_error(error, failures));
     }
@@ -445,12 +452,54 @@ pub fn persist_app_data(current: &AppData, next: &AppData) -> AppResult<()> {
     Ok(())
 }
 
+pub fn persist_app_data(current: &AppData, next: &AppData) -> AppResult<()> {
+    let path = app_storage_file()?;
+    persist_app_data_at(current, next, &path)
+}
+
 pub fn commit_app_data(current: &mut AppData, next: AppData) -> AppResult<()> {
     persist_app_data(current, &next)?;
     let mut next = next;
     next.revision = current.revision.saturating_add(1);
     *current = next;
     Ok(())
+}
+
+pub(crate) fn commit_state_data_at(
+    state: &std::sync::Arc<crate::app_state::SharedState>,
+    next: AppData,
+    path: &Path,
+) -> AppResult<AppData> {
+    let _commit_guard = state
+        .commit_gate
+        .lock()
+        .map_err(|_| AppError::msg("State commit gate poisoned"))?;
+
+    let current_snapshot = {
+        let data = crate::app_state::lock_data(state)?;
+        data.clone()
+    };
+
+    persist_app_data_at(&current_snapshot, &next, path)?;
+
+    let committed_state = {
+        let mut data = crate::app_state::lock_data(state)?;
+        let mut next = next;
+        next.revision = data.revision.saturating_add(1);
+        *data = next.clone();
+        next
+    };
+
+    crate::tray_dashboard::refresh_dashboard_and_alerts(state);
+    Ok(committed_state)
+}
+
+pub fn commit_state_data(
+    state: &std::sync::Arc<crate::app_state::SharedState>,
+    next: AppData,
+) -> AppResult<AppData> {
+    let path = app_storage_file()?;
+    commit_state_data_at(state, next, &path)
 }
 
 #[derive(Debug, Clone)]
@@ -938,5 +987,31 @@ mod tests {
         next.revision = current.revision.saturating_add(1);
         *current = next;
         Ok(())
+    }
+
+    #[test]
+    fn commit_state_data_updates_revision_and_state() {
+        let dir = test_dir();
+        let path = dir.join("state.json");
+        let initial = AppData {
+            revision: 3,
+            ..AppData::default()
+        };
+        let state = std::sync::Arc::new(
+            crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
+        );
+
+        let mut next = crate::app_state::lock_data(&state).unwrap().clone();
+        next.app_settings.auto_check_updates = false;
+
+        let committed =
+            super::commit_state_data_at(&state, next, &path).expect("commit state data");
+        assert_eq!(committed.revision, 4);
+        assert!(!committed.app_settings.auto_check_updates);
+
+        let in_state = crate::app_state::lock_data(&state).unwrap().clone();
+        assert_eq!(in_state.revision, 4);
+        assert!(!in_state.app_settings.auto_check_updates);
+        let _ = fs::remove_dir_all(dir);
     }
 }

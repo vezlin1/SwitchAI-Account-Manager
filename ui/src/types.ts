@@ -105,6 +105,11 @@ export type StateResult = {
   warnings: CommandWarning[]
 }
 
+export type AccountRefreshResult = {
+  account: Account
+  warnings: CommandWarning[]
+}
+
 export type SwitchAccountRestartResponse = {
   state: AppData
   restartWarning: string | null

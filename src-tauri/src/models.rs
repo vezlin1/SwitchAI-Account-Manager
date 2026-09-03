@@ -399,6 +399,31 @@ impl AppData {
         }
         self
     }
+
+    pub fn active_account_id_for_provider(&self, provider: AccountProvider) -> Option<&str> {
+        match provider {
+            AccountProvider::Codex => self.active_account_id.as_deref(),
+            AccountProvider::Gemini => self.active_gemini_account_id.as_deref(),
+        }
+    }
+
+    pub fn set_active_account_id_for_provider(
+        &mut self,
+        provider: AccountProvider,
+        account_id: Option<String>,
+    ) {
+        match provider {
+            AccountProvider::Codex => self.active_account_id = account_id,
+            AccountProvider::Gemini => self.active_gemini_account_id = account_id,
+        }
+    }
+
+    pub fn active_account_for_provider(&self, provider: AccountProvider) -> Option<&Account> {
+        let active_id = self.active_account_id_for_provider(provider)?;
+        self.accounts
+            .iter()
+            .find(|account| account.id == active_id && account.provider == provider)
+    }
 }
 
 pub fn now_ts() -> i64 {

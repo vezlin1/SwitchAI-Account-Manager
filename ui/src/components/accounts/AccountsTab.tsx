@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react'
 import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
@@ -136,10 +136,10 @@ export function AccountsTab({
     oauth.clearError(currentProvider)
     onClearAutoRefreshError?.()
   }
-  const openDetails = (account: Account, opener: HTMLElement) => {
+  const openDetails = useCallback((account: Account, opener: HTMLElement) => {
     detailsReturnFocusRef.current = opener
     setDetailsAccountId(account.id)
-  }
+  }, [])
 
   const toggleAccountInAll = (accountId: string) => {
     const next = setData((latest) => {
@@ -157,6 +157,27 @@ export function AccountsTab({
     })
     if (next) void actions.saveAppSettings(next.appSettings)
   }
+
+  const handleSwitch = useCallback(
+    (account: Account) => {
+      void actions.switchAccount(account)
+    },
+    [actions]
+  )
+
+  const handleRelogin = useCallback(
+    (account: Account) => {
+      void oauth.startLogin(account, account.provider ?? currentProvider)
+    },
+    [oauth, currentProvider]
+  )
+
+  const handleRemove = useCallback(
+    (account: Account) => {
+      setPendingDelete(account)
+    },
+    []
+  )
 
   const closeDetails = () => {
     setDetailsAccountId(null)
@@ -249,8 +270,8 @@ export function AccountsTab({
               refreshingAll={actions.refreshingAll}
               autoRefreshing={Boolean(autoRefreshStatus?.inFlight)}
               onBack={closeDetails}
-              onSwitch={(account) => void actions.switchAccount(account)}
-              onRelogin={(account) => void oauth.startLogin(account, account.provider ?? currentProvider)}
+              onSwitch={handleSwitch}
+              onRelogin={handleRelogin}
               onRefreshQuota={actions.refreshAccount}
               onDetectSubscription={actions.detectSubscription}
             />
@@ -339,9 +360,9 @@ export function AccountsTab({
             hiddenAccountIds={hiddenAccountIds}
             onReorder={(activeId, overId) => void reorderAccounts(activeId, overId)}
             onOpenDetails={openDetails}
-            onSwitch={(account: Account) => void actions.switchAccount(account)}
-            onRelogin={(account) => void oauth.startLogin(account, account.provider ?? currentProvider)}
-            onRemove={(account) => setPendingDelete(account)}
+            onSwitch={handleSwitch}
+            onRelogin={handleRelogin}
+            onRemove={handleRemove}
             onToggleAccountInAll={toggleAccountInAll}
             onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
             onImportSession={

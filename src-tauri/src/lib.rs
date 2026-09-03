@@ -1,5 +1,4 @@
 pub mod providers;
-pub use providers::chatgpt::oauth;
 pub use providers::chatgpt::quota;
 pub use providers::chatgpt::sync as codex;
 pub use providers::gemini::oauth as oauth_gemini;
@@ -14,8 +13,10 @@ mod dto;
 mod errors;
 mod geo;
 mod models;
+pub mod oauth;
 mod persisted;
 pub mod portable_updater;
+pub mod process;
 mod refresh_service;
 mod secret_store;
 mod shell;
@@ -285,6 +286,10 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
+
+            if let WindowEvent::Focused(true) = event {
+                tray_dashboard::emit_state_changed_forced(&close_state, "all", Vec::new());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_startup_status,
@@ -331,5 +336,8 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        if let Some(state) = app.try_state::<Arc<SharedState>>() {
+            tray_dashboard::emit_state_changed_forced(&state, "all", Vec::new());
+        }
     }
 }

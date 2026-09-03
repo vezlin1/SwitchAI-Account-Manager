@@ -147,12 +147,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> AppResult<()> {
 
 pub fn write_atomic_with_backup(path: &Path, bytes: &[u8], private: bool) -> AppResult<()> {
     if path.exists() {
-        let existing = fs::read(path).map_err(|source| AppError::Io {
-            context: "Failed to read file before backup",
+        let backup = backup_path(path)?;
+        fs::copy(path, &backup).map_err(|source| AppError::Io {
+            context: "Failed to copy file before backup",
             source,
         })?;
-        let backup = backup_path(path)?;
-        write_atomic(&backup, &existing, private)?;
     }
 
     write_atomic(path, bytes, private)

@@ -399,25 +399,7 @@ pub fn clear_codex_auth() -> AppResult<()> {
 
 #[cfg(target_os = "windows")]
 fn is_chatgpt_running() -> AppResult<bool> {
-    let output = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq ChatGPT.exe", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether ChatGPT is still running",
-            source,
-        })?;
-
-    if !output.status.success() {
-        return Err(AppError::msg(format!(
-            "Failed to check whether ChatGPT is still running: {}",
-            output.status
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .to_ascii_lowercase()
-        .contains(&CHATGPT_PROCESS_IMAGE.to_ascii_lowercase()))
+    crate::process::is_process_running(CHATGPT_PROCESS_IMAGE)
 }
 
 #[cfg(target_os = "windows")]
@@ -463,15 +445,7 @@ pub fn restart_codex_process() -> AppResult<()> {
 
 #[cfg(target_os = "macos")]
 fn is_chatgpt_running() -> AppResult<bool> {
-    let output = Command::new("pgrep")
-        .arg("-x")
-        .arg("ChatGPT")
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether ChatGPT is still running",
-            source,
-        })?;
-    Ok(output.status.success())
+    crate::process::is_process_running("ChatGPT")
 }
 
 #[cfg(target_os = "macos")]

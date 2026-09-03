@@ -1,5 +1,6 @@
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { formatRemainingPercent, formatTimeUntil, isTimePast, remainingPercent } from '../../utils/format'
+import { useSharedTicker } from '../../hooks/useSharedTicker'
 
 function quotaClass(remaining: number, hasQuota: boolean): string {
   if (!hasQuota) return ''
@@ -16,18 +17,10 @@ type QuotaCellProps = {
 }
 
 export const QuotaCell = memo(function QuotaCell({ value, resetAt, title, isRefreshing = false }: QuotaCellProps) {
-  const [, setTick] = useState(0)
+  useSharedTicker(Boolean(resetAt))
   const remaining = remainingPercent(value)
   const barPercent = remaining ?? 0
   const hasQuota = remaining != null
-
-  useEffect(() => {
-    if (!resetAt) return
-    const interval = setInterval(() => {
-      setTick((t) => (t + 1) % 10000)
-    }, 30000)
-    return () => clearInterval(interval)
-  }, [resetAt])
 
   return (
     <div className="min-w-[160px]">

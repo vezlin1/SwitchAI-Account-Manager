@@ -17,7 +17,7 @@ import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUti
 import { QuotaCell } from './QuotaCell'
 import { quotaColumnsForAccounts, quotaWindowForColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
-import { usePrivacy } from '../../context/PrivacyContext.tsx'
+import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountDetailsProps = {
   account: Account

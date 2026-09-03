@@ -39,7 +39,7 @@ url = "2.5.8"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Credentials", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [profile.release]
 opt-level = 3

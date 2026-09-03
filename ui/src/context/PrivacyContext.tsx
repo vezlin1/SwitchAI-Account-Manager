@@ -1,38 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { maskAccountId, maskEmail } from '../utils/privacy'
+import { PrivacyContext } from './privacyContextDef'
 
 const PRIVACY_STORAGE_KEY = 'switchai:privacy-mode'
-
-export type PrivacyContextType = {
-  privacyMode: boolean
-  setPrivacyMode: (enabled: boolean) => void
-  togglePrivacyMode: () => void
-  maskEmail: (email?: string | null) => string
-  maskAccountId: (id?: string | null) => string
-}
-
-const PrivacyContext = createContext<PrivacyContextType | null>(null)
-
-export function maskEmail(email?: string | null): string {
-  if (!email) return '••••••'
-  const atIndex = email.indexOf('@')
-  if (atIndex <= 0) return '••••••••'
-  const local = email.slice(0, atIndex)
-  const domain = email.slice(atIndex)
-
-  if (local.length <= 2) {
-    return `${local[0]}•••${domain}`
-  }
-  if (local.length <= 4) {
-    return `${local[0]}••••${local.slice(-1)}${domain}`
-  }
-  return `${local.slice(0, 2)}••••••${local.slice(-1)}${domain}`
-}
-
-export function maskAccountId(id?: string | null): string {
-  if (!id) return '••••••••'
-  if (id.length <= 6) return '••••••••'
-  return `${id.slice(0, 3)}••••${id.slice(-3)}`
-}
 
 export function PrivacyProvider({ children }: { children: ReactNode }) {
   const [privacyMode, setPrivacyModeState] = useState<boolean>(() => {
@@ -72,18 +42,4 @@ export function PrivacyProvider({ children }: { children: ReactNode }) {
       {children}
     </PrivacyContext.Provider>
   )
-}
-
-export function usePrivacy(): PrivacyContextType {
-  const context = useContext(PrivacyContext)
-  if (!context) {
-    return {
-      privacyMode: false,
-      setPrivacyMode: () => undefined,
-      togglePrivacyMode: () => undefined,
-      maskEmail: (e) => e ?? '',
-      maskAccountId: (id) => id ?? ''
-    }
-  }
-  return context
 }

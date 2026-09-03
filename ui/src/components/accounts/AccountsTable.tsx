@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import { computeAccountStatusFlags } from './useAccountRowState'
 import {
   closestCenter,
   DndContext,
@@ -235,7 +236,7 @@ export function AccountsTable({
     }
   }
 
-  const openContextMenu = (event: ReactMouseEvent<HTMLTableRowElement>, account: Account) => {
+  const openContextMenu = useCallback((event: ReactMouseEvent<HTMLTableRowElement>, account: Account) => {
     event.preventDefault()
     const keyboardTriggered = event.clientX === 0 && event.clientY === 0
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -251,7 +252,7 @@ export function AccountsTable({
       opener,
       keyboardTriggered
     })
-  }
+  }, [])
 
   return (
     <div className="accounts-table-shell">
@@ -297,24 +298,33 @@ export function AccountsTable({
               </thead>
               <SortableContext items={accountIds} strategy={verticalListSortingStrategy}>
                 <tbody>
-                  {accounts.map((account) => (
-                    <SortableAccountRow
-                      key={account.id}
-                      account={account}
-                      isActive={activeAccountId === account.id}
-                      busyKeys={busyKeys}
-                      refreshingAll={refreshingAll}
-                      autoRefreshing={autoRefreshing}
-                      hiddenFromAll={hiddenAccountIds.includes(account.id)}
-                      quotaColumns={quotaColumns}
-                      orderBusy={orderBusy || isSearching}
-                      onOpenDetails={onOpenDetails}
-                      onSwitch={onSwitch}
-                      onRelogin={onRelogin}
-                      onRemove={onRemove}
-                      onOpenContextMenu={openContextMenu}
-                    />
-                  ))}
+                  {accounts.map((account) => {
+                    const statusFlags = computeAccountStatusFlags(
+                      account.id,
+                      busyKeys,
+                      refreshingAll,
+                      autoRefreshing
+                    )
+                    return (
+                      <SortableAccountRow
+                        key={account.id}
+                        account={account}
+                        isActive={activeAccountId === account.id}
+                        isSwitching={statusFlags.isSwitching}
+                        isRemoving={statusFlags.isRemoving}
+                        isRelogining={statusFlags.isRelogining}
+                        isRefreshing={statusFlags.isRefreshing}
+                        hiddenFromAll={hiddenAccountIds.includes(account.id)}
+                        quotaColumns={quotaColumns}
+                        orderBusy={orderBusy || isSearching}
+                        onOpenDetails={onOpenDetails}
+                        onSwitch={onSwitch}
+                        onRelogin={onRelogin}
+                        onRemove={onRemove}
+                        onOpenContextMenu={openContextMenu}
+                      />
+                    )
+                  })}
                 </tbody>
               </SortableContext>
             </table>
@@ -337,24 +347,33 @@ export function AccountsTable({
       ) : (
         <div className="accounts-mobile-view">
           <ul className="account-card-list">
-            {accounts.map((account) => (
-              <li key={account.id}>
-                <AccountCard
-                  account={account}
-                  isActive={activeAccountId === account.id}
-                  busyKeys={busyKeys}
-                  refreshingAll={refreshingAll}
-                  autoRefreshing={autoRefreshing}
-                  quotaColumns={quotaColumns}
-                  hiddenFromAll={hiddenAccountIds.includes(account.id)}
-                  onOpenDetails={onOpenDetails}
-                  onSwitch={onSwitch}
-                  onRelogin={onRelogin}
-                  onRemove={onRemove}
-                  onToggleInAll={onToggleAccountInAll}
-                />
-              </li>
-            ))}
+            {accounts.map((account) => {
+              const statusFlags = computeAccountStatusFlags(
+                account.id,
+                busyKeys,
+                refreshingAll,
+                autoRefreshing
+              )
+              return (
+                <li key={account.id}>
+                  <AccountCard
+                    account={account}
+                    isActive={activeAccountId === account.id}
+                    isSwitching={statusFlags.isSwitching}
+                    isRemoving={statusFlags.isRemoving}
+                    isRelogining={statusFlags.isRelogining}
+                    isRefreshing={statusFlags.isRefreshing}
+                    quotaColumns={quotaColumns}
+                    hiddenFromAll={hiddenAccountIds.includes(account.id)}
+                    onOpenDetails={onOpenDetails}
+                    onSwitch={onSwitch}
+                    onRelogin={onRelogin}
+                    onRemove={onRemove}
+                    onToggleInAll={onToggleAccountInAll}
+                  />
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}
@@ -378,9 +397,10 @@ export function AccountsTable({
 type SortableAccountRowProps = {
   account: Account
   isActive: boolean
-  busyKeys: ReadonlySet<string>
-  refreshingAll: boolean
-  autoRefreshing: boolean
+  isSwitching: boolean
+  isRemoving: boolean
+  isRelogining: boolean
+  isRefreshing: boolean
   hiddenFromAll: boolean
   quotaColumns: QuotaColumn[]
   orderBusy: boolean
@@ -394,9 +414,10 @@ type SortableAccountRowProps = {
 const SortableAccountRow = memo(function SortableAccountRow({
   account,
   isActive,
-  busyKeys,
-  refreshingAll,
-  autoRefreshing,
+  isSwitching,
+  isRemoving,
+  isRelogining,
+  isRefreshing,
   hiddenFromAll,
   quotaColumns,
   orderBusy,
@@ -431,9 +452,10 @@ const SortableAccountRow = memo(function SortableAccountRow({
     <AccountRow
       account={account}
       isActive={isActive}
-      busyKeys={busyKeys}
-      refreshingAll={refreshingAll}
-      autoRefreshing={autoRefreshing}
+      isSwitching={isSwitching}
+      isRemoving={isRemoving}
+      isRelogining={isRelogining}
+      isRefreshing={isRefreshing}
       hiddenFromAll={hiddenFromAll}
       quotaColumns={quotaColumns}
       orderBusy={orderBusy}

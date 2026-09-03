@@ -14,7 +14,8 @@ use crate::oauth_gemini::{GoogleTokenSet, google_reauth_required, refresh_google
 use crate::refresh_service::AccountRefreshOutcome;
 use crate::storage::commit_app_data;
 
-const CLOUD_CODE_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const CLOUD_CODE_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+const CLOUD_CODE_FALLBACK_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const CLOUD_CODE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 const TOKEN_REFRESH_SKEW_SECONDS: i64 = 15 * 60;
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
@@ -176,14 +177,15 @@ fn sanitized_error(body: &[u8]) -> String {
         .to_string()
 }
 
-async fn post_cloud_code(
+async fn post_cloud_code_to_url(
     client: &Client,
     tokens: &Tokens,
+    base_url: &str,
     path: &'static str,
     body: &Value,
     context: &'static str,
 ) -> AppResult<Vec<u8>> {
-    let response = antigravity_request(client, &format!("{CLOUD_CODE_BASE_URL}{path}"), tokens)
+    let response = antigravity_request(client, &format!("{base_url}{path}"), tokens)
         .timeout(CLOUD_CODE_REQUEST_TIMEOUT)
         .json(body)
         .send()
@@ -206,6 +208,32 @@ async fn post_cloud_code(
         retry_after_seconds,
         details: sanitized_error(&error_body),
     })
+}
+
+async fn post_cloud_code(
+    client: &Client,
+    tokens: &Tokens,
+    path: &'static str,
+    body: &Value,
+    context: &'static str,
+) -> AppResult<Vec<u8>> {
+    match post_cloud_code_to_url(client, tokens, CLOUD_CODE_BASE_URL, path, body, context).await {
+        Ok(bytes) => Ok(bytes),
+        Err(primary_err) => {
+            // Antigravity language server runs against daily-cloudcode-pa.googleapis.com.
+            // If the primary daily endpoint is unreachable or errors, fallback to legacy cloudcode-pa.googleapis.com.
+            post_cloud_code_to_url(
+                client,
+                tokens,
+                CLOUD_CODE_FALLBACK_BASE_URL,
+                path,
+                body,
+                context,
+            )
+            .await
+            .map_err(|_| primary_err)
+        }
+    }
 }
 
 fn tier_label(response: &LoadCodeAssistResponse) -> Option<String> {

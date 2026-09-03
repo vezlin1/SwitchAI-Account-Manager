@@ -604,37 +604,15 @@ pub fn detect_installed_antigravity_surfaces() -> Vec<String> {
 
 #[cfg(target_os = "windows")]
 pub fn check_running_antigravity_surfaces() -> (bool, bool) {
-    let output = match Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq Antigravity*", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        Ok(out) if out.status.success() => out,
-        _ => return (false, false),
-    };
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut app_running = false;
-    let mut ide_running = false;
-
-    for line in text.lines() {
-        let lower = line.trim().to_ascii_lowercase();
-        if lower.starts_with("antigravity ide.exe") || lower.contains("antigravity ide.exe") {
-            ide_running = true;
-        } else if lower.starts_with("antigravity.exe") || lower.contains("antigravity.exe") {
-            app_running = true;
-        }
-    }
-
-    (app_running, ide_running)
+    let running =
+        crate::process::is_named_process_running(&["Antigravity.exe", "Antigravity IDE.exe"]);
+    (running[0], running[1])
 }
 
 #[cfg(target_os = "macos")]
 pub fn check_running_antigravity_surfaces() -> (bool, bool) {
-    (
-        is_antigravity_running().unwrap_or(false),
-        is_antigravity_ide_running().unwrap_or(false),
-    )
+    let running = crate::process::is_named_process_running(&["Antigravity", "Antigravity IDE"]);
+    (running[0], running[1])
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -685,36 +663,12 @@ pub fn get_antigravity_surfaces() -> Vec<crate::dto::AntigravitySurfaceDto> {
 
 #[cfg(target_os = "windows")]
 pub fn is_antigravity_running() -> AppResult<bool> {
-    let output = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq Antigravity.exe", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether Antigravity is running",
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(AppError::msg(format!(
-            "Could not query Antigravity processes ({})",
-            output.status
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .to_ascii_lowercase()
-        .contains("antigravity.exe"))
+    crate::process::is_process_running("Antigravity.exe")
 }
 
 #[cfg(target_os = "macos")]
 pub fn is_antigravity_running() -> AppResult<bool> {
-    let output = Command::new("pgrep")
-        .arg("-x")
-        .arg("Antigravity")
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether Antigravity is running",
-            source,
-        })?;
-    Ok(output.status.success())
+    crate::process::is_process_running("Antigravity")
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -856,36 +810,12 @@ pub fn restart_antigravity_process() -> AppResult<()> {
 
 #[cfg(target_os = "windows")]
 pub fn is_antigravity_ide_running() -> AppResult<bool> {
-    let output = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq Antigravity IDE.exe", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether Antigravity IDE is running",
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(AppError::msg(format!(
-            "Could not query Antigravity IDE processes ({})",
-            output.status
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .to_ascii_lowercase()
-        .contains("antigravity ide.exe"))
+    crate::process::is_process_running("Antigravity IDE.exe")
 }
 
 #[cfg(target_os = "macos")]
 pub fn is_antigravity_ide_running() -> AppResult<bool> {
-    let output = Command::new("pgrep")
-        .arg("-x")
-        .arg("Antigravity IDE")
-        .output()
-        .map_err(|source| AppError::Io {
-            context: "Failed to check whether Antigravity IDE is running",
-            source,
-        })?;
-    Ok(output.status.success())
+    crate::process::is_process_running("Antigravity IDE")
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

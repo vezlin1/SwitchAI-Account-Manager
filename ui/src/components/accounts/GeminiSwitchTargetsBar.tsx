@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import { AppWindow, Code2, Info, Terminal } from 'lucide-react'
 import { api } from '../../api'
 import type { AntigravitySurface, AntigravitySurfaceId, AppSettings } from '../../types'
+import {
+  ANTIGRAVITY_SURFACES_CACHE_KEY,
+  getInitialSurfaces,
+  setCachedSurfaces
+} from '../../utils/antigravitySurfaces'
 
 type GeminiSwitchTargetsBarProps = {
   appSettings: AppSettings
@@ -12,52 +17,6 @@ const SURFACE_ICONS: Record<AntigravitySurfaceId, typeof AppWindow> = {
   antigravity: AppWindow,
   ide: Code2,
   cli: Terminal
-}
-
-const CACHE_KEY = 'switchai.antigravity_surfaces_cache'
-
-const DEFAULT_SURFACES: AntigravitySurface[] = [
-  { id: 'antigravity', name: 'Antigravity', description: 'Desktop App', installed: true, running: false, path: null },
-  { id: 'ide', name: 'Antigravity IDE', description: 'AI Code Editor', installed: true, running: false, path: null },
-  { id: 'cli', name: 'Antigravity CLI', description: 'agy command-line', installed: true, running: false, path: null }
-]
-
-let globalCachedSurfaces: AntigravitySurface[] | null = null
-
-function getInitialSurfaces(): AntigravitySurface[] {
-  if (globalCachedSurfaces && globalCachedSurfaces.length > 0) {
-    return globalCachedSurfaces
-  }
-  if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(CACHE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw) as AntigravitySurface[]
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          globalCachedSurfaces = parsed
-          return parsed
-        }
-      }
-    } catch {
-      // ignore parse error
-    }
-  }
-  return DEFAULT_SURFACES
-}
-
-export function warmUpAntigravitySurfacesCache(): void {
-  void api.getAntigravitySurfaces()
-    .then((data) => {
-      if (data && data.length > 0) {
-        globalCachedSurfaces = data
-        try {
-          localStorage.setItem(CACHE_KEY, JSON.stringify(data))
-        } catch {
-          // ignore
-        }
-      }
-    })
-    .catch(() => undefined)
 }
 
 export function GeminiSwitchTargetsBar({
@@ -79,9 +38,9 @@ export function GeminiSwitchTargetsBar({
         const data = await api.getAntigravitySurfaces()
         if (cancelled || !data || data.length === 0) return
 
-        globalCachedSurfaces = data
+        setCachedSurfaces(data)
         try {
-          localStorage.setItem(CACHE_KEY, JSON.stringify(data))
+          localStorage.setItem(ANTIGRAVITY_SURFACES_CACHE_KEY, JSON.stringify(data))
         } catch {
           // ignore storage error
         }
@@ -106,26 +65,49 @@ export function GeminiSwitchTargetsBar({
       }
     }
 
-    // Immediate background fetch
-    void fetchSurfaces()
+    let interval: ReturnType<typeof setInterval> | null = null
 
-    // Smooth background polling every 5s while mounted
-    const interval = setInterval(() => {
-      void fetchSurfaces()
-    }, 5000)
+    const startPolling = () => {
+      if (!interval && !cancelled) {
+        interval = setInterval(() => {
+          void fetchSurfaces()
+        }, 5000)
+      }
+    }
+
+    const stopPolling = () => {
+      if (interval) {
+        clearInterval(interval)
+        interval = null
+      }
+    }
+
+    // Immediate background fetch and start polling if visible
+    void fetchSurfaces()
+    if (document.visibilityState === 'visible') {
+      startPolling()
+    }
 
     // Immediate refresh on window focus / tab visibility
     const handleFocus = () => {
       void fetchSurfaces()
     }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchSurfaces()
+        startPolling()
+      } else {
+        stopPolling()
+      }
+    }
     window.addEventListener('focus', handleFocus)
-    document.addEventListener('visibilitychange', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
       cancelled = true
-      clearInterval(interval)
+      stopPolling()
       window.removeEventListener('focus', handleFocus)
-      document.removeEventListener('visibilitychange', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [])
 

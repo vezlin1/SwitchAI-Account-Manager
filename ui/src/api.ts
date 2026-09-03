@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   AccountProvider,
+  AccountRefreshResult,
   AccountSnapshot,
   AntigravitySurface,
   AppData,
@@ -101,9 +102,9 @@ export const api = {
   setAccountOrder: (accountIds: string[]) =>
     invoke<AppData>('set_account_order', { accountIds }),
   refreshAccountSubscription: (accountId: string) =>
-    invoke<StateResult>('refresh_account_subscription', { accountId }),
+    invoke<AccountRefreshResult>('refresh_account_subscription', { accountId }),
   refreshAccountQuota: (accountId: string) =>
-    invoke<StateResult>('refresh_account_quota', { accountId }),
+    invoke<AccountRefreshResult>('refresh_account_quota', { accountId }),
   refreshAllQuotas: (provider?: AccountProvider) =>
     invoke<StateResult>('refresh_all_quotas', { provider }),
 

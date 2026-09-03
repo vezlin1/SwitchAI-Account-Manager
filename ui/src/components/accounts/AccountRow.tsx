@@ -6,14 +6,17 @@ import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
 import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
-import { usePrivacy } from '../../context/PrivacyContext.tsx'
+import { usePrivacy } from '../../context/usePrivacy'
+
+import { useAccountRowState } from './useAccountRowState'
 
 type AccountRowProps = {
   account: Account
   isActive: boolean
-  busyKeys: ReadonlySet<string>
-  refreshingAll: boolean
-  autoRefreshing: boolean
+  isSwitching: boolean
+  isRemoving: boolean
+  isRelogining: boolean
+  isRefreshing: boolean
   quotaColumns: QuotaColumn[]
   hiddenFromAll: boolean
   orderBusy?: boolean
@@ -32,9 +35,10 @@ type AccountRowProps = {
 export const AccountRow = memo(function AccountRow({
   account,
   isActive,
-  busyKeys,
-  refreshingAll,
-  autoRefreshing,
+  isSwitching,
+  isRemoving,
+  isRelogining,
+  isRefreshing,
   quotaColumns,
   hiddenFromAll,
   orderBusy = false,
@@ -51,21 +55,14 @@ export const AccountRow = memo(function AccountRow({
 }: AccountRowProps) {
   const { privacyMode, maskEmail } = usePrivacy()
   const quota = account.quota
-  const switching = busyKeys.has(`switch:${account.id}`)
-  const removing = busyKeys.has(`delete:${account.id}`)
-  const relogining = busyKeys.has(`relogin:${account.id}`)
-  const needsRelogin = account.tokenHealth?.status === 'needs_relogin'
-  const detectedSubscriptionDate = account.subscriptionDetectedAt ? account.subscriptionExpiresAt : null
-
-  const isAccountRefreshing =
-    refreshingAll ||
-    autoRefreshing ||
-    busyKeys.has('refresh') ||
-    busyKeys.has(`quota:${account.id}`) ||
-    busyKeys.has(`subscription-detect:${account.id}`) ||
-    busyKeys.has(`relogin:${account.id}`) ||
-    busyKeys.has(`account:${account.id}:quota`) ||
-    busyKeys.has(`account:${account.id}:subscription`)
+  const {
+    isSwitching: switching,
+    isRemoving: removing,
+    isRelogining: relogining,
+    isRefreshing: isAccountRefreshing,
+    needsRelogin,
+    detectedSubscriptionDate
+  } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
 
   return (
     <tr
@@ -152,7 +149,7 @@ export const AccountRow = memo(function AccountRow({
             type="button"
             className={`account-action${isActive ? ' account-action-active' : ''}`}
             onClick={() => onSwitch(account)}
-            disabled={isActive || needsRelogin || switching || refreshingAll || autoRefreshing || orderBusy}
+            disabled={isActive || needsRelogin || switching || isAccountRefreshing || orderBusy}
             title={
               isActive
                 ? (account.provider === 'gemini' ? 'Currently active in Antigravity / Gemini' : 'Currently active in Codex / ChatGPT')
@@ -172,7 +169,7 @@ export const AccountRow = memo(function AccountRow({
               type="button"
               className="account-action account-action-relogin"
               onClick={() => onRelogin(account)}
-              disabled={relogining || switching || removing || refreshingAll || autoRefreshing || orderBusy}
+              disabled={relogining || switching || removing || isAccountRefreshing || orderBusy}
               title="Re-login account"
               aria-label={`Re-login ${account.email ?? 'account'}`}
             >

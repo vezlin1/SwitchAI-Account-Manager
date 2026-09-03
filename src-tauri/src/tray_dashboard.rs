@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
-use tauri::{Emitter, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 #[cfg(not(test))]
 use tauri_plugin_notification::NotificationExt;
 
@@ -24,6 +24,30 @@ pub struct AppStateChangedEvent {
 }
 
 pub fn emit_state_changed(
+    state: &Arc<SharedState>,
+    scope: impl Into<String>,
+    account_ids: Vec<String>,
+) {
+    let Some(app) = state.app_handle.get() else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main")
+        && (!window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false))
+    {
+        return;
+    }
+    let revision = lock_data(state).map(|data| data.revision).unwrap_or(0);
+    let _ = app.emit(
+        "app-state-changed",
+        AppStateChangedEvent {
+            scope: scope.into(),
+            account_ids,
+            revision,
+        },
+    );
+}
+
+pub fn emit_state_changed_forced(
     state: &Arc<SharedState>,
     scope: impl Into<String>,
     account_ids: Vec<String>,

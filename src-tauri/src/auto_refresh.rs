@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use rand::RngExt;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::app_state::{
     SharedState, account_update_gate, lock_auto_refresh, lock_data, lock_last_refresh_result,
@@ -16,7 +16,7 @@ use crate::models::{
     TokenHealthStatus, now_ts,
 };
 use crate::refresh_service::{RefreshService, account_belongs_to_active_codex, refresh_gate_key};
-use crate::storage::commit_app_data;
+use crate::storage::commit_state_data;
 
 const MAX_PARALLEL_REFRESHES: usize = 5;
 const MAX_BACKOFF_SECONDS: i64 = 6 * 60 * 60;
@@ -309,13 +309,15 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
                         reachability.user_summary()
                     );
                     let now = now_ts();
-                    let mut data = lock_data(&shared)?;
-                    let mut next = data.clone();
-                    if let Some(acc) = next.accounts.iter_mut().find(|a| a.id == account_id) {
-                        acc.quota_next_refresh_at = Some(now.saturating_add(300));
-                    }
-                    commit_app_data(&mut data, next)?;
-                    drop(data);
+                    let next = {
+                        let data = lock_data(&shared)?;
+                        let mut next = data.clone();
+                        if let Some(acc) = next.accounts.iter_mut().find(|a| a.id == account_id) {
+                            acc.quota_next_refresh_at = Some(now.saturating_add(300));
+                        }
+                        next
+                    };
+                    commit_state_data(&shared, next)?;
                     return Ok(());
                 }
             }
@@ -420,28 +422,32 @@ async fn run_refresh_accounts_for_provider(
             if let Ok(mut runtime) = lock_auto_refresh(state) {
                 runtime.chatgpt_geo_blocked = true;
             }
-            let now = now_ts();
-            let mut data = lock_data(state)?;
-            let mut next = data.clone();
-            let settings = next.app_settings.clone().normalized();
-            let active_codex = next
-                .active_account_id
-                .as_ref()
-                .and_then(|active_id| next.accounts.iter().find(|a| &a.id == active_id).cloned());
-            let active_gemini_id = next.active_gemini_account_id.clone();
+            let (codex_ids, next) = {
+                let now = now_ts();
+                let data = lock_data(state)?;
+                let mut next = data.clone();
+                let settings = next.app_settings.clone().normalized();
+                let active_codex = next.active_account_id.as_ref().and_then(|active_id| {
+                    next.accounts.iter().find(|a| &a.id == active_id).cloned()
+                });
+                let active_gemini_id = next.active_gemini_account_id.clone();
 
-            let mut codex_ids = std::collections::HashSet::new();
-            for acc in &mut next.accounts {
-                if acc.provider == AccountProvider::Codex {
-                    codex_ids.insert(acc.id.clone());
-                    let is_active =
-                        is_account_active(acc, active_codex.as_ref(), active_gemini_id.as_deref());
-                    let delay = base_refresh_seconds(&settings, is_active).max(300);
-                    acc.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
+                let mut codex_ids = std::collections::HashSet::new();
+                for acc in &mut next.accounts {
+                    if acc.provider == AccountProvider::Codex {
+                        codex_ids.insert(acc.id.clone());
+                        let is_active = is_account_active(
+                            acc,
+                            active_codex.as_ref(),
+                            active_gemini_id.as_deref(),
+                        );
+                        let delay = base_refresh_seconds(&settings, is_active).max(300);
+                        acc.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
+                    }
                 }
-            }
-            commit_app_data(&mut data, next)?;
-            drop(data);
+                (codex_ids, next)
+            };
+            commit_state_data(state, next)?;
 
             work_items.retain(|item| !codex_ids.contains(&item.account_id));
             let warning_msg = reachability.user_summary();
@@ -535,30 +541,25 @@ async fn refresh_all_accounts_inner(
                 }
                 match refresh_single_account(&shared, &account_id).await {
                     Ok(refresh) => {
-                        update_account_schedule(&shared, &account_id, refresh.succeeded)?;
                         if let Ok(data) = lock_data(&shared)
                             && let Some(app) = shared.app_handle.get()
                             && let Some(acc) = data.accounts.iter().find(|a| a.id == account_id)
                         {
-                            let _ = app.emit("account-updated", crate::dto::AccountDto::from(acc));
+                            let should_emit = app
+                                .get_webview_window("main")
+                                .map(|w| {
+                                    w.is_visible().unwrap_or(false)
+                                        && !w.is_minimized().unwrap_or(false)
+                                })
+                                .unwrap_or(false);
+                            if should_emit {
+                                let _ =
+                                    app.emit("account-updated", crate::dto::AccountDto::from(acc));
+                            }
                         }
                         Ok(refresh)
                     }
-                    Err(error) => {
-                        let retry_after = error.retry_after_seconds();
-                        if let Err(schedule_error) = update_account_schedule_with_retry(
-                            &shared,
-                            &account_id,
-                            false,
-                            retry_after,
-                        ) {
-                            log::warn!(
-                                "Failed to persist quota backoff for {account_id}: {}",
-                                schedule_error.user_message()
-                            );
-                        }
-                        Err(error)
-                    }
+                    Err(error) => Err(error),
                 }
             }
             .await;
@@ -567,19 +568,25 @@ async fn refresh_all_accounts_inner(
     }
 
     let mut outcome = RefreshRunOutcome::default();
+    let mut schedule_updates = Vec::with_capacity(handles.len());
+
     for handle in handles {
         match handle.await {
             Ok((account_id, Ok(refresh))) => {
                 if refresh.succeeded {
                     outcome.succeeded = outcome.succeeded.saturating_add(1);
+                    schedule_updates.push((account_id, true, None));
                 } else {
                     outcome.failed = outcome.failed.saturating_add(1);
+                    schedule_updates.push((account_id.clone(), false, None));
                     outcome.failed_account_ids.push(account_id);
                 }
                 outcome.warnings.extend(refresh.warnings);
             }
-            Ok((account_id, Err(_))) => {
+            Ok((account_id, Err(error))) => {
                 outcome.failed = outcome.failed.saturating_add(1);
+                let retry_after = error.retry_after_seconds();
+                schedule_updates.push((account_id.clone(), false, retry_after));
                 outcome.failed_account_ids.push(account_id);
             }
             Err(_) => {
@@ -589,6 +596,13 @@ async fn refresh_all_accounts_inner(
                     .push("unknown-worker".to_string());
             }
         }
+    }
+
+    if let Err(error) = batch_update_account_schedules(state, &schedule_updates) {
+        log::warn!(
+            "Failed to persist batch account schedules: {}",
+            error.user_message()
+        );
     }
 
     outcome
@@ -850,8 +864,8 @@ pub(crate) fn update_account_schedule_with_retry(
     let chatgpt_geo_blocked = lock_auto_refresh(state)
         .map(|r| r.chatgpt_geo_blocked)
         .unwrap_or(false);
-    let (backed_off_accounts, next_run_at) = {
-        let mut data = lock_data(state)?;
+    let (backed_off_accounts, next_run_at, next) = {
+        let data = lock_data(state)?;
         let mut next = data.clone();
         let settings = next.app_settings.clone().normalized();
         let active_codex = next
@@ -888,9 +902,81 @@ pub(crate) fn update_account_schedule_with_retry(
             })
             .count() as u32;
         let next_run_at = next_scheduled_run_for_data(&next, &settings, chatgpt_geo_blocked);
-        commit_app_data(&mut data, next)?;
-        (backed_off_accounts, next_run_at)
+        (backed_off_accounts, next_run_at, next)
     };
+
+    commit_state_data(state, next)?;
+
+    let mut runtime = lock_auto_refresh(state)?;
+    runtime.status.backed_off_accounts = backed_off_accounts;
+    runtime.status.next_run_at = next_run_at;
+    drop(runtime);
+    notify_schedule_changed(state);
+    emit_status_changed(state);
+    Ok(())
+}
+
+fn batch_update_account_schedules(
+    state: &Arc<SharedState>,
+    updates: &[(String, bool, Option<i64>)],
+) -> AppResult<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    let now = now_ts();
+    let chatgpt_geo_blocked = lock_auto_refresh(state)
+        .map(|runtime| runtime.chatgpt_geo_blocked)
+        .unwrap_or(false);
+
+    let (backed_off_accounts, next_run_at, next) = {
+        let data = lock_data(state)?;
+        let mut next = data.clone();
+        let settings = next.app_settings.clone().normalized();
+        let active_codex = next
+            .active_account_id
+            .as_ref()
+            .and_then(|active_id| next.accounts.iter().find(|a| &a.id == active_id).cloned());
+        let active_gemini_id = next.active_gemini_account_id.clone();
+
+        for (account_id, succeeded, retry_after) in updates {
+            let Some(account) = next.accounts.iter_mut().find(|a| &a.id == account_id) else {
+                continue;
+            };
+            let is_active =
+                is_account_active(account, active_codex.as_ref(), active_gemini_id.as_deref());
+            if *succeeded {
+                account.quota_refresh_failures = 0;
+                let delay = base_refresh_seconds(&settings, is_active);
+                account.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
+            } else {
+                account.quota_refresh_failures = account.quota_refresh_failures.saturating_add(1);
+                if let Some(retry_after) = retry_after {
+                    account.quota_next_refresh_at = Some(now.saturating_add((*retry_after).max(5)));
+                } else {
+                    let multiplier = 1_i64 << account.quota_refresh_failures.min(6);
+                    let delay = base_refresh_seconds(&settings, is_active)
+                        .saturating_mul(multiplier)
+                        .min(MAX_BACKOFF_SECONDS);
+                    account.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
+                }
+            }
+        }
+
+        let backed_off_accounts = next
+            .accounts
+            .iter()
+            .filter(|account| {
+                account.token_health.status != TokenHealthStatus::NeedsRelogin
+                    && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
+                    && account.quota_refresh_failures > 0
+            })
+            .count() as u32;
+        let next_run_at = next_scheduled_run_for_data(&next, &settings, chatgpt_geo_blocked);
+        (backed_off_accounts, next_run_at, next)
+    };
+
+    commit_state_data(state, next)?;
 
     let mut runtime = lock_auto_refresh(state)?;
     runtime.status.backed_off_accounts = backed_off_accounts;
