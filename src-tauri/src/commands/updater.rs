@@ -173,13 +173,13 @@ pub fn dismiss_update_version_internal(
     state: &Arc<SharedState>,
     version: &str,
 ) -> AppResult<AppDataDto> {
-    let next = {
+    let (current, next) = {
         let current = lock_data(state)?;
         let mut next = current.clone();
         next.app_settings.ignored_update_version = Some(version.to_string());
-        next
+        (current, next)
     };
-    let committed = commit_state_data(state, next)?;
+    let committed = commit_state_data(state, current, next)?;
 
     *crate::app_state::lock_available_update(state)? = None;
     crate::tray_dashboard::emit_state_changed(state, "settings", Vec::new());

@@ -449,22 +449,61 @@ pub fn rollback_swap(exe_path: &Path, old_path: &Path, tmp_path: &Path) -> std::
     Ok(())
 }
 
-pub async fn perform_atomic_swap_and_restart(
-    app: &tauri::AppHandle,
-    state: &Arc<SharedState>,
-) -> AppResult<()> {
-    // Lifecycle safety 1: check OAuth flows
+fn ensure_no_active_oauth(state: &Arc<SharedState>) -> AppResult<()> {
     {
         let flows = crate::app_state::lock_flows(state)?;
-        if !flows.is_empty() {
+        if flows.values().any(|flow| {
+            matches!(
+                flow.status,
+                crate::oauth::OauthFlowStatus::WaitingCallback
+                    | crate::oauth::OauthFlowStatus::Exchanging
+            )
+        }) {
             return Err(AppError::msg(
                 "Cannot restart while an account authorization (OAuth) is in progress. Please finish or cancel it first.",
             ));
         }
     }
+    Ok(())
+}
+
+struct PausedAutoRefresh {
+    state: Arc<SharedState>,
+    resume_on_drop: bool,
+}
+
+impl PausedAutoRefresh {
+    fn new(state: &Arc<SharedState>) -> AppResult<Self> {
+        crate::auto_refresh::stop(state)?;
+        Ok(Self {
+            state: Arc::clone(state),
+            resume_on_drop: true,
+        })
+    }
+}
+
+impl Drop for PausedAutoRefresh {
+    fn drop(&mut self) {
+        if self.resume_on_drop {
+            // `start` consults current settings, so a disabled scheduler stays disabled.
+            if let Err(error) = crate::auto_refresh::start(&self.state) {
+                log::error!(
+                    "Failed to resume auto refresh after interrupted update: {}",
+                    error.user_message()
+                );
+            }
+        }
+    }
+}
+
+pub async fn perform_atomic_swap_and_restart(
+    app: &tauri::AppHandle,
+    state: &Arc<SharedState>,
+) -> AppResult<()> {
+    ensure_no_active_oauth(state)?;
 
     // Lifecycle safety 2: stop background auto refresh
-    let _ = crate::auto_refresh::stop(state);
+    let mut paused_refresh = PausedAutoRefresh::new(state)?;
 
     // Lifecycle safety 3: drain refresh_all_gate
     let _gate = state.refresh_all_gate.lock().await;
@@ -497,6 +536,7 @@ pub async fn perform_atomic_swap_and_restart(
     state
         .is_quitting
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    paused_refresh.resume_on_drop = false;
     app.exit(0);
     Ok(())
 }
@@ -553,6 +593,81 @@ pub fn handle_after_update_wait() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_oauth_flows_do_not_block_updates() {
+        let state = Arc::new(
+            SharedState::new_with_startup_error(crate::models::AppData::default(), None).unwrap(),
+        );
+        assert!(ensure_no_active_oauth(&state).is_ok());
+        for status in [
+            crate::oauth::OauthFlowStatus::Completed,
+            crate::oauth::OauthFlowStatus::Cancelled,
+            crate::oauth::OauthFlowStatus::Error("failed".into()),
+        ] {
+            let (mut flow, _) =
+                crate::oauth::build_oauth_flow(crate::models::AccountProvider::Codex, None, None)
+                    .unwrap();
+            flow.status = status;
+            crate::app_state::lock_flows(&state)
+                .unwrap()
+                .insert(flow.id.clone(), flow);
+        }
+        assert!(ensure_no_active_oauth(&state).is_ok());
+        for status in [
+            crate::oauth::OauthFlowStatus::WaitingCallback,
+            crate::oauth::OauthFlowStatus::Exchanging,
+        ] {
+            let (mut flow, _) =
+                crate::oauth::build_oauth_flow(crate::models::AccountProvider::Codex, None, None)
+                    .unwrap();
+            flow.status = status;
+            let id = flow.id.clone();
+            crate::app_state::lock_flows(&state)
+                .unwrap()
+                .insert(id.clone(), flow);
+            assert!(ensure_no_active_oauth(&state).is_err());
+            crate::app_state::lock_flows(&state).unwrap().remove(&id);
+        }
+    }
+
+    #[test]
+    fn failed_update_resumes_auto_refresh_but_respects_disabled_setting() {
+        for enabled in [true, false] {
+            let mut data = crate::models::AppData::default();
+            data.app_settings.auto_refresh_enabled = enabled;
+            let state = Arc::new(SharedState::new_with_startup_error(data, None).unwrap());
+            let fail_install = || -> AppResult<()> {
+                let _pause = PausedAutoRefresh::new(&state)?;
+                assert!(!crate::app_state::lock_auto_refresh(&state)?.status.enabled);
+                Err(AppError::msg("Simulated failed executable swap"))
+            };
+            assert!(fail_install().is_err());
+            let resumed = crate::app_state::lock_auto_refresh(&state)
+                .unwrap()
+                .status
+                .enabled;
+            crate::auto_refresh::stop(&state).unwrap();
+            assert_eq!(resumed, enabled);
+        }
+    }
+
+    #[test]
+    fn successful_update_keeps_auto_refresh_stopped() {
+        let state = Arc::new(
+            SharedState::new_with_startup_error(crate::models::AppData::default(), None).unwrap(),
+        );
+        {
+            let mut pause = PausedAutoRefresh::new(&state).unwrap();
+            pause.resume_on_drop = false;
+        }
+        assert!(
+            !crate::app_state::lock_auto_refresh(&state)
+                .unwrap()
+                .status
+                .enabled
+        );
+    }
 
     #[test]
     fn test_is_newer_version() {

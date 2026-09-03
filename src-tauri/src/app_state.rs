@@ -25,7 +25,6 @@ pub struct SharedState {
     pub is_quitting: AtomicBool,
     pub http_client: Client,
     pub available_update: Mutex<Option<crate::portable_updater::UpdateManifest>>,
-    pub commit_gate: Mutex<()>,
 }
 
 impl SharedState {
@@ -56,7 +55,6 @@ impl SharedState {
             is_quitting: AtomicBool::new(false),
             http_client,
             available_update: Mutex::new(None),
-            commit_gate: Mutex::new(()),
         })
     }
 }

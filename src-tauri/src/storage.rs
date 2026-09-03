@@ -467,39 +467,29 @@ pub fn commit_app_data(current: &mut AppData, next: AppData) -> AppResult<()> {
 
 pub(crate) fn commit_state_data_at(
     state: &std::sync::Arc<crate::app_state::SharedState>,
+    mut current: std::sync::MutexGuard<'_, AppData>,
     next: AppData,
     path: &Path,
 ) -> AppResult<AppData> {
-    let _commit_guard = state
-        .commit_gate
-        .lock()
-        .map_err(|_| AppError::msg("State commit gate poisoned"))?;
-
-    let current_snapshot = {
-        let data = crate::app_state::lock_data(state)?;
-        data.clone()
-    };
-
-    persist_app_data_at(&current_snapshot, &next, path)?;
-
-    let committed_state = {
-        let mut data = crate::app_state::lock_data(state)?;
-        let mut next = next;
-        next.revision = data.revision.saturating_add(1);
-        *data = next.clone();
-        next
-    };
+    persist_app_data_at(&current, &next, path)?;
+    let mut next = next;
+    next.revision = current.revision.saturating_add(1);
+    *current = next.clone();
+    drop(current);
 
     crate::tray_dashboard::refresh_dashboard_and_alerts(state);
-    Ok(committed_state)
+    Ok(next)
 }
 
+// Keep the data guard used to create `next` through persistence and publication.
+// Refresh and OAuth writers use this same mutex; a separate commit lock is insufficient.
 pub fn commit_state_data(
     state: &std::sync::Arc<crate::app_state::SharedState>,
+    current: std::sync::MutexGuard<'_, AppData>,
     next: AppData,
 ) -> AppResult<AppData> {
     let path = app_storage_file()?;
-    commit_state_data_at(state, next, &path)
+    commit_state_data_at(state, current, next, &path)
 }
 
 #[derive(Debug, Clone)]
@@ -990,6 +980,63 @@ mod tests {
     }
 
     #[test]
+    fn settings_save_preserves_rotated_tokens() {
+        let dir = test_dir();
+        let path = dir.join("state.json");
+        let mut account = account_with_tokens();
+        account.id = uuid::Uuid::new_v4().to_string();
+        let state = std::sync::Arc::new(
+            crate::app_state::SharedState::new_with_startup_error(
+                AppData {
+                    accounts: vec![account],
+                    ..AppData::default()
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        // A token refresh holds the same data mutex as the settings transaction.
+        let mut data = crate::app_state::lock_data(&state).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (saved_tx, saved_rx) = std::sync::mpsc::channel();
+        let writer_state = state.clone();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let current = crate::app_state::lock_data(&writer_state).unwrap();
+            let mut settings = current.clone();
+            settings.app_settings.auto_check_updates = false;
+            super::commit_state_data_at(&writer_state, current, settings, &writer_path).unwrap();
+            saved_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            saved_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        let mut refreshed = data.clone();
+        refreshed.accounts[0].tokens.refresh_token = "rotated-token".into();
+        // Exercise the existing refresh writer protocol (data mutex, no separate gate).
+        super::persist_app_data_at(&data, &refreshed, &path).unwrap();
+        refreshed.revision += 1;
+        *data = refreshed;
+        drop(data);
+        writer.join().unwrap();
+
+        let data = crate::app_state::lock_data(&state).unwrap();
+        assert_eq!(data.accounts[0].tokens.refresh_token, "rotated-token");
+        assert!(!data.app_settings.auto_check_updates);
+        assert_eq!(data.revision, 2);
+        let stored = crate::secret_store::load_all_tokens().unwrap();
+        assert_eq!(stored[&data.accounts[0].id].refresh_token, "rotated-token");
+        let (_, persisted) = super::read_persisted_state(&path).unwrap();
+        let persisted: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(persisted["appSettings"]["autoCheckUpdates"], false);
+        crate::secret_store::delete_tokens(&data.accounts[0].id).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn commit_state_data_updates_revision_and_state() {
         let dir = test_dir();
         let path = dir.join("state.json");
@@ -1001,11 +1048,12 @@ mod tests {
             crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
         );
 
-        let mut next = crate::app_state::lock_data(&state).unwrap().clone();
+        let current = crate::app_state::lock_data(&state).unwrap();
+        let mut next = current.clone();
         next.app_settings.auto_check_updates = false;
 
         let committed =
-            super::commit_state_data_at(&state, next, &path).expect("commit state data");
+            super::commit_state_data_at(&state, current, next, &path).expect("commit state data");
         assert_eq!(committed.revision, 4);
         assert!(!committed.app_settings.auto_check_updates);
 

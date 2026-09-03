@@ -133,7 +133,7 @@ pub fn set_app_settings(
 ) -> Result<AppDataDto, IpcErrorDto> {
     command_result((|| {
         let mut settings = crate::models::AppSettings::from(settings).normalized();
-        let next = {
+        let (data, next) = {
             let data = lock_data(state.inner())?;
             settings.hidden_account_ids.retain(|account_id| {
                 data.accounts
@@ -142,10 +142,10 @@ pub fn set_app_settings(
             });
             let mut next = data.clone();
             next.app_settings = settings;
-            next
+            (data, next)
         };
 
-        let committed = commit_state_data(state.inner(), next)?;
+        let committed = commit_state_data(state.inner(), data, next)?;
         let _ = auto_refresh::restart(state.inner())?;
         Ok(AppDataDto::from(&committed))
     })())

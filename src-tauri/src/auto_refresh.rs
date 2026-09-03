@@ -309,15 +309,15 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
                         reachability.user_summary()
                     );
                     let now = now_ts();
-                    let next = {
+                    let (data, next) = {
                         let data = lock_data(&shared)?;
                         let mut next = data.clone();
                         if let Some(acc) = next.accounts.iter_mut().find(|a| a.id == account_id) {
                             acc.quota_next_refresh_at = Some(now.saturating_add(300));
                         }
-                        next
+                        (data, next)
                     };
-                    commit_state_data(&shared, next)?;
+                    commit_state_data(&shared, data, next)?;
                     return Ok(());
                 }
             }
@@ -422,7 +422,7 @@ async fn run_refresh_accounts_for_provider(
             if let Ok(mut runtime) = lock_auto_refresh(state) {
                 runtime.chatgpt_geo_blocked = true;
             }
-            let (codex_ids, next) = {
+            let (data, codex_ids, next) = {
                 let now = now_ts();
                 let data = lock_data(state)?;
                 let mut next = data.clone();
@@ -445,9 +445,9 @@ async fn run_refresh_accounts_for_provider(
                         acc.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
                     }
                 }
-                (codex_ids, next)
+                (data, codex_ids, next)
             };
-            commit_state_data(state, next)?;
+            commit_state_data(state, data, next)?;
 
             work_items.retain(|item| !codex_ids.contains(&item.account_id));
             let warning_msg = reachability.user_summary();
@@ -864,7 +864,7 @@ pub(crate) fn update_account_schedule_with_retry(
     let chatgpt_geo_blocked = lock_auto_refresh(state)
         .map(|r| r.chatgpt_geo_blocked)
         .unwrap_or(false);
-    let (backed_off_accounts, next_run_at, next) = {
+    let (data, backed_off_accounts, next_run_at, next) = {
         let data = lock_data(state)?;
         let mut next = data.clone();
         let settings = next.app_settings.clone().normalized();
@@ -902,10 +902,10 @@ pub(crate) fn update_account_schedule_with_retry(
             })
             .count() as u32;
         let next_run_at = next_scheduled_run_for_data(&next, &settings, chatgpt_geo_blocked);
-        (backed_off_accounts, next_run_at, next)
+        (data, backed_off_accounts, next_run_at, next)
     };
 
-    commit_state_data(state, next)?;
+    commit_state_data(state, data, next)?;
 
     let mut runtime = lock_auto_refresh(state)?;
     runtime.status.backed_off_accounts = backed_off_accounts;
@@ -929,7 +929,7 @@ fn batch_update_account_schedules(
         .map(|runtime| runtime.chatgpt_geo_blocked)
         .unwrap_or(false);
 
-    let (backed_off_accounts, next_run_at, next) = {
+    let (data, backed_off_accounts, next_run_at, next) = {
         let data = lock_data(state)?;
         let mut next = data.clone();
         let settings = next.app_settings.clone().normalized();
@@ -973,10 +973,10 @@ fn batch_update_account_schedules(
             })
             .count() as u32;
         let next_run_at = next_scheduled_run_for_data(&next, &settings, chatgpt_geo_blocked);
-        (backed_off_accounts, next_run_at, next)
+        (data, backed_off_accounts, next_run_at, next)
     };
 
-    commit_state_data(state, next)?;
+    commit_state_data(state, data, next)?;
 
     let mut runtime = lock_auto_refresh(state)?;
     runtime.status.backed_off_accounts = backed_off_accounts;

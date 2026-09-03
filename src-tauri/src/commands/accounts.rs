@@ -33,20 +33,11 @@ fn account_for_selection(data: &AppData, account_id: Option<&str>) -> Option<Acc
 
 fn commit_active_selection_changes(
     state: &Arc<SharedState>,
+    mut current: std::sync::MutexGuard<'_, AppData>,
     next: AppData,
     codex_changed: bool,
     gemini_changed: bool,
 ) -> AppResult<AppData> {
-    let _commit_guard = state
-        .commit_gate
-        .lock()
-        .map_err(|_| AppError::msg("State commit gate poisoned"))?;
-
-    let current = {
-        let data = lock_data(state)?;
-        data.clone()
-    };
-
     let previous_codex = account_for_selection(&current, current.active_account_id.as_deref());
     let next_codex = account_for_selection(&next, next.active_account_id.as_deref());
     let previous_antigravity = if gemini_changed {
@@ -99,16 +90,13 @@ fn commit_active_selection_changes(
         return Err(save_error);
     }
 
-    let committed = {
-        let mut data = lock_data(state)?;
-        let mut next = next;
-        next.revision = data.revision.saturating_add(1);
-        *data = next.clone();
-        next
-    };
+    let mut next = next;
+    next.revision = current.revision.saturating_add(1);
+    *current = next.clone();
+    drop(current);
 
     crate::tray_dashboard::refresh_dashboard_and_alerts(state);
-    Ok(committed)
+    Ok(next)
 }
 
 pub(crate) fn remove_account_from_data(
@@ -176,18 +164,24 @@ pub fn remove_account(
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AppDataDto, IpcErrorDto> {
     command_result((|| {
-        let (codex_changed, gemini_changed, next) = {
+        let (data, codex_changed, gemini_changed, next) = {
             let data = lock_data(state.inner())?;
             let mut next = data.clone();
             let _ = reconcile_codex_auth(&mut next)?;
             let (codex_changed, gemini_changed) = remove_account_from_data(&mut next, &account_id)?;
-            (codex_changed, gemini_changed, next)
+            (data, codex_changed, gemini_changed, next)
         };
 
         let result = if codex_changed || gemini_changed {
-            commit_active_selection_changes(state.inner(), next, codex_changed, gemini_changed)?
+            commit_active_selection_changes(
+                state.inner(),
+                data,
+                next,
+                codex_changed,
+                gemini_changed,
+            )?
         } else {
-            commit_state_data(state.inner(), next)?
+            commit_state_data(state.inner(), data, next)?
         };
 
         Ok(AppDataDto::from(&result))
@@ -198,7 +192,7 @@ pub(crate) fn set_active_account_data(
     account_id: &str,
     state: &Arc<SharedState>,
 ) -> AppResult<AppData> {
-    let next =
+    let (data, next) =
         {
             let data = lock_data(state)?;
             let mut next = data.clone();
@@ -210,10 +204,10 @@ pub(crate) fn set_active_account_data(
             }
 
             next.active_account_id = Some(account_id.to_string());
-            next
+            (data, next)
         };
 
-    let result = commit_active_selection_changes(state, next, true, false)?;
+    let result = commit_active_selection_changes(state, data, next, true, false)?;
     auto_refresh::request_account_refresh_if_stale(state, account_id.to_string());
     Ok(result)
 }
@@ -260,7 +254,7 @@ pub(crate) async fn set_active_gemini_account_data(
     )
     .await?;
 
-    let next = {
+    let (data, next) = {
         let data = lock_data(state)?;
         let current = data
             .accounts
@@ -289,9 +283,9 @@ pub(crate) async fn set_active_gemini_account_data(
             selected.token_health = TokenHealth::refreshed();
         }
         next.active_gemini_account_id = Some(account_id.to_string());
-        next
+        (data, next)
     };
-    let result = commit_active_selection_changes(state, next, false, true)?;
+    let result = commit_active_selection_changes(state, data, next, false, true)?;
     auto_refresh::request_account_refresh_if_stale(state, account_id.to_string());
     Ok(result)
 }
@@ -379,7 +373,7 @@ pub async fn import_antigravity_account(
                 .and_then(|result| result.project_id.clone());
 
             let mut warnings = Vec::new();
-            let (imported_id, next) = {
+            let (data, imported_id, next) = {
                 let data = lock_data(state.inner())?;
                 let mut next = data.clone();
                 let account = crate::providers::gemini::oauth::save_authenticated_gemini_account(
@@ -420,10 +414,10 @@ pub async fn import_antigravity_account(
                 }
 
                 next.active_gemini_account_id = Some(account.id.clone());
-                (account.id, next)
+                (data, account.id, next)
             };
 
-            let result = commit_active_selection_changes(state.inner(), next, false, true)?;
+            let result = commit_active_selection_changes(state.inner(), data, next, false, true)?;
             crate::tray_dashboard::emit_state_changed(
                 state.inner(),
                 "accounts",
@@ -455,7 +449,7 @@ pub async fn import_codex_account(
             let account_id = external.account_id;
             let email = external.email;
 
-            let (saved_id, next) = {
+            let (data, saved_id, next) = {
                 let data = lock_data(state.inner())?;
                 let mut next = data.clone();
                 let account = crate::oauth::save_authenticated_account(
@@ -467,9 +461,9 @@ pub async fn import_codex_account(
                 )?;
 
                 next.active_account_id = Some(account.id.clone());
-                (account.id, next)
+                (data, account.id, next)
             };
-            commit_active_selection_changes(state.inner(), next, true, false)?;
+            commit_active_selection_changes(state.inner(), data, next, true, false)?;
 
             let refresh_result = RefreshService::new(Arc::clone(state.inner()))
                 .refresh_account_subscription(&saved_id)
@@ -522,7 +516,7 @@ pub fn set_account_order(
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AppDataDto, IpcErrorDto> {
     command_result((|| {
-        let next = {
+        let (data, next) = {
             let data = lock_data(state.inner())?;
 
             if account_ids.len() != data.accounts.len() {
@@ -563,10 +557,10 @@ pub fn set_account_order(
                 .filter_map(|account_id| by_id.remove(&account_id))
                 .collect();
 
-            next
+            (data, next)
         };
 
-        let result = commit_state_data(state.inner(), next)?;
+        let result = commit_state_data(state.inner(), data, next)?;
         Ok(AppDataDto::from(&result))
     })())
 }
