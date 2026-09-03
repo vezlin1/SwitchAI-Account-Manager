@@ -15,6 +15,7 @@ mod errors;
 mod geo;
 mod models;
 mod persisted;
+pub mod portable_updater;
 mod refresh_service;
 mod secret_store;
 mod shell;
@@ -36,6 +37,7 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    crate::portable_updater::handle_after_update_wait();
     let (mut initial_data, startup_error) = match load_app_data() {
         Ok(data) => (data, None),
         Err(err) => {
@@ -112,6 +114,11 @@ pub fn run() {
                     let id = event.id().as_ref();
                     match id {
                         "show" => show_main_window(app),
+                        "open_update" => {
+                            show_main_window(app);
+                            use tauri::Emitter;
+                            let _ = app.emit("open-update-modal", ());
+                        }
                         "refresh" => auto_refresh::request_refresh_now(&tray_state),
                         "quit" => {
                             tray_state.is_quitting.store(true, Ordering::SeqCst);
@@ -219,6 +226,41 @@ pub fn run() {
             }
             if app_state::lock_startup_error(&setup_state)?.is_none() {
                 let _ = auto_refresh::start(&setup_state);
+
+                let bg_state = Arc::clone(&setup_state);
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    let should_check = crate::app_state::lock_data(&bg_state)
+                        .map(|d| d.app_settings.auto_check_updates)
+                        .unwrap_or(true);
+                    if should_check {
+                        log::info!("Starting background update check...");
+                        if let Ok(res) =
+                            crate::commands::check_for_updates_internal(&bg_state, false).await
+                            && res.update_available
+                        {
+                            log::info!("Update available: v{}", res.version);
+                            if let Some(app) = bg_state.app_handle.get() {
+                                use tauri::Emitter;
+                                let _ = app.emit("update-available", &res);
+
+                                #[cfg(not(test))]
+                                {
+                                    use tauri_plugin_notification::NotificationExt;
+                                    let _ = app
+                                        .notification()
+                                        .builder()
+                                        .title("SwitchAI Update Available")
+                                        .body(format!(
+                                            "Version v{} is available for download.",
+                                            res.version
+                                        ))
+                                        .show();
+                                }
+                            }
+                        }
+                    }
+                });
             }
             show_main_window(app.handle());
 
@@ -266,7 +308,11 @@ pub fn run() {
             commands::set_account_order,
             commands::refresh_account_subscription,
             commands::refresh_account_quota,
-            commands::refresh_all_quotas
+            commands::refresh_all_quotas,
+            commands::check_for_updates,
+            commands::download_and_stage_update,
+            commands::install_update_and_restart,
+            commands::dismiss_update_version
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, Download, Loader2, Settings, Upload, X } from 'lucide-react'
-import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus } from '../../types'
+import { ChevronDown, ChevronUp, Download, Loader2, RefreshCw, Settings, Upload, X } from 'lucide-react'
+import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus, UpdateCheckResult } from '../../types'
+import { api, describeIpcError } from '../../api'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { Switch } from '../common/Switch'
 
@@ -12,6 +13,8 @@ type SettingsModalProps = {
   onSave: (settings: AppSettings) => Promise<AppData | null>
   onRefreshStatus: () => Promise<AutoRefreshStatus>
   onImportAccounts?: (imported: Account[]) => Promise<void>
+  onOpenUpdateModal?: (info: UpdateCheckResult) => void
+  appVersion?: string | null
 }
 
 const quickIntervals = [
@@ -28,18 +31,54 @@ export function SettingsModal({
   onClose,
   onSave,
   onRefreshStatus,
-  onImportAccounts
+  onImportAccounts,
+  onOpenUpdateModal,
+  appVersion
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<AppSettings>(() => ({
     ...settings,
-    enabledProviders: settings.enabledProviders ?? ['codex', 'gemini']
+    enabledProviders: settings.enabledProviders ?? ['codex', 'gemini'],
+    autoCheckUpdates: settings.autoCheckUpdates ?? true
   }))
   const [intervalText, setIntervalText] = useState(() => String(settings.autoRefreshIntervalMinutes ?? 15))
   const [busy, setBusy] = useState(false)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<{
+    text: string
+    isNew?: boolean
+    info?: UpdateCheckResult
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [vaultSuccess, setVaultSuccess] = useState<string | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose, !busy)
+
+  const handleCheckUpdates = async () => {
+    try {
+      setCheckingUpdate(true)
+      setUpdateCheckMsg(null)
+      const res = await api.checkForUpdates(true)
+      if (res.updateAvailable) {
+        setUpdateCheckMsg({
+          text: `Update available: v${res.version}`,
+          isNew: true,
+          info: res
+        })
+      } else {
+        setUpdateCheckMsg({
+          text: `You're running the latest version (v${res.currentVersion})`,
+          isNew: false
+        })
+      }
+    } catch (err) {
+      setUpdateCheckMsg({
+        text: `Check failed: ${describeIpcError(err)}`,
+        isNew: false
+      })
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
 
   const save = async () => {
     try {
@@ -51,7 +90,8 @@ export function SettingsModal({
         ...draft,
         autoRefreshIntervalMinutes: interval,
         skipUnsupportedRegionRefresh: draft.skipUnsupportedRegionRefresh ?? true,
-        enabledProviders: draft.enabledProviders ?? ['codex', 'gemini']
+        enabledProviders: draft.enabledProviders ?? ['codex', 'gemini'],
+        autoCheckUpdates: draft.autoCheckUpdates ?? true
       }
 
       await onSave(nextSettings)
@@ -129,7 +169,7 @@ export function SettingsModal({
       setVaultSuccess(`Backup exported successfully (${accounts.length} accounts)`)
       setTimeout(() => setVaultSuccess(null), 3000)
     } catch (err) {
-      setError(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+      setError(`Export failed: ${describeIpcError(err)}`)
     }
   }
 
@@ -150,7 +190,7 @@ export function SettingsModal({
       setVaultSuccess(`Imported ${data.accounts.length} accounts`)
       setTimeout(() => setVaultSuccess(null), 3000)
     } catch (err) {
-      setError(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
+      setError(`Import failed: ${describeIpcError(err)}`)
     } finally {
       setBusy(false)
       if (event.target) event.target.value = ''
@@ -415,6 +455,75 @@ export function SettingsModal({
               onChange={(checked) => setDraft((prev) => ({ ...prev, closeToTray: checked }))}
               ariaLabel="Close to tray"
             />
+          </div>
+
+          {/* App Updates */}
+          <div className="settings-card">
+            <div className="settings-card-header">
+              <span className="settings-card-label">App Updates</span>
+              {appVersion && (
+                <span className="text-[11px] text-ag-muted font-mono">
+                  v{appVersion.replace(/^v/, '')}
+                </span>
+              )}
+            </div>
+            <div className="settings-card-content border-t border-white/[0.04] pt-3 mt-1.5 flex flex-col gap-3">
+              <div
+                className="flex items-center justify-between py-1 px-1 -mx-1 rounded-lg cursor-pointer select-none hover:bg-white/[0.04] transition-all"
+                onClick={() => setDraft((prev) => ({ ...prev, autoCheckUpdates: !prev.autoCheckUpdates }))}
+              >
+                <div className="flex flex-col">
+                  <span className="text-xs font-medium text-ag-text">
+                    Automatically check for updates
+                  </span>
+                  <span className="text-[11px] text-ag-muted">
+                    Check on launch and notify when a new version is released
+                  </span>
+                </div>
+                <Switch
+                  id="auto-check-updates"
+                  checked={draft.autoCheckUpdates ?? true}
+                  onChange={(checked) => setDraft((prev) => ({ ...prev, autoCheckUpdates: checked }))}
+                  ariaLabel="Automatically check for updates"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-1 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => void handleCheckUpdates()}
+                  disabled={checkingUpdate || busy}
+                  className="h-8 px-3 rounded-lg border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-ag-text hover:bg-white/[0.09] hover:border-white/[0.22] hover:text-white active:scale-[0.97] active:bg-white/[0.14] inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                >
+                  {checkingUpdate ? (
+                    <Loader2 size={13} className="animate-spin text-blue-400" />
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  <span>{checkingUpdate ? 'Checking...' : 'Check for updates'}</span>
+                </button>
+
+                {updateCheckMsg && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className={updateCheckMsg.isNew ? 'text-blue-400 font-medium' : 'text-ag-muted'}>
+                      {updateCheckMsg.text}
+                    </span>
+                    {updateCheckMsg.isNew && updateCheckMsg.info && onOpenUpdateModal && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onOpenUpdateModal(updateCheckMsg.info!)
+                          onClose()
+                        }}
+                        className="text-xs text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
+                      >
+                        Details
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Backup & Vault */}

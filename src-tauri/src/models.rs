@@ -161,6 +161,8 @@ pub struct AppSettings {
     pub last_active_provider: Option<String>,
     pub gemini_switch_targets: Vec<String>,
     pub enabled_providers: Vec<String>,
+    pub auto_check_updates: bool,
+    pub ignored_update_version: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -181,6 +183,8 @@ impl Default for AppSettings {
             last_active_provider: Some("codex".to_string()),
             gemini_switch_targets,
             enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
+            auto_check_updates: true,
+            ignored_update_version: None,
         }
     }
 }

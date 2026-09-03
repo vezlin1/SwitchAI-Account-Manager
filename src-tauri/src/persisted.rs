@@ -126,6 +126,10 @@ struct PersistedQuotaInfo {
     fetched_at: i64,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
@@ -148,6 +152,10 @@ struct PersistedAppSettings {
     gemini_switch_targets: Vec<String>,
     #[serde(default = "default_enabled_providers")]
     enabled_providers: Vec<String>,
+    #[serde(default = "default_true")]
+    auto_check_updates: bool,
+    #[serde(default)]
+    ignored_update_version: Option<String>,
 }
 
 fn default_enabled_providers() -> Vec<String> {
@@ -266,6 +274,8 @@ impl From<&AppSettings> for PersistedAppSettings {
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
+            auto_check_updates: settings.auto_check_updates,
+            ignored_update_version: settings.ignored_update_version.clone(),
         }
     }
 }
@@ -282,6 +292,8 @@ impl From<PersistedAppSettings> for AppSettings {
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
+            auto_check_updates: settings.auto_check_updates,
+            ignored_update_version: settings.ignored_update_version,
         }
     }
 }
@@ -423,7 +435,7 @@ impl From<PersistedAppData> for AppData {
 mod tests {
     use serde_json::json;
 
-    use super::{PersistedAccount, PersistedAppData};
+    use super::{AppSettings, PersistedAccount, PersistedAppData, PersistedAppSettings};
     use crate::models::{Account, AppData, TokenHealth, Tokens};
 
     fn account_with_tokens() -> Account {
@@ -570,5 +582,24 @@ mod tests {
         assert_eq!(restored.id, account.id);
         assert_eq!(restored.email, account.email);
         assert_eq!(restored.tokens.access_token, "secret-access");
+    }
+
+    #[test]
+    fn persisted_app_settings_backward_compatible_defaults() {
+        let json = json!({
+            "autoRefreshEnabled": false,
+            "autoRefreshIntervalMinutes": 30,
+            "closeToTray": false
+        });
+
+        let persisted: PersistedAppSettings =
+            serde_json::from_value(json).expect("parse legacy app settings");
+        let settings = AppSettings::from(persisted);
+
+        assert!(!settings.auto_refresh_enabled);
+        assert_eq!(settings.auto_refresh_interval_minutes, 30);
+        assert!(!settings.close_to_tray);
+        assert!(settings.auto_check_updates);
+        assert_eq!(settings.ignored_update_version, None);
     }
 }

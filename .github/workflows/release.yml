@@ -124,6 +124,31 @@ jobs:
             Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Check Minisign updater signing configuration
+        id: minisign-config
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $hasKey = ![string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
+          "configured=$($hasKey.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Sign Windows executable with Minisign (Tauri Signer)
+        if: steps.minisign-config.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $password = if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD } else { "" }
+          npx @tauri-apps/cli signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$password" "dist/release/SwitchAI.exe"
+
+      - name: Generate portable update manifest
+        if: steps.minisign-config.outputs.configured == 'true'
+        shell: pwsh
+        run: |
+          node scripts/generate-update-manifest.mjs
+
       - name: Generate Windows checksum
         shell: pwsh
         run: |
@@ -138,8 +163,10 @@ jobs:
           name: windows-release
           path: |
             dist/release/SwitchAI.exe
+            dist/release/SwitchAI.exe.sig
+            dist/release/latest.json
             dist/release/SHA256SUMS-win.txt
-          if-no-files-found: error
+          if-no-files-found: warn
 
   verify-and-build-macos:
     runs-on: macos-14
@@ -288,6 +315,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -318,6 +348,8 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             dist/release/SwitchAI.exe
+            dist/release/*.sig
+            dist/release/latest.json
             dist/release/*.dmg
             dist/release/SHA256SUMS.txt
           draft: false

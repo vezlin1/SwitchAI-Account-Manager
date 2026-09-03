@@ -93,6 +93,8 @@ function Remove-UnsafeReleaseArtifacts {
   foreach ($item in Get-ChildItem -LiteralPath $ReleaseDirectory -Force) {
     $allowedFile = !$item.PSIsContainer -and (
       $item.Name -eq "SwitchAI.exe" -or
+      $item.Name -eq "SwitchAI.exe.sig" -or
+      $item.Name -eq "latest.json" -or
       $item.Name -eq "SHA256SUMS.txt"
     )
     if (!$allowedFile) {
@@ -107,6 +109,8 @@ function Assert-SafeReleaseArtifacts {
   $unexpected = @(Get-ChildItem -LiteralPath $ReleaseDirectory -Recurse -Force | Where-Object {
     $_.PSIsContainer -or (
       $_.Name -ne "SwitchAI.exe" -and
+      $_.Name -ne "SwitchAI.exe.sig" -and
+      $_.Name -ne "latest.json" -and
       $_.Name -ne "SHA256SUMS.txt"
     )
   })

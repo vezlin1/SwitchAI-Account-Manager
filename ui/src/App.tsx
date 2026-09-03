@@ -12,13 +12,18 @@ import { useAppData } from './hooks/useAppData'
 import { usePlatform } from './hooks/usePlatform'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { usePrivacy } from './context/PrivacyContext.tsx'
-import type { Account, AccountProvider } from './types'
+import type { Account, AccountProvider, UpdateCheckResult } from './types'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { api } from './api'
 
 const RecoveryModal = lazy(() =>
   import('./components/modals/RecoveryModal').then((m) => ({ default: m.RecoveryModal }))
 )
 const SettingsModal = lazy(() =>
   import('./components/modals/SettingsModal').then((m) => ({ default: m.SettingsModal }))
+)
+const UpdateModal = lazy(() =>
+  import('./components/modals/UpdateModal').then((m) => ({ default: m.UpdateModal }))
 )
 
 const appWindow = getCurrentWindow()
@@ -57,9 +62,48 @@ function App() {
     return 'codex'
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
+  const updateInfoRef = useRef<UpdateCheckResult | null>(null)
+
+  useEffect(() => {
+    updateInfoRef.current = updateInfo
+  }, [updateInfo])
+
   const [isMaximized, setIsMaximized] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let unlistenAvailable: UnlistenFn | undefined
+    let unlistenOpenModal: UnlistenFn | undefined
+
+    void listen<UpdateCheckResult>('update-available', (event) => {
+      setUpdateInfo(event.payload)
+    }).then((fn) => {
+      unlistenAvailable = fn
+    })
+
+    void listen('open-update-modal', () => {
+      if (updateInfoRef.current) {
+        setUpdateModalOpen(true)
+      } else {
+        void api.checkForUpdates(true).then((res) => {
+          setUpdateInfo(res)
+          if (res.updateAvailable) {
+            setUpdateModalOpen(true)
+          }
+        })
+      }
+    }).then((fn) => {
+      unlistenOpenModal = fn
+    })
+
+    return () => {
+      unlistenAvailable?.()
+      unlistenOpenModal?.()
+    }
+  }, [])
 
   const syncedProviderRef = useRef<AccountProvider | null>(null)
 
@@ -203,7 +247,7 @@ function App() {
   }
 
   // Global Keyboard Shortcuts
-  const isModalOpen = settingsOpen || startup?.mode === 'recovery_required'
+  const isModalOpen = settingsOpen || updateModalOpen || startup?.mode === 'recovery_required'
   const shortcuts = useMemo(
     () => ({
       'mod+,': () => setSettingsOpen((prev) => !prev),
@@ -259,6 +303,24 @@ function App() {
             onSave={saveAppSettings}
             onRefreshStatus={autoRefresh.refreshStatus}
             onImportAccounts={handleImportAccounts}
+            onOpenUpdateModal={(info) => {
+              setUpdateInfo(info)
+              setUpdateModalOpen(true)
+            }}
+            appVersion={appVersion}
+          />
+        </Suspense>
+      )}
+      {updateModalOpen && updateInfo && (
+        <Suspense fallback={null}>
+          <UpdateModal
+            isOpen={updateModalOpen}
+            onClose={() => setUpdateModalOpen(false)}
+            updateInfo={updateInfo}
+            onDismissVersion={async (ver) => {
+              await api.dismissUpdateVersion(ver)
+              setUpdateInfo(null)
+            }}
           />
         </Suspense>
       )}
@@ -371,12 +433,24 @@ function App() {
             </button>
 
             <button
-              className={`header-icon-btn ${isMac ? 'mr-3' : 'mr-1'}`}
+              className={`header-icon-btn ${isMac ? 'mr-3' : 'mr-1'} relative`}
               onClick={() => setSettingsOpen(true)}
-              title={isMac ? 'Settings (⌘,)' : 'Settings (Ctrl+,)'}
+              title={
+                updateInfo?.updateAvailable
+                  ? `Settings (Update available v${updateInfo.version})`
+                  : isMac
+                    ? 'Settings (⌘,)'
+                    : 'Settings (Ctrl+,)'
+              }
               aria-label="Settings"
             >
               <Settings size={14} />
+              {updateInfo?.updateAvailable && (
+                <span
+                  className="absolute top-1 right-1 w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.9)] animate-pulse"
+                  aria-hidden="true"
+                />
+              )}
             </button>
 
             {!isMac && (
