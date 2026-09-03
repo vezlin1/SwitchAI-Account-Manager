@@ -46,6 +46,9 @@ state.json
 *.cer
 *.crt
 .agent
+.agents/
+AGENTS.md
+GEMINI.md
 
 # Sensitive local data
 data/
