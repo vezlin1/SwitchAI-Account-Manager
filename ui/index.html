@@ -33,19 +33,6 @@
     <style>
       @keyframes vg-spin { to { transform: rotate(360deg); } }
     </style>
-    <script>
-      (function() {
-        if (window.location.search.includes('window=flyout') || window.location.hash.includes('flyout')) {
-          document.documentElement.style.backgroundColor = 'transparent';
-          document.body.style.backgroundColor = 'transparent';
-          var rootEl = document.getElementById('root');
-          if (rootEl) {
-            rootEl.style.backgroundColor = 'transparent';
-            rootEl.innerHTML = '';
-          }
-        }
-      })();
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

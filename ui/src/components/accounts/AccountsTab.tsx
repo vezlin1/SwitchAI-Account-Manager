@@ -14,6 +14,7 @@ import {
   subscriptionFiltersForAccounts,
   type SubscriptionFilterId
 } from '../../utils'
+import { usePrivacy } from '../../context/usePrivacy'
 
 const ConfirmDialog = lazy(() =>
   import('../common/ConfirmDialog').then((m) => ({ default: m.ConfirmDialog }))
@@ -73,6 +74,7 @@ export function AccountsTab({
     }
   })
   const oauth = useOAuthLogin({ onCompleted: reload })
+  const { privacyMode, maskEmail } = usePrivacy()
   const currentProvider = activeProvider ?? 'codex'
   const searchTerm = searchTerms[currentProvider] ?? ''
   const setSearchTerm = (val: string) => setSearchTerms((prev) => ({ ...prev, [currentProvider]: val }))
@@ -117,7 +119,10 @@ export function AccountsTab({
   const detailsAccount = detailsAccountId
     ? accounts.find((account) => account.id === detailsAccountId) ?? null
     : null
-  const recommendation = useMemo(() => recommendedAccount(accounts), [accounts])
+  const recommendation = useMemo(
+    () => recommendedAccount(accounts, hiddenAccountIds),
+    [accounts, hiddenAccountIds]
+  )
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
        (autoRefreshError.toLowerCase().includes('chatgpt') && currentProvider === 'codex') ||
@@ -217,7 +222,11 @@ export function AccountsTab({
         <Suspense fallback={null}>
           <ConfirmDialog
             title="Delete account?"
-            message={`Delete ${pendingDelete.email ?? 'this account'} from SwitchAI? This permanently deletes stored tokens and settings for this account.`}
+            message={`Delete ${
+              privacyMode && pendingDelete.email
+                ? maskEmail(pendingDelete.email)
+                : (pendingDelete.email ?? 'this account')
+            } from SwitchAI? This permanently deletes stored tokens and settings for this account.`}
             confirmLabel="Delete"
             variant="danger"
             busy={actions.busyKeys.has(`delete:${pendingDelete.id}`)}
@@ -235,8 +244,16 @@ export function AccountsTab({
           <ConfirmDialog
             title="Switch active account?"
             message={pendingSwitch.provider === 'gemini'
-              ? `Switch active session to ${pendingSwitch.email ?? 'this account'}? Antigravity will restart with this account.`
-              : `Switch active session to ${pendingSwitch.email ?? 'this account'}? Codex will restart with this account.`}
+              ? `Switch active session to ${
+                  privacyMode && pendingSwitch.email
+                    ? maskEmail(pendingSwitch.email)
+                    : (pendingSwitch.email ?? 'this account')
+                }? Antigravity will restart with this account.`
+              : `Switch active session to ${
+                  privacyMode && pendingSwitch.email
+                    ? maskEmail(pendingSwitch.email)
+                    : (pendingSwitch.email ?? 'this account')
+                }? Codex will restart with this account.`}
             confirmLabel="Switch"
             busy={actions.busyKeys.has(`switch:${pendingSwitch.id}`)}
             onCancel={() => {
@@ -375,11 +392,14 @@ export function AccountsTab({
               setSearchTerm('')
             }}
             onShowHiddenAccounts={() => {
+              const currentProviderAccountIds = new Set(accounts.map((a) => a.id))
               const next = setData((latest) => ({
                 ...latest,
                 appSettings: {
                   ...latest.appSettings,
-                  hiddenAccountIds: []
+                  hiddenAccountIds: latest.appSettings.hiddenAccountIds.filter(
+                    (id) => !currentProviderAccountIds.has(id)
+                  )
                 }
               }))
               if (next) void actions.saveAppSettings(next.appSettings)

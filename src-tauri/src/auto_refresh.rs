@@ -1043,12 +1043,20 @@ fn auto_refresh_thread(
             break;
         }
 
+        let is_in_flight = lock_auto_refresh(&shared)
+            .map(|runtime| runtime.status.in_flight || runtime.in_flight_runs > 0)
+            .unwrap_or(false);
+
         if let Ok(mut runtime) = lock_auto_refresh(&shared) {
             runtime.status.enabled = true;
             runtime.status.next_run_at = next_run_at;
         }
 
-        let wait_seconds = scheduler_wait_seconds(next_run_at, now_ts());
+        let wait_seconds = if is_in_flight {
+            15
+        } else {
+            scheduler_wait_seconds(next_run_at, now_ts())
+        };
         let wait = Duration::from_secs(wait_seconds);
         match rx.recv_timeout(wait) {
             Ok(AutoRefreshThreadEvent::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1133,6 +1141,7 @@ fn mark_refresh_finished(
     }
     runtime.status.next_run_at = next_run_at;
     drop(runtime);
+    notify_schedule_changed(state);
     emit_status_changed(state);
     Ok(())
 }

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, Copy, Eye, EyeOff } from 'lucide-react'
 import { Kbd } from '../common'
 import type { Account } from '../../types'
+import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountContextMenuProps = {
   account: Account
@@ -30,7 +31,11 @@ export function AccountContextMenu({
   onClose
 }: AccountContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const { privacyMode, maskEmail } = usePrivacy()
   const [copiedKey, setCopiedKey] = useState<'email' | 'id' | null>(null)
+  const accountLabel = privacyMode
+    ? (account.email ? maskEmail(account.email) : 'account')
+    : (account.email ?? 'account')
   const left = Math.max(VIEWPORT_GAP, Math.min(x, window.innerWidth - MENU_WIDTH - VIEWPORT_GAP))
   const top = Math.max(VIEWPORT_GAP, Math.min(y, window.innerHeight - MENU_HEIGHT - VIEWPORT_GAP))
 
@@ -95,7 +100,7 @@ export function AccountContextMenu({
       ref={menuRef}
       className="account-context-menu"
       role="menu"
-      aria-label={`Actions for ${account.email ?? 'account'}`}
+      aria-label={`Actions for ${accountLabel}`}
       style={{ left, top }}
       onContextMenu={(event) => event.preventDefault()}
     >

@@ -155,28 +155,3 @@ pub fn set_app_settings(
 pub fn open_external_url(url: String) -> Result<(), IpcErrorDto> {
     command_result(shell::open_external_url(&url))
 }
-
-#[tauri::command]
-pub fn show_main_window(app: tauri::AppHandle) -> Result<(), IpcErrorDto> {
-    use tauri::Manager;
-    if let Some(flyout) = app.get_webview_window("tray-flyout") {
-        let _ = flyout.hide();
-    }
-    crate::show_main_window(&app);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn hide_tray_flyout(app: tauri::AppHandle) -> Result<(), IpcErrorDto> {
-    use std::sync::Arc;
-    use tauri::Manager;
-    if let Some(flyout) = app.get_webview_window("tray-flyout") {
-        let _ = flyout.hide();
-    }
-    if let Some(state) = app.try_state::<Arc<crate::app_state::SharedState>>() {
-        if let Ok(mut last) = state.flyout_last_blurred.lock() {
-            *last = Some(std::time::Instant::now());
-        }
-    }
-    Ok(())
-}

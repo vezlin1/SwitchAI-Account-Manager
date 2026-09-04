@@ -179,9 +179,9 @@ pub fn dismiss_update_version_internal(
         next.app_settings.ignored_update_version = Some(version.to_string());
         (current, next)
     };
+    *crate::app_state::lock_available_update(state)? = None;
     let committed = commit_state_data(state, current, next)?;
 
-    *crate::app_state::lock_available_update(state)? = None;
     crate::tray_dashboard::emit_state_changed(state, "settings", Vec::new());
 
     Ok(AppDataDto::from(&committed))

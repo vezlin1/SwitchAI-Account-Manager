@@ -130,26 +130,6 @@ impl ReachabilityCache {
     pub fn set(&mut self, reachability: ChatGptReachability) {
         self.cached = Some((now_ts(), reachability));
     }
-
-    #[allow(dead_code)]
-    pub async fn get_or_probe(
-        &mut self,
-        client: &Client,
-        max_age_seconds: i64,
-    ) -> ChatGptReachability {
-        if let Some(cached) = self.get_cached(max_age_seconds) {
-            return cached;
-        }
-
-        let reachability = probe_chatgpt_reachability(client).await;
-        self.cached = Some((now_ts(), reachability.clone()));
-        reachability
-    }
-
-    #[allow(dead_code)]
-    pub fn invalidate(&mut self) {
-        self.cached = None;
-    }
 }
 
 #[cfg(test)]

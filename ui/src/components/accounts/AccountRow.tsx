@@ -63,6 +63,7 @@ export const AccountRow = memo(function AccountRow({
     needsRelogin,
     detectedSubscriptionDate
   } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
     <tr
@@ -157,7 +158,7 @@ export const AccountRow = memo(function AccountRow({
                   ? 'Re-login required before switching'
                   : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
             }
-            aria-label={`Switch to ${account.email ?? 'account'}`}
+            aria-label={`Switch to ${accountLabel}`}
           >
             {switching
               ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
@@ -171,7 +172,7 @@ export const AccountRow = memo(function AccountRow({
               onClick={() => onRelogin(account)}
               disabled={relogining || switching || removing || isAccountRefreshing || orderBusy}
               title="Re-login account"
-              aria-label={`Re-login ${account.email ?? 'account'}`}
+              aria-label={`Re-login ${accountLabel}`}
             >
               {relogining
                 ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
@@ -185,7 +186,7 @@ export const AccountRow = memo(function AccountRow({
             onClick={() => onRemove(account)}
             disabled={removing || switching || orderBusy}
             title="Delete account"
-            aria-label={`Delete ${account.email ?? 'account'}`}
+            aria-label={`Delete ${accountLabel}`}
           >
             {removing
               ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />

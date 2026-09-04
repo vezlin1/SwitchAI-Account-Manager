@@ -3,8 +3,7 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main",
-    "tray-flyout"
+    "main"
   ],
   "permissions": [
     "core:default",

@@ -262,11 +262,15 @@ pub fn verify_payload_integrity(
 
 pub fn cleanup_stale_update_files() {
     if let Ok((_exe_path, old_path, tmp_path)) = get_exe_paths() {
-        if old_path.exists() {
-            let _ = std::fs::remove_file(&old_path);
-        }
-        if tmp_path.exists() {
-            let _ = std::fs::remove_file(&tmp_path);
+        for path in [&old_path, &tmp_path] {
+            if path.exists() {
+                for _ in 0..3 {
+                    if std::fs::remove_file(path).is_ok() || !path.exists() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
         }
     }
 }
@@ -420,13 +424,29 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
 }
 
 pub fn atomic_swap(current: &Path, backup: &Path, replacement: &Path) -> std::io::Result<()> {
+    let mut actual_backup = backup.to_path_buf();
     if backup.exists() {
-        let _ = std::fs::remove_file(backup);
+        let mut removed = false;
+        for _ in 0..3 {
+            if std::fs::remove_file(backup).is_ok() || !backup.exists() {
+                removed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !removed && backup.exists() {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let ext = format!("old.{}", timestamp);
+            actual_backup = backup.with_extension(ext);
+        }
     }
-    std::fs::rename(current, backup)?;
+    std::fs::rename(current, &actual_backup)?;
     if let Err(err) = std::fs::rename(replacement, current) {
         log::error!("Replacement rename failed: {err}. Attempting rollback...");
-        let _ = std::fs::rename(backup, current);
+        let _ = std::fs::rename(&actual_backup, current);
         return Err(err);
     }
     Ok(())
@@ -442,7 +462,12 @@ pub fn rollback_swap(exe_path: &Path, old_path: &Path, tmp_path: &Path) -> std::
         let _ = std::fs::remove_file(tmp_path);
         if let Err(rename_err) = std::fs::rename(exe_path, tmp_path) {
             log::warn!("Could not move failed binary to tmp ({rename_err}), deleting instead");
-            let _ = std::fs::remove_file(exe_path);
+            for _ in 0..3 {
+                if std::fs::remove_file(exe_path).is_ok() || !exe_path.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
     }
     std::fs::rename(old_path, exe_path)?;

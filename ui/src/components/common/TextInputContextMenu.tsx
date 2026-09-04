@@ -82,14 +82,18 @@ export function TextInputContextMenu() {
       }
     }
 
+    const handleClose = () => setMenu(null)
+
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('resize', () => setMenu(null))
-    window.addEventListener('scroll', () => setMenu(null), true)
+    window.addEventListener('resize', handleClose)
+    window.addEventListener('scroll', handleClose, true)
 
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handleClose)
+      window.removeEventListener('scroll', handleClose, true)
     }
   }, [menu])
 

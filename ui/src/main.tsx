@@ -97,27 +97,11 @@ class ErrorBoundary extends Component<Props, State> {
   }
 }
 
-import { TrayFlyout } from './components/tray/TrayFlyout.tsx'
-
-const isFlyout =
-  typeof window !== 'undefined' &&
-  (new URLSearchParams(window.location.search).get('window') === 'flyout' ||
-   window.location.hash.includes('flyout'))
-
-if (isFlyout && typeof document !== 'undefined') {
-  document.documentElement.style.backgroundColor = 'transparent'
-  document.body.style.backgroundColor = 'transparent'
-  const rootEl = document.getElementById('root')
-  if (rootEl) {
-    rootEl.style.backgroundColor = 'transparent'
-  }
-}
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <PrivacyProvider>
-        {isFlyout ? <TrayFlyout /> : <App />}
+        <App />
       </PrivacyProvider>
     </ErrorBoundary>
   </StrictMode>,

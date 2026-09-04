@@ -147,15 +147,18 @@ export function UpdateModal({
   // Listen for download progress events from Tauri backend
   useEffect(() => {
     if (!isOpen) return
+    let disposed = false
     let unlisten: UnlistenFn | undefined
 
     void listen<UpdateProgress>('update://progress', (event) => {
       setProgress(event.payload)
     }).then((fn) => {
-      unlisten = fn
+      if (disposed) fn()
+      else unlisten = fn
     })
 
     return () => {
+      disposed = true
       unlisten?.()
     }
   }, [isOpen])

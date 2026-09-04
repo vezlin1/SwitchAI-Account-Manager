@@ -119,13 +119,6 @@ export function useAccountsActions({
       clearError(provider)
       const next = await api.removeAccount(accountId)
       setData(next)
-      setData((current) => ({
-        ...current,
-        appSettings: {
-          ...current.appSettings,
-          hiddenAccountIds: current.appSettings.hiddenAccountIds.filter((id) => id !== accountId)
-        }
-      }))
     } catch (err) {
       setProviderError(provider, describeIpcError(err))
     } finally {

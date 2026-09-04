@@ -27,13 +27,15 @@ export function UpdateCoordinator({
   }, [updateInfo])
 
   useEffect(() => {
+    let disposed = false
     let unlistenAvailable: UnlistenFn | undefined
     let unlistenOpenModal: UnlistenFn | undefined
 
     void listen<UpdateCheckResult>('update-available', (event) => {
       setUpdateInfo(event.payload)
     }).then((fn) => {
-      unlistenAvailable = fn
+      if (disposed) fn()
+      else unlistenAvailable = fn
     })
 
     void listen('open-update-modal', () => {
@@ -48,10 +50,12 @@ export function UpdateCoordinator({
         })
       }
     }).then((fn) => {
-      unlistenOpenModal = fn
+      if (disposed) fn()
+      else unlistenOpenModal = fn
     })
 
     return () => {
+      disposed = true
       unlistenAvailable?.()
       unlistenOpenModal?.()
     }

@@ -39,3 +39,10 @@ test('recommendation chooses the healthy account with the largest tightest reser
   assert.equal(accountRemainingPercent(low), 20)
   assert.equal(recommendedAccount([low, best, relogin])?.id, 'best')
 })
+
+test('recommendation ignores hidden accounts when hiddenAccountIds is provided', () => {
+  const visible = account('visible', 40) // 60% remaining
+  const hidden = account('hidden', 10) // 90% remaining
+
+  assert.equal(recommendedAccount([visible, hidden], ['hidden'])?.id, 'visible')
+})

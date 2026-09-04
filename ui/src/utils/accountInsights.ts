@@ -9,8 +9,13 @@ export function accountRemainingPercent(account: Account): number | null {
   return values.length ? Math.min(...values) : null
 }
 
-export function recommendedAccount(accounts: Account[]): Account | null {
+export function recommendedAccount(
+  accounts: Account[],
+  hiddenAccountIds: string[] = []
+): Account | null {
+  const hiddenSet = new Set(hiddenAccountIds)
   return accounts
+    .filter((account) => !hiddenSet.has(account.id))
     .filter((account) => account.tokenHealth.status !== 'needs_relogin')
     .map((account) => ({ account, remaining: accountRemainingPercent(account) }))
     .filter((item): item is { account: Account; remaining: number } => item.remaining != null)

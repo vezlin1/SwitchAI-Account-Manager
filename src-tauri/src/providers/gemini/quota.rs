@@ -728,14 +728,23 @@ pub async fn refresh_gemini_account(
         }
     }
 
+    let mut warnings = Vec::new();
     let active = next.active_gemini_account_id.as_deref() == Some(account_id);
     let previous_external = if active && refreshed_tokens {
-        crate::gemini::read_antigravity_auth()?
+        crate::gemini::read_antigravity_auth().ok().flatten()
     } else {
         None
     };
-    if active && refreshed_tokens {
-        crate::gemini::write_antigravity_account_auth(account)?;
+    if active
+        && refreshed_tokens
+        && let Err(error) = crate::gemini::write_antigravity_account_auth(account)
+    {
+        let message = format!(
+            "Antigravity credentials could not be updated: {}",
+            error.user_message()
+        );
+        log::warn!("{message}");
+        warnings.push(message);
     }
     if let Err(error) = commit_app_data(&mut data, next) {
         if active
@@ -754,7 +763,7 @@ pub async fn refresh_gemini_account(
 
     Ok(AccountRefreshOutcome {
         succeeded,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 

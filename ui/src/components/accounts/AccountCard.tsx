@@ -49,6 +49,7 @@ export const AccountCard = memo(function AccountCard({
     needsRelogin,
     detectedSubscriptionDate
   } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
     <article className={`account-card${isActive ? ' account-card-active' : ''}${isAccountRefreshing ? ' account-card-refreshing' : ''}`}>
@@ -86,7 +87,7 @@ export const AccountCard = memo(function AccountCard({
                   ? 'Re-login required before switching'
                   : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
             }
-            aria-label={`Switch to ${account.email ?? 'account'}`}
+            aria-label={`Switch to ${accountLabel}`}
           >
             {switching
               ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
@@ -99,7 +100,7 @@ export const AccountCard = memo(function AccountCard({
               onClick={() => onRelogin(account)}
               disabled={relogining || switching || removing || isAccountRefreshing}
               title="Re-login account"
-              aria-label={`Re-login ${account.email ?? 'account'}`}
+              aria-label={`Re-login ${accountLabel}`}
             >
               {relogining
                 ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
@@ -112,7 +113,7 @@ export const AccountCard = memo(function AccountCard({
             onClick={() => onToggleInAll(account.id)}
             aria-pressed={hiddenFromAll}
             title={hiddenFromAll ? 'Unhide' : 'Hide'}
-            aria-label={hiddenFromAll ? `Unhide ${account.email ?? 'account'}` : `Hide ${account.email ?? 'account'}`}
+            aria-label={hiddenFromAll ? `Unhide ${accountLabel}` : `Hide ${accountLabel}`}
           >
             {hiddenFromAll ? <Eye size={16} aria-hidden="true" /> : <EyeOff size={16} aria-hidden="true" />}
           </button>
@@ -122,7 +123,7 @@ export const AccountCard = memo(function AccountCard({
             onClick={() => onRemove(account)}
             disabled={removing || switching}
             title="Delete account"
-            aria-label={`Delete ${account.email ?? 'account'}`}
+            aria-label={`Delete ${accountLabel}`}
           >
             {removing
               ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />

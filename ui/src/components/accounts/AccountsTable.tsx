@@ -24,6 +24,7 @@ import { AccountRow } from './AccountRow'
 import { formatSubscriptionPlan } from '../../utils/dateUtils'
 import { quotaColumnsForAccounts, type QuotaColumn } from '../../utils/quotaWindows'
 import type { SubscriptionFilterId } from '../../utils/subscriptionFilters'
+import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountsTableProps = {
   accounts: Account[]
@@ -202,6 +203,7 @@ export function AccountsTable({
   const contextAccount = contextMenu
     ? accounts.find((account) => account.id === contextMenu.accountId) ?? null
     : null
+  const { privacyMode, maskEmail } = usePrivacy()
   const orderBusy = busyKeys.has('order')
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -332,7 +334,11 @@ export function AccountsTable({
             <DragOverlay dropAnimation={{ duration: 180, easing: 'cubic-bezier(0.2, 0, 0, 1)' }}>
               {activeDragAccount ? (
                 <div className="account-row-drag-overlay">
-                  <strong>{activeDragAccount.email ?? 'Account'}</strong>
+                  <strong>
+                    {(privacyMode && activeDragAccount.email
+                      ? maskEmail(activeDragAccount.email)
+                      : activeDragAccount.email) ?? 'Account'}
+                  </strong>
                   <span>
                     {formatSubscriptionPlan(
                       activeDragAccount.subscriptionPlan ?? activeDragAccount.quota?.planType,

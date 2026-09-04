@@ -54,19 +54,20 @@ impl KeyringBackend for OsKeyring {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct InMemoryKeyring {
     entries: std::sync::Mutex<HashMap<(String, String), String>>,
 }
 
+#[cfg(test)]
 impl InMemoryKeyring {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+#[cfg(test)]
 impl KeyringBackend for InMemoryKeyring {
     fn get_password(&self, service: &str, username: &str) -> Result<String, keyring::Error> {
         let entries = self.entries.lock().map_err(|_| {
