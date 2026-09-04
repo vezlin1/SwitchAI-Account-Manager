@@ -363,25 +363,6 @@ export function SettingsModal({
             />
           </div>
 
-          {/* Privacy Mode */}
-          <div
-            className="settings-card settings-card-header"
-            onClick={() => setDraft((prev) => ({ ...prev, privacyMode: !prev.privacyMode }))}
-          >
-            <div className="flex flex-col">
-              <span className="settings-card-label">Privacy Mode</span>
-              <span className="text-[11px] text-ag-muted">
-                Mask sensitive emails and account IDs across the UI, tray dashboard, and notifications
-              </span>
-            </div>
-            <Switch
-              id="privacy-mode"
-              checked={draft.privacyMode ?? false}
-              onChange={(checked) => setDraft((prev) => ({ ...prev, privacyMode: checked }))}
-              ariaLabel="Privacy Mode"
-            />
-          </div>
-
           {/* App Updates */}
           <div className="settings-card">
             <div className="settings-card-header">
