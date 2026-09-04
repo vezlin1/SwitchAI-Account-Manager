@@ -116,4 +116,7 @@ export const api = {
     invoke<void>('install_update_and_restart'),
   dismissUpdateVersion: (version: string) =>
     invoke<AppData>('dismiss_update_version', { version }),
+
+  showMainWindow: () => invoke<void>('show_main_window'),
+  hideTrayFlyout: () => invoke<void>('hide_tray_flyout'),
 }

@@ -193,14 +193,24 @@ pub fn run() {
                         }
                     }
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
+                .on_tray_icon_event({
+                    let flyout_state = Arc::clone(&setup_state);
+                    move |tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            position,
+                            rect,
+                            ..
+                        } = event
+                        {
+                            tray_dashboard::toggle_tray_flyout(
+                                tray.app_handle(),
+                                &flyout_state,
+                                position,
+                                rect,
+                            );
+                        }
                     }
                 });
 
@@ -224,6 +234,9 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(false);
+            }
+            if let Some(flyout) = app.get_webview_window("tray-flyout") {
+                let _ = flyout.set_decorations(false);
             }
             if app_state::lock_startup_error(&setup_state)?.is_none() {
                 let _ = auto_refresh::start(&setup_state);
@@ -268,6 +281,25 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(move |window, event| {
+            if window.label() == "tray-flyout" {
+                match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    WindowEvent::Focused(false) => {
+                        let _ = window.hide();
+                        if let Some(state) = window.app_handle().try_state::<Arc<SharedState>>() {
+                            if let Ok(mut last) = state.flyout_last_blurred.lock() {
+                                *last = Some(std::time::Instant::now());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
             if window.label() != "main" {
                 return;
             }
@@ -307,6 +339,8 @@ pub fn run() {
             commands::get_oauth_flow_status,
             commands::cancel_oauth_flow,
             commands::open_external_url,
+            commands::show_main_window,
+            commands::hide_tray_flyout,
             commands::remove_account,
             commands::switch_active_account_and_restart_codex,
             commands::switch_active_gemini_account_and_restart_antigravity,
@@ -334,7 +368,10 @@ pub fn run() {
         });
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(flyout) = app.get_webview_window("tray-flyout") {
+        let _ = flyout.hide();
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();

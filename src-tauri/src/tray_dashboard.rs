@@ -31,9 +31,13 @@ pub fn emit_state_changed(
     let Some(app) = state.app_handle.get() else {
         return;
     };
-    if let Some(window) = app.get_webview_window("main")
-        && (!window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false))
-    {
+    let main_active = app
+        .get_webview_window("main")
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+    let flyout_active = app
+        .get_webview_window("tray-flyout")
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+    if !main_active && !flyout_active {
         return;
     }
     let revision = lock_data(state).map(|data| data.revision).unwrap_or(0);
@@ -186,21 +190,7 @@ pub fn recommended_account(data: &AppData) -> Option<&Account> {
         .or_else(|| recommended_account_for_provider(data, AccountProvider::Gemini))
 }
 
-pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppResult<Menu<R>> {
-    let rec_codex = recommended_account_for_provider(data, AccountProvider::Codex);
-    let rec_gemini = recommended_account_for_provider(data, AccountProvider::Gemini);
-
-    let codex_enabled = data
-        .app_settings
-        .enabled_providers
-        .iter()
-        .any(|p| p == "codex");
-    let gemini_enabled = data
-        .app_settings
-        .enabled_providers
-        .iter()
-        .any(|p| p == "gemini");
-
+pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, _data: &AppData) -> AppResult<Menu<R>> {
     use tauri::Manager;
     let available_update_version = app.try_state::<Arc<SharedState>>().and_then(|state| {
         state
@@ -222,124 +212,140 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
         builder = builder.separator();
     }
 
-    let has_codex = codex_enabled
-        && data
-            .accounts
-            .iter()
-            .any(|a| a.provider == AccountProvider::Codex);
-    let has_gemini = gemini_enabled
-        && data
-            .accounts
-            .iter()
-            .any(|a| a.provider == AccountProvider::Gemini);
-
-    let privacy_mode = data.app_settings.privacy_mode;
-    if has_codex || has_gemini {
-        if has_codex {
-            let summary_codex = rec_codex
-                .map(|account| {
-                    format!(
-                        "[Codex] Recommended: {} · {:.0}% left",
-                        account_label(account, privacy_mode),
-                        remaining_percent(account).unwrap_or_default()
-                    )
-                })
-                .unwrap_or_else(|| "[Codex] No quota recommendation available".to_string());
-            let summary_item = MenuItemBuilder::with_id("quota-summary-codex", summary_codex)
-                .enabled(false)
-                .build(app)
-                .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
-            builder = builder.item(&summary_item);
-        }
-        if has_gemini {
-            let summary_gemini = rec_gemini
-                .map(|account| {
-                    format!(
-                        "[Antigravity] Recommended: {} · {:.0}% left",
-                        account_label(account, privacy_mode),
-                        remaining_percent(account).unwrap_or_default()
-                    )
-                })
-                .unwrap_or_else(|| "[Antigravity] No quota recommendation available".to_string());
-            let summary_item = MenuItemBuilder::with_id("quota-summary-gemini", summary_gemini)
-                .enabled(false)
-                .build(app)
-                .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
-            builder = builder.item(&summary_item);
-        }
-    } else {
-        let summary_item = MenuItemBuilder::with_id("quota-summary", "No accounts added")
-            .enabled(false)
-            .build(app)
-            .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
-        builder = builder.item(&summary_item);
-    }
-    builder = builder.separator();
-
-    for account in data
-        .accounts
-        .iter()
-        .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
-        .filter(|a| match a.provider {
-            AccountProvider::Codex => codex_enabled,
-            AccountProvider::Gemini => gemini_enabled,
-        })
-    {
-        let (provider_label, prefix, active_id) = match account.provider {
-            AccountProvider::Codex => (
-                "Codex",
-                SWITCH_CODEX_ACCOUNT_PREFIX,
-                data.active_account_id.as_deref(),
-            ),
-            AccountProvider::Gemini => (
-                "Antigravity",
-                SWITCH_GEMINI_ACCOUNT_PREFIX,
-                data.active_gemini_account_id.as_deref(),
-            ),
-        };
-        let is_active = active_id == Some(account.id.as_str());
-        let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
-        let active_marker = if is_active { " (active)" } else { "" };
-        let relogin_marker = if needs_relogin {
-            " (re-login required)"
-        } else {
-            ""
-        };
-        let quota = if needs_relogin {
-            String::new()
-        } else {
-            remaining_percent(account)
-                .map(|remaining| format!(" · {remaining:.0}% left"))
-                .unwrap_or_else(|| " · quota unavailable".to_string())
-        };
-        let is_recommended = !needs_relogin
-            && match account.provider {
-                AccountProvider::Codex => rec_codex.is_some_and(|item| item.id == account.id),
-                AccountProvider::Gemini => rec_gemini.is_some_and(|item| item.id == account.id),
-            };
-        let recommended_marker = if is_recommended { " (recommended)" } else { "" };
-        let item = MenuItemBuilder::with_id(
-            format!("{prefix}{}", account.id),
-            format!(
-                "[{provider_label}] {}{active_marker}{relogin_marker}{quota}{recommended_marker}",
-                account_label(account, privacy_mode),
-            ),
-        )
-        .enabled(!is_active && !needs_relogin)
-        .build(app)
-        .map_err(|error| AppError::msg(format!("Failed to build tray account item: {error}")))?;
-        builder = builder.item(&item);
-    }
-
     let menu = builder
-        .separator()
-        .text("show", "Show account manager")
+        .text("show", "Open SwitchAI")
         .text("refresh", "Refresh quotas now")
         .separator()
         .text("quit", "Quit")
         .build()
         .map_err(|error| AppError::msg(format!("Failed to build tray menu: {error}")))?;
     Ok(menu)
+}
+
+pub fn toggle_tray_flyout(
+    app: &tauri::AppHandle,
+    state: &Arc<SharedState>,
+    click_pos: tauri::PhysicalPosition<f64>,
+    tray_rect: tauri::Rect,
+) {
+    let Some(flyout) = app.get_webview_window("tray-flyout") else {
+        log::warn!("tray-flyout window not found");
+        return;
+    };
+
+    let now = std::time::Instant::now();
+    if let Ok(last_blurred) = state.flyout_last_blurred.lock() {
+        if let Some(t) = *last_blurred {
+            if now.duration_since(t) < std::time::Duration::from_millis(250) {
+                return;
+            }
+        }
+    }
+
+    let is_visible = flyout.is_visible().unwrap_or(false);
+    if is_visible {
+        let _ = flyout.hide();
+        return;
+    }
+
+    let monitor = app
+        .monitor_from_point(click_pos.x, click_pos.y)
+        .ok()
+        .flatten()
+        .or_else(|| flyout.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    let (mon_x, mon_y, mon_w, mon_h, scale) = if let Some(m) = monitor {
+        let p = m.position();
+        let s = m.size();
+        (
+            p.x as f64,
+            p.y as f64,
+            s.width as f64,
+            s.height as f64,
+            m.scale_factor(),
+        )
+    } else {
+        (0.0, 0.0, 1920.0, 1080.0, 1.0)
+    };
+
+    let (rect_x, rect_y, rect_w, rect_h) = match (tray_rect.position, tray_rect.size) {
+        (tauri::Position::Physical(p), tauri::Size::Physical(s)) => {
+            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        }
+        (tauri::Position::Logical(l), tauri::Size::Logical(s)) => (
+            l.x * scale,
+            l.y * scale,
+            s.width * scale,
+            s.height * scale,
+        ),
+        (tauri::Position::Physical(p), tauri::Size::Logical(s)) => (
+            p.x as f64,
+            p.y as f64,
+            s.width * scale,
+            s.height * scale,
+        ),
+        (tauri::Position::Logical(l), tauri::Size::Physical(s)) => (
+            l.x * scale,
+            l.y * scale,
+            s.width as f64,
+            s.height as f64,
+        ),
+    };
+
+    let mut anchor_x = if rect_w > 0.0 {
+        rect_x + rect_w / 2.0
+    } else {
+        click_pos.x
+    };
+    let mut anchor_y = if rect_h > 0.0 {
+        rect_y + rect_h / 2.0
+    } else {
+        click_pos.y
+    };
+
+    let logical_w = 380.0;
+    let logical_h = 520.0;
+    let flyout_w = logical_w * scale;
+    let flyout_h = logical_h * scale;
+    let margin = 12.0 * scale;
+
+    // Fallback if OS gave no click or rect coords: default to bottom right near tray
+    if anchor_x <= mon_x && anchor_y <= mon_y {
+        anchor_x = mon_x + mon_w - flyout_w / 2.0 - margin;
+        anchor_y = mon_y + mon_h - margin;
+    }
+
+    let is_bottom = anchor_y > (mon_y + mon_h / 2.0);
+    let target_y = if is_bottom {
+        let top_edge = if rect_h > 0.0 { rect_y } else { anchor_y };
+        top_edge - flyout_h - margin
+    } else {
+        let bottom_edge = if rect_h > 0.0 { rect_y + rect_h } else { anchor_y };
+        bottom_edge + margin
+    };
+
+    let target_x = anchor_x - flyout_w / 2.0;
+
+    let clamped_x = target_x.clamp(mon_x + margin, mon_x + mon_w - flyout_w - margin);
+    let clamped_y = target_y.clamp(mon_y + margin, mon_y + mon_h - flyout_h - margin);
+
+    let _ = flyout.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+        logical_w, logical_h,
+    )));
+    let _ = flyout.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        clamped_x.round() as i32,
+        clamped_y.round() as i32,
+    )));
+    let _ = flyout.show();
+    let _ = flyout.unminimize();
+    let _ = flyout.set_focus();
+
+    if let Ok(mut last) = state.flyout_last_blurred.lock() {
+        *last = None;
+    }
+
+    emit_state_changed_forced(state, "all", Vec::new());
 }
 
 pub fn tray_tooltip(data: &AppData) -> String {

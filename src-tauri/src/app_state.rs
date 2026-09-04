@@ -25,6 +25,7 @@ pub struct SharedState {
     pub is_quitting: AtomicBool,
     pub http_client: Client,
     pub available_update: Mutex<Option<crate::portable_updater::UpdateManifest>>,
+    pub flyout_last_blurred: Mutex<Option<std::time::Instant>>,
 }
 
 impl SharedState {
@@ -55,6 +56,7 @@ impl SharedState {
             is_quitting: AtomicBool::new(false),
             http_client,
             available_update: Mutex::new(None),
+            flyout_last_blurred: Mutex::new(None),
         })
     }
 }

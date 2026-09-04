@@ -32,6 +32,21 @@
         "theme": "Dark",
         "visible": true,
         "shadow": true
+      },
+      {
+        "label": "tray-flyout",
+        "title": "SwitchAI",
+        "url": "index.html?window=flyout",
+        "width": 380,
+        "height": 520,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": false
       }
     ],
     "security": {
