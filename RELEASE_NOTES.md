@@ -1,17 +1,12 @@
-## SwitchAI v1.1.0
+## SwitchAI v1.2.0
 
 ### What's New:
-* **Session Import:** 1-click import to quickly pull active sessions from ChatGPT (Codex) or Google (Antigravity).
-* Revamped Hidden accounts tab.
-* Enhanced context menus.
-* Improved real-time quota reset countdown timers.
-* Improved Antigravity process management (status is preserved when switching tabs).
-* Scoped search and subscription filters per provider (ChatGPT vs Gemini).
-* Protected drag-and-drop reordering during active search.
-* Added `Esc` key and backdrop click dismissal for modals.
-* Added titlebar double-click to maximize and restore the window.
-* Added 1-click technical error message copying.
-* General UI polish and stability improvements.
+* **Portable Auto-Updater for Windows:** built-in update checks and 1-click update installation with Minisign cryptographic verification, atomic replacement, and rollback protection.
+* **Redesigned System Tray Menu:** structured sectioned menu (`── Codex ──` and `── Antigravity ──`), 1-click quick switch to recommended accounts, and clean bullet-aligned layout.
+* **Persistent Privacy Mode:** privacy masking settings now persist cleanly across sessions and synchronize between the UI, tray dashboard, and notifications.
+* **Modular Backend Architecture:** refactored command layer into dedicated modules with stricter concurrency gates and CAS state invariants.
+* **Enhanced Secret Vault Resilience:** in-memory token caching with corrupted storage recovery and fallback protection.
+* General performance optimizations, UI polish, and stability improvements.
 
 ---
 

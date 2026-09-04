@@ -1,6 +1,6 @@
 {
   "name": "switchai-account-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "SwitchAI Account Manager - accounts and live quotas for AI coding assistants",
   "scripts": {
