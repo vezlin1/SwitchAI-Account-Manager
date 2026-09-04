@@ -20,3 +20,16 @@ test('unrelated settings edits preserve an update version dismissed on the serve
   assert.equal(requested.ignoredUpdateVersion, '2.0.0')
   assert.equal(requested.closeToTray, false)
 })
+
+test('privacy mode changes are captured in settings patch and merged cleanly', () => {
+  for (const enabled of [false, true]) {
+    const previous = { privacyMode: !enabled, closeToTray: true }
+    const draft = { ...previous, privacyMode: enabled }
+    const patch = settingsPatch(previous, draft)
+    assert.equal(patch.privacyMode, enabled)
+    const merged = { ...previous, ...patch }
+    assert.equal(merged.privacyMode, enabled)
+    assert.equal(merged.closeToTray, true)
+  }
+})
+

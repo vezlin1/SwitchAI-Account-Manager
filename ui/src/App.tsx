@@ -12,7 +12,7 @@ import { useAppData } from './hooks/useAppData'
 import { usePlatform } from './hooks/usePlatform'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { usePrivacy } from './context/usePrivacy'
-import type { Account, AccountProvider, UpdateCheckResult } from './types'
+import type { AccountProvider, UpdateCheckResult } from './types'
 import { AppTitleBar } from './components/layout/AppTitleBar'
 import { UpdateCoordinator } from './components/layout/UpdateCoordinator'
 import { StartupRecoveryGate } from './components/layout/StartupRecoveryGate'
@@ -44,7 +44,7 @@ function App() {
   } = useAppData()
   const autoRefresh = useAutoRefreshStatus()
   const { isMac } = usePlatform()
-  const { privacyMode, togglePrivacyMode } = usePrivacy()
+  const { privacyMode, setPrivacyMode } = usePrivacy()
   const [activeProvider, setActiveProvider] = useState<AccountProvider>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -62,6 +62,7 @@ function App() {
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
   const syncedProviderRef = useRef<AccountProvider | null>(null)
+  const pendingPrivacyRef = useRef<boolean | null>(null)
 
   useEffect(() => {
     warmUpAntigravitySurfacesCache()
@@ -103,6 +104,47 @@ function App() {
       }
     }
   }, [data?.appSettings?.lastActiveProvider, enabledProviders])
+
+  useEffect(() => {
+    if (!data?.appSettings) return
+    if (pendingPrivacyRef.current !== null) {
+      const target = pendingPrivacyRef.current
+      pendingPrivacyRef.current = null
+      if (data.appSettings.privacyMode !== target) {
+        void saveAppSettings({
+          ...data.appSettings,
+          privacyMode: target
+        })
+      }
+      return
+    }
+    const serverPrivacy = data.appSettings.privacyMode
+    if (serverPrivacy !== undefined && serverPrivacy !== privacyMode) {
+      setPrivacyMode(serverPrivacy)
+      try {
+        localStorage.setItem('switchai:privacy-mode', String(serverPrivacy))
+      } catch {
+        // ignore
+      }
+    }
+  }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings])
+
+  const handleTogglePrivacyMode = useCallback(() => {
+    const next = !privacyMode
+    pendingPrivacyRef.current = next
+    setPrivacyMode(next)
+    try {
+      localStorage.setItem('switchai:privacy-mode', String(next))
+    } catch {
+      // ignore
+    }
+    if (data && data.appSettings.privacyMode !== next) {
+      void saveAppSettings({
+        ...data.appSettings,
+        privacyMode: next
+      })
+    }
+  }, [privacyMode, setPrivacyMode, data, saveAppSettings])
 
   const handleSelectProvider = useCallback(
     (provider: AccountProvider) => {
@@ -162,31 +204,12 @@ function App() {
       'mod+,': () => setSettingsOpen((prev) => !prev),
       'mod+1': () => handleSelectProvider('codex'),
       'mod+2': () => handleSelectProvider('gemini'),
-      'mod+shift+p': () => togglePrivacyMode(),
+      'mod+shift+p': () => handleTogglePrivacyMode(),
       'mod+w': () => void appWindow.close().catch(() => undefined)
     }),
-    [handleSelectProvider, togglePrivacyMode]
+    [handleSelectProvider, handleTogglePrivacyMode]
   )
   useKeyboardShortcuts(shortcuts, !isModalOpen)
-
-  const handleImportAccounts = useCallback(
-    async (importedAccounts: Account[]) => {
-      if (!data) return
-      const existingIds = new Set(data.accounts.map((a) => a.id))
-      const uniqueImported = importedAccounts.filter((a) => !existingIds.has(a.id))
-      if (uniqueImported.length === 0) return
-
-      const updated = setData((previous) => ({
-        ...previous,
-        accounts: [...previous.accounts, ...uniqueImported]
-      }))
-      if (updated) {
-        void saveAppSettings(updated.appSettings)
-        void reload()
-      }
-    },
-    [data, setData, saveAppSettings, reload]
-  )
 
   return (
     <div className={`app-outer h-full w-full text-ag-text ${privacyMode ? 'privacy-mode' : ''}`}>
@@ -210,7 +233,6 @@ function App() {
             onClose={() => setSettingsOpen(false)}
             onSave={saveAppSettings}
             onRefreshStatus={autoRefresh.refreshStatus}
-            onImportAccounts={handleImportAccounts}
             onOpenUpdateModal={(info) => {
               setUpdateInfo(info)
               setUpdateModalOpen(true)
@@ -244,7 +266,7 @@ function App() {
           updateVersion={updateInfo?.version}
           closeToTray={data?.appSettings.closeToTray}
           onSelectProvider={handleSelectProvider}
-          onTogglePrivacyMode={togglePrivacyMode}
+          onTogglePrivacyMode={handleTogglePrivacyMode}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 

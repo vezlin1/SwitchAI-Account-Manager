@@ -6,6 +6,7 @@ const PRIVACY_STORAGE_KEY = 'switchai:privacy-mode'
 
 export function PrivacyProvider({ children }: { children: ReactNode }) {
   const [privacyMode, setPrivacyModeState] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
     try {
       return localStorage.getItem(PRIVACY_STORAGE_KEY) === 'true'
     } catch {
@@ -17,7 +18,7 @@ export function PrivacyProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(PRIVACY_STORAGE_KEY, String(privacyMode))
     } catch {
-      // ignore storage write errors
+      // Ignore localStorage errors in restricted environments
     }
   }, [privacyMode])
 

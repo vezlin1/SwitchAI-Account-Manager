@@ -67,6 +67,7 @@ export type AppSettings = {
   enabledProviders?: AccountProvider[]
   autoCheckUpdates: boolean
   ignoredUpdateVersion?: string | null
+  privacyMode?: boolean
 }
 
 export type UpdateCheckResult = {

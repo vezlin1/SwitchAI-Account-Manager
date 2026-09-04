@@ -156,6 +156,8 @@ struct PersistedAppSettings {
     auto_check_updates: bool,
     #[serde(default)]
     ignored_update_version: Option<String>,
+    #[serde(default)]
+    privacy_mode: bool,
 }
 
 fn default_enabled_providers() -> Vec<String> {
@@ -276,6 +278,7 @@ impl From<&AppSettings> for PersistedAppSettings {
             enabled_providers: settings.enabled_providers.clone(),
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version.clone(),
+            privacy_mode: settings.privacy_mode,
         }
     }
 }
@@ -294,6 +297,7 @@ impl From<PersistedAppSettings> for AppSettings {
             enabled_providers: settings.enabled_providers,
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version,
+            privacy_mode: settings.privacy_mode,
         }
     }
 }
@@ -601,5 +605,6 @@ mod tests {
         assert!(!settings.close_to_tray);
         assert!(settings.auto_check_updates);
         assert_eq!(settings.ignored_update_version, None);
+        assert!(!settings.privacy_mode);
     }
 }

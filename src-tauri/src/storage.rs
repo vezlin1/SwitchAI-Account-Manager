@@ -1062,4 +1062,34 @@ mod tests {
         assert!(!in_state.app_settings.auto_check_updates);
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn settings_save_preserves_privacy_mode() {
+        let dir = test_dir();
+        let path = dir.join("state.json");
+        let initial = AppData::default();
+        let state = std::sync::Arc::new(
+            crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
+        );
+
+        let current = crate::app_state::lock_data(&state).unwrap();
+        let mut next = current.clone();
+        next.app_settings.privacy_mode = true;
+
+        let committed =
+            super::commit_state_data_at(&state, current, next, &path).expect("commit state data");
+        assert!(committed.app_settings.privacy_mode);
+
+        let in_state = crate::app_state::lock_data(&state).unwrap().clone();
+        assert!(in_state.app_settings.privacy_mode);
+
+        let (_, persisted_str) = super::read_persisted_state(&path).unwrap();
+        let persisted_json: serde_json::Value = serde_json::from_str(&persisted_str).unwrap();
+        assert_eq!(persisted_json["appSettings"]["privacyMode"], true);
+
+        let restored = load_app_data_from(&path).unwrap();
+        assert!(restored.app_settings.privacy_mode);
+
+        let _ = fs::remove_dir_all(dir);
+    }
 }

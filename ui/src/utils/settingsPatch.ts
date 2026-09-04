@@ -26,6 +26,8 @@ export function settingsPatch(previous: AppSettings, next: AppSettings): Setting
   if (JSON.stringify(previous.enabledProviders) !== JSON.stringify(next.enabledProviders)) {
     patch.enabledProviders = next.enabledProviders
   }
+  if (previous.privacyMode !== next.privacyMode && next.privacyMode !== undefined) {
+    patch.privacyMode = next.privacyMode
+  }
   return patch
 }
-

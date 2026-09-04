@@ -90,6 +90,8 @@ pub struct AppSettingsDto {
     pub auto_check_updates: bool,
     #[serde(default)]
     pub ignored_update_version: Option<String>,
+    #[serde(default)]
+    pub privacy_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +285,7 @@ impl From<&AppSettings> for AppSettingsDto {
             enabled_providers: settings.enabled_providers.clone(),
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version.clone(),
+            privacy_mode: settings.privacy_mode,
         }
     }
 }
@@ -301,6 +304,7 @@ impl From<AppSettingsDto> for AppSettings {
             enabled_providers: settings.enabled_providers,
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version,
+            privacy_mode: settings.privacy_mode,
         }
     }
 }

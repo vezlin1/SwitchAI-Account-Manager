@@ -83,14 +83,78 @@ fn show_notification(app: &tauri::AppHandle, title: &str, body: String) -> AppRe
     }
 }
 
-fn account_label(account: &Account) -> String {
-    account
-        .email
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .or(account.account_id.as_deref())
-        .unwrap_or("Unnamed account")
-        .to_string()
+pub fn mask_email(email: Option<&str>) -> String {
+    let Some(email) = email.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "••••••".to_string();
+    };
+    let Some(at_index) = email.find('@') else {
+        return "••••••••".to_string();
+    };
+    if at_index == 0 {
+        return "••••••••".to_string();
+    }
+    let local = &email[..at_index];
+    let domain = &email[at_index..];
+    let local_chars: Vec<char> = local.chars().collect();
+    match local_chars.len() {
+        1 | 2 => {
+            format!("{}•••{}", local_chars[0], domain)
+        }
+        3 | 4 => {
+            format!(
+                "{}••••{}{}",
+                local_chars[0],
+                local_chars.last().unwrap(),
+                domain
+            )
+        }
+        _ => {
+            let prefix: String = local_chars[..2].iter().collect();
+            format!("{prefix}••••••{}{domain}", local_chars.last().unwrap())
+        }
+    }
+}
+
+pub fn mask_account_id(id: Option<&str>) -> String {
+    let Some(id) = id.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "••••••••".to_string();
+    };
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 6 {
+        "••••••••".to_string()
+    } else {
+        let prefix: String = chars[..3].iter().collect();
+        let suffix: String = chars[chars.len() - 3..].iter().collect();
+        format!("{prefix}••••{suffix}")
+    }
+}
+
+fn account_label(account: &Account, privacy_mode: bool) -> String {
+    if privacy_mode {
+        if let Some(email) = account
+            .email
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            mask_email(Some(email))
+        } else if let Some(account_id) = account
+            .account_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            mask_account_id(Some(account_id))
+        } else {
+            "Unnamed account".to_string()
+        }
+    } else {
+        account
+            .email
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(account.account_id.as_deref())
+            .unwrap_or("Unnamed account")
+            .to_string()
+    }
 }
 
 pub fn remaining_percent(account: &Account) -> Option<f64> {
@@ -169,13 +233,14 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             .iter()
             .any(|a| a.provider == AccountProvider::Gemini);
 
+    let privacy_mode = data.app_settings.privacy_mode;
     if has_codex || has_gemini {
         if has_codex {
             let summary_codex = rec_codex
                 .map(|account| {
                     format!(
                         "[Codex] Recommended: {} · {:.0}% left",
-                        account_label(account),
+                        account_label(account, privacy_mode),
                         remaining_percent(account).unwrap_or_default()
                     )
                 })
@@ -191,7 +256,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 .map(|account| {
                     format!(
                         "[Antigravity] Recommended: {} · {:.0}% left",
-                        account_label(account),
+                        account_label(account, privacy_mode),
                         remaining_percent(account).unwrap_or_default()
                     )
                 })
@@ -257,7 +322,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             format!("{prefix}{}", account.id),
             format!(
                 "[{provider_label}] {}{active_marker}{relogin_marker}{quota}{recommended_marker}",
-                account_label(account),
+                account_label(account, privacy_mode),
             ),
         )
         .enabled(!is_active && !needs_relogin)
@@ -298,22 +363,23 @@ pub fn tray_tooltip(data: &AppData) -> String {
     } else {
         None
     };
+    let privacy_mode = data.app_settings.privacy_mode;
     match (rec_codex, rec_gemini) {
         (Some(c), Some(g)) => format!(
             "SwitchAI — Codex: {} ({:.0}%) · Antigravity: {} ({:.0}%)",
-            account_label(c),
+            account_label(c, privacy_mode),
             remaining_percent(c).unwrap_or_default(),
-            account_label(g),
+            account_label(g, privacy_mode),
             remaining_percent(g).unwrap_or_default()
         ),
         (Some(c), None) => format!(
             "SwitchAI — [Codex] {} ({:.0}% left)",
-            account_label(c),
+            account_label(c, privacy_mode),
             remaining_percent(c).unwrap_or_default()
         ),
         (None, Some(g)) => format!(
             "SwitchAI — [Antigravity] {} ({:.0}% left)",
-            account_label(g),
+            account_label(g, privacy_mode),
             remaining_percent(g).unwrap_or_default()
         ),
         (None, None) => "SwitchAI".to_string(),
@@ -363,21 +429,24 @@ fn alert_level(remaining: f64) -> u8 {
     }
 }
 
-fn alert_body(account: &Account, level: u8, remaining: f64) -> String {
+fn alert_body(account: &Account, level: u8, remaining: f64, privacy_mode: bool) -> String {
     match level {
         3 => format!(
             "{} has exhausted its available quota.",
-            account_label(account)
+            account_label(account, privacy_mode)
         ),
         2 => format!(
             "{} is critical: only {remaining:.0}% quota remains.",
-            account_label(account)
+            account_label(account, privacy_mode)
         ),
         1 => format!(
             "{} is running low: {remaining:.0}% quota remains.",
-            account_label(account)
+            account_label(account, privacy_mode)
         ),
-        _ => format!("{} quota has recovered.", account_label(account)),
+        _ => format!(
+            "{} quota has recovered.",
+            account_label(account, privacy_mode)
+        ),
     }
 }
 
@@ -395,6 +464,7 @@ pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
         Err(_) => return,
     };
 
+    let privacy_mode = data.app_settings.privacy_mode;
     for account in &data.accounts {
         let Some(remaining) = remaining_percent(account) else {
             continue;
@@ -413,7 +483,7 @@ pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
                 } else {
                     "Quota alert"
                 },
-                alert_body(account, next_level, remaining),
+                alert_body(account, next_level, remaining, privacy_mode),
             )
         {
             log::warn!("Could not show quota notification: {error}");
@@ -430,6 +500,9 @@ pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
     let Some(app) = state.app_handle.get() else {
         return;
     };
+    let privacy_mode = lock_data(state)
+        .map(|data| data.app_settings.privacy_mode)
+        .unwrap_or(false);
     let client = match account.provider {
         AccountProvider::Codex => "Codex",
         AccountProvider::Gemini => "Antigravity",
@@ -439,7 +512,7 @@ pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
         "Account selected",
         format!(
             "{} will be used on the next {client} launch. The running client was not restarted.",
-            account_label(account)
+            account_label(account, privacy_mode)
         ),
     );
 }
@@ -559,5 +632,74 @@ mod tests {
             tooltip,
             "SwitchAI — [Antigravity] gemini@google.com (70% left)"
         );
+    }
+
+    #[test]
+    fn test_mask_email() {
+        assert_eq!(mask_email(None), "••••••");
+        assert_eq!(mask_email(Some("")), "••••••");
+        assert_eq!(mask_email(Some("invalid")), "••••••••");
+        assert_eq!(mask_email(Some("@domain.com")), "••••••••");
+        // local length <= 2: first char + 3 dots + domain
+        assert_eq!(mask_email(Some("a@test.com")), "a•••@test.com");
+        assert_eq!(mask_email(Some("ab@test.com")), "a•••@test.com");
+        // local length 3..=4: first char + 4 dots + last char + domain
+        assert_eq!(mask_email(Some("abc@test.com")), "a••••c@test.com");
+        assert_eq!(mask_email(Some("user@test.com")), "u••••r@test.com");
+        // local length >= 5: first 2 chars + 6 dots + last char + domain
+        assert_eq!(mask_email(Some("admin@test.com")), "ad••••••n@test.com");
+        assert_eq!(
+            mask_email(Some("vezlin13@gmail.com")),
+            "ve••••••3@gmail.com"
+        );
+    }
+
+    #[test]
+    fn test_mask_account_id() {
+        assert_eq!(mask_account_id(None), "••••••••");
+        assert_eq!(mask_account_id(Some("")), "••••••••");
+        assert_eq!(mask_account_id(Some("short")), "••••••••");
+        assert_eq!(mask_account_id(Some("123456")), "••••••••");
+        assert_eq!(mask_account_id(Some("1234567")), "123••••567");
+        assert_eq!(mask_account_id(Some("account-id-xyz")), "acc••••xyz");
+    }
+
+    #[test]
+    fn tooltip_with_privacy_mode_masks_emails() {
+        let mut data = AppData::default();
+        data.app_settings.privacy_mode = true;
+        data.accounts.push(make_account(
+            "c1",
+            "codex-high@openai.com",
+            AccountProvider::Codex,
+            Some(10.0), // 90% left
+        ));
+        data.accounts.push(make_account(
+            "g1",
+            "gemini-high@google.com",
+            AccountProvider::Gemini,
+            Some(5.0), // 95% left
+        ));
+
+        let tooltip = tray_tooltip(&data);
+        assert!(tooltip.contains("Codex: co••••••h@openai.com (90%)"));
+        assert!(tooltip.contains("Antigravity: ge••••••h@google.com (95%)"));
+    }
+
+    #[test]
+    fn alert_body_respects_privacy_mode() {
+        let account = make_account(
+            "1",
+            "vezlin13@gmail.com",
+            AccountProvider::Codex,
+            Some(25.0),
+        );
+
+        let plain = alert_body(&account, 1, 20.0, false);
+        assert!(plain.contains("vezlin13@gmail.com"));
+
+        let masked = alert_body(&account, 1, 20.0, true);
+        assert!(masked.contains("ve••••••3@gmail.com"));
+        assert!(!masked.contains("vezlin13@gmail.com"));
     }
 }

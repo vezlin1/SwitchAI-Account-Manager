@@ -9,3 +9,4 @@ export type PrivacyContextType = {
 }
 
 export const PrivacyContext = createContext<PrivacyContextType | null>(null)
+

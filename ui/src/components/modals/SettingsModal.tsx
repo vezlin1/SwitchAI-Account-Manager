@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, Download, Loader2, RefreshCw, Settings, Upload, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, RefreshCw, Settings, X } from 'lucide-react'
 import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus, UpdateCheckResult } from '../../types'
 import { api, describeIpcError } from '../../api'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
@@ -12,7 +12,6 @@ type SettingsModalProps = {
   onClose: () => void
   onSave: (settings: AppSettings) => Promise<AppData | null>
   onRefreshStatus: () => Promise<AutoRefreshStatus>
-  onImportAccounts?: (imported: Account[]) => Promise<void>
   onOpenUpdateModal?: (info: UpdateCheckResult) => void
   appVersion?: string | null
 }
@@ -31,14 +30,14 @@ export function SettingsModal({
   onClose,
   onSave,
   onRefreshStatus,
-  onImportAccounts,
   onOpenUpdateModal,
   appVersion
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<AppSettings>(() => ({
     ...settings,
     enabledProviders: settings.enabledProviders ?? ['codex', 'gemini'],
-    autoCheckUpdates: settings.autoCheckUpdates ?? true
+    autoCheckUpdates: settings.autoCheckUpdates ?? true,
+    privacyMode: settings.privacyMode ?? false
   }))
   const [intervalText, setIntervalText] = useState(() => String(settings.autoRefreshIntervalMinutes ?? 15))
   const [busy, setBusy] = useState(false)
@@ -49,7 +48,6 @@ export function SettingsModal({
     info?: UpdateCheckResult
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [vaultSuccess, setVaultSuccess] = useState<string | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose, !busy)
 
@@ -91,7 +89,8 @@ export function SettingsModal({
         autoRefreshIntervalMinutes: interval,
         skipUnsupportedRegionRefresh: draft.skipUnsupportedRegionRefresh ?? true,
         enabledProviders: draft.enabledProviders ?? ['codex', 'gemini'],
-        autoCheckUpdates: draft.autoCheckUpdates ?? true
+        autoCheckUpdates: draft.autoCheckUpdates ?? true,
+        privacyMode: draft.privacyMode ?? false
       }
 
       await onSave(nextSettings)
@@ -101,99 +100,6 @@ export function SettingsModal({
       setError(String(err))
     } finally {
       setBusy(false)
-    }
-  }
-
-  const exportVault = async () => {
-    try {
-      const payload = JSON.stringify({
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        accountCount: accounts.length,
-        accounts
-      }, null, 2)
-      const defaultFileName = `switchai_accounts_backup_${new Date().toISOString().slice(0, 10)}.json`
-
-      // Try native OS "Save As" file picker dialog
-      const win = window as unknown as {
-        showSaveFilePicker?: (options: {
-          suggestedName?: string
-          types?: Array<{
-            description?: string
-            accept: Record<string, string[]>
-          }>
-        }) => Promise<{
-          createWritable: () => Promise<{
-            write: (data: string) => Promise<void>
-            close: () => Promise<void>
-          }>
-        }>
-      }
-
-      if (typeof win.showSaveFilePicker === 'function') {
-        try {
-          const handle = await win.showSaveFilePicker({
-            suggestedName: defaultFileName,
-            types: [
-              {
-                description: 'JSON Backup (*.json)',
-                accept: { 'application/json': ['.json'] }
-              }
-            ]
-          })
-          const writable = await handle.createWritable()
-          await writable.write(payload)
-          await writable.close()
-          setVaultSuccess(`Backup exported successfully (${accounts.length} accounts)`)
-          setTimeout(() => setVaultSuccess(null), 3000)
-          return
-        } catch (pickerErr: unknown) {
-          // If the user cancelled the dialog, do not show an error
-          if (pickerErr instanceof Error && pickerErr.name === 'AbortError') {
-            return
-          }
-          console.warn('showSaveFilePicker error, falling back to download:', pickerErr)
-        }
-      }
-
-      // Fallback for browsers / environments without showSaveFilePicker
-      const blob = new Blob([payload], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = defaultFileName
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      URL.revokeObjectURL(url)
-      setVaultSuccess(`Backup exported successfully (${accounts.length} accounts)`)
-      setTimeout(() => setVaultSuccess(null), 3000)
-    } catch (err) {
-      setError(`Export failed: ${describeIpcError(err)}`)
-    }
-  }
-
-  const importVault = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    try {
-      setBusy(true)
-      setError(null)
-      const text = await file.text()
-      const data = JSON.parse(text)
-      if (!Array.isArray(data.accounts)) {
-        throw new Error('Invalid backup file: missing accounts list')
-      }
-      if (onImportAccounts) {
-        await onImportAccounts(data.accounts)
-      }
-      setVaultSuccess(`Imported ${data.accounts.length} accounts`)
-      setTimeout(() => setVaultSuccess(null), 3000)
-    } catch (err) {
-      setError(`Import failed: ${describeIpcError(err)}`)
-    } finally {
-      setBusy(false)
-      if (event.target) event.target.value = ''
     }
   }
 
@@ -457,6 +363,25 @@ export function SettingsModal({
             />
           </div>
 
+          {/* Privacy Mode */}
+          <div
+            className="settings-card settings-card-header"
+            onClick={() => setDraft((prev) => ({ ...prev, privacyMode: !prev.privacyMode }))}
+          >
+            <div className="flex flex-col">
+              <span className="settings-card-label">Privacy Mode</span>
+              <span className="text-[11px] text-ag-muted">
+                Mask sensitive emails and account IDs across the UI, tray dashboard, and notifications
+              </span>
+            </div>
+            <Switch
+              id="privacy-mode"
+              checked={draft.privacyMode ?? false}
+              onChange={(checked) => setDraft((prev) => ({ ...prev, privacyMode: checked }))}
+              ariaLabel="Privacy Mode"
+            />
+          </div>
+
           {/* App Updates */}
           <div className="settings-card">
             <div className="settings-card-header">
@@ -526,55 +451,6 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* Backup & Vault */}
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <span className="settings-card-label">Backup & Profiles Vault</span>
-            </div>
-            <div className="settings-card-content border-t border-white/[0.04] pt-3 mt-1.5 flex flex-col gap-2.5">
-              <p className="text-xs text-ag-muted leading-relaxed">
-                Export and import all saved account credentials and quota settings to transfer them securely between devices.
-              </p>
-              <div className="flex items-center gap-2 pt-1 flex-wrap">
-                <button
-                  type="button"
-                  onClick={exportVault}
-                  disabled={busy}
-                  className="h-8 px-3 rounded-lg border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-ag-text hover:bg-white/[0.09] hover:border-white/[0.22] hover:text-white active:scale-[0.97] active:bg-white/[0.14] inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 select-none shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
-                >
-                  <Download size={13} />
-                  Export backup ({accounts.length})
-                </button>
-                <label
-                  tabIndex={busy ? -1 : 0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      e.currentTarget.querySelector('input')?.click()
-                    }
-                  }}
-                  className={`h-8 px-3 rounded-lg border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-ag-text hover:bg-white/[0.09] hover:border-white/[0.22] hover:text-white active:scale-[0.97] active:bg-white/[0.14] inline-flex items-center gap-1.5 transition-all select-none shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 ${
-                    busy ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-                  }`}
-                >
-                  <Upload size={13} />
-                  Import backup
-                  <input
-                    type="file"
-                    accept=".json"
-                    disabled={busy}
-                    onChange={(e) => void importVault(e)}
-                    className="sr-only"
-                  />
-                </label>
-              </div>
-              {vaultSuccess && (
-                <div className="text-xs text-emerald-400 font-medium animate-fade-in">
-                  {vaultSuccess}
-                </div>
-              )}
-            </div>
-          </div>
 
           {error && (
             <div className="settings-error" role="alert">

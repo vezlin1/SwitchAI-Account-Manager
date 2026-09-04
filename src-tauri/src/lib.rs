@@ -284,6 +284,9 @@ pub fn run() {
                 if close_to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    close_state.is_quitting.store(true, Ordering::SeqCst);
+                    window.app_handle().exit(0);
                 }
             }
 
