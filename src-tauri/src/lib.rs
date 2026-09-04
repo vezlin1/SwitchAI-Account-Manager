@@ -126,8 +126,9 @@ pub fn run() {
                             app.exit(0);
                         }
                         _ => {
-                            if let Some(account_id) =
-                                id.strip_prefix(tray_dashboard::SWITCH_CODEX_ACCOUNT_PREFIX)
+                            if let Some(account_id) = id
+                                .strip_prefix(tray_dashboard::SWITCH_CODEX_ACCOUNT_PREFIX)
+                                .or_else(|| id.strip_prefix(tray_dashboard::QUICK_SWITCH_CODEX_PREFIX))
                             {
                                 match commands::set_active_account_data(account_id, &tray_state) {
                                     Ok(data) => {
@@ -153,8 +154,9 @@ pub fn run() {
                                         error.user_message()
                                     ),
                                 }
-                            } else if let Some(account_id) =
-                                id.strip_prefix(tray_dashboard::SWITCH_GEMINI_ACCOUNT_PREFIX)
+                            } else if let Some(account_id) = id
+                                .strip_prefix(tray_dashboard::SWITCH_GEMINI_ACCOUNT_PREFIX)
+                                .or_else(|| id.strip_prefix(tray_dashboard::QUICK_SWITCH_GEMINI_PREFIX))
                             {
                                 let selection_state = Arc::clone(&tray_state);
                                 let account_id = account_id.to_string();

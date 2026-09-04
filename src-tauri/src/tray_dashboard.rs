@@ -14,6 +14,8 @@ use crate::models::{Account, AccountProvider, AppData, TokenHealthStatus};
 pub const TRAY_ID: &str = "main-tray";
 pub const SWITCH_CODEX_ACCOUNT_PREFIX: &str = "switch-codex-account:";
 pub const SWITCH_GEMINI_ACCOUNT_PREFIX: &str = "switch-antigravity-account:";
+pub const QUICK_SWITCH_CODEX_PREFIX: &str = "quick-switch-codex:";
+pub const QUICK_SWITCH_GEMINI_PREFIX: &str = "quick-switch-antigravity:";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,7 +135,7 @@ pub fn mask_account_id(id: Option<&str>) -> String {
     }
 }
 
-fn account_label(account: &Account, privacy_mode: bool) -> String {
+pub fn account_label(account: &Account, privacy_mode: bool) -> String {
     if privacy_mode {
         if let Some(email) = account
             .email
@@ -170,6 +172,88 @@ pub fn remaining_percent(account: &Account) -> Option<f64> {
         .min_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
 }
 
+pub fn quota_suffix(account: &Account) -> String {
+    if account.token_health.status == TokenHealthStatus::NeedsRelogin {
+        " · re-login required".to_string()
+    } else if let Some(remaining) = remaining_percent(account) {
+        format!(" · {remaining:.0}% left")
+    } else {
+        " · quota unavailable".to_string()
+    }
+}
+
+pub fn account_menu_label(
+    account: &Account,
+    is_active: bool,
+    is_recommended: bool,
+    privacy_mode: bool,
+) -> String {
+    let name = account_label(account, privacy_mode);
+    let rec_suffix = if is_recommended { " (recommended)" } else { "" };
+
+    if account.token_health.status == TokenHealthStatus::NeedsRelogin {
+        let prefix = if is_active {
+            "✓ ⚠️ "
+        } else if is_recommended {
+            "★ ⚠️ "
+        } else {
+            "⚠️ "
+        };
+        format!("{prefix}{name} (re-login required){rec_suffix}")
+    } else {
+        let prefix = if is_active {
+            "✓ "
+        } else if is_recommended {
+            "★ "
+        } else {
+            "• "
+        };
+        let quota = quota_suffix(account);
+        format!("{prefix}{name}{quota}{rec_suffix}")
+    }
+}
+
+pub fn sort_accounts_for_provider<'a>(
+    accounts: &[&'a Account],
+    active_id: Option<&str>,
+) -> Vec<&'a Account> {
+    let mut sorted = accounts.to_vec();
+    sorted.sort_by(|a, b| {
+        let a_active = active_id == Some(a.id.as_str());
+        let b_active = active_id == Some(b.id.as_str());
+        if a_active && !b_active {
+            return Ordering::Less;
+        }
+        if !a_active && b_active {
+            return Ordering::Greater;
+        }
+
+        let a_relogin = a.token_health.status == TokenHealthStatus::NeedsRelogin;
+        let b_relogin = b.token_health.status == TokenHealthStatus::NeedsRelogin;
+        if !a_relogin && b_relogin {
+            return Ordering::Less;
+        }
+        if a_relogin && !b_relogin {
+            return Ordering::Greater;
+        }
+
+        let a_rem = remaining_percent(a);
+        let b_rem = remaining_percent(b);
+        match (a_rem, b_rem) {
+            (Some(ar), Some(br)) => {
+                br.partial_cmp(&ar)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| a.email.cmp(&b.email))
+                    .then_with(|| a.id.cmp(&b.id))
+            }
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => a.email.cmp(&b.email).then_with(|| a.id.cmp(&b.id)),
+        }
+    });
+    sorted
+}
+
 pub fn recommended_account_for_provider(
     data: &AppData,
     provider: AccountProvider,
@@ -190,7 +274,7 @@ pub fn recommended_account(data: &AppData) -> Option<&Account> {
         .or_else(|| recommended_account_for_provider(data, AccountProvider::Gemini))
 }
 
-pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, _data: &AppData) -> AppResult<Menu<R>> {
+pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppResult<Menu<R>> {
     use tauri::Manager;
     let available_update_version = app.try_state::<Arc<SharedState>>().and_then(|state| {
         state
@@ -212,8 +296,211 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, _data: &AppData) -> App
         builder = builder.separator();
     }
 
+    let codex_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "codex");
+    let gemini_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "gemini");
+    let privacy_mode = data.app_settings.privacy_mode;
+
+    let codex_accounts: Vec<&Account> = if codex_enabled {
+        data.accounts
+            .iter()
+            .filter(|a| a.provider == AccountProvider::Codex)
+            .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let gemini_accounts: Vec<&Account> = if gemini_enabled {
+        data.accounts
+            .iter()
+            .filter(|a| a.provider == AccountProvider::Gemini)
+            .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let rec_codex = if codex_enabled {
+        recommended_account_for_provider(data, AccountProvider::Codex)
+    } else {
+        None
+    };
+    let rec_gemini = if gemini_enabled {
+        recommended_account_for_provider(data, AccountProvider::Gemini)
+    } else {
+        None
+    };
+
+    // 1. Actionable 1-click Quick-Switch section at the top
+    let has_any_accounts = !codex_accounts.is_empty() || !gemini_accounts.is_empty();
+    if has_any_accounts {
+        if codex_enabled && !codex_accounts.is_empty() {
+            if let Some(best) = rec_codex {
+                let is_active = data.active_account_id.as_deref() == Some(best.id.as_str());
+                let quota_str = remaining_percent(best)
+                    .map(|r| format!("{r:.0}% left"))
+                    .unwrap_or_else(|| "available".to_string());
+                let label = account_label(best, privacy_mode);
+
+                let item = if is_active {
+                    MenuItemBuilder::with_id(
+                        "quick-codex-active",
+                        format!("⚡ Best Codex: {label} ({quota_str}) (active)"),
+                    )
+                    .enabled(false)
+                    .build(app)
+                    .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?
+                } else {
+                    MenuItemBuilder::with_id(
+                        format!("{QUICK_SWITCH_CODEX_PREFIX}{}", best.id),
+                        format!("⚡ Switch to Best Codex: {label} ({quota_str})"),
+                    )
+                    .enabled(true)
+                    .build(app)
+                    .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?
+                };
+                builder = builder.item(&item);
+            } else {
+                let item = MenuItemBuilder::with_id(
+                    "quick-codex-none",
+                    "⚡ No Codex recommendation available",
+                )
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?;
+                builder = builder.item(&item);
+            }
+        }
+
+        if gemini_enabled && !gemini_accounts.is_empty() {
+            if let Some(best) = rec_gemini {
+                let is_active = data.active_gemini_account_id.as_deref() == Some(best.id.as_str());
+                let quota_str = remaining_percent(best)
+                    .map(|r| format!("{r:.0}% left"))
+                    .unwrap_or_else(|| "available".to_string());
+                let label = account_label(best, privacy_mode);
+
+                let item = if is_active {
+                    MenuItemBuilder::with_id(
+                        "quick-gemini-active",
+                        format!("⚡ Best Antigravity: {label} ({quota_str}) (active)"),
+                    )
+                    .enabled(false)
+                    .build(app)
+                    .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?
+                } else {
+                    MenuItemBuilder::with_id(
+                        format!("{QUICK_SWITCH_GEMINI_PREFIX}{}", best.id),
+                        format!("⚡ Switch to Best Antigravity: {label} ({quota_str})"),
+                    )
+                    .enabled(true)
+                    .build(app)
+                    .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?
+                };
+                builder = builder.item(&item);
+            } else {
+                let item = MenuItemBuilder::with_id(
+                    "quick-gemini-none",
+                    "⚡ No Antigravity recommendation available",
+                )
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build quick switch item: {error}")))?;
+                builder = builder.item(&item);
+            }
+        }
+    } else {
+        let empty_item = MenuItemBuilder::with_id("no-accounts", "No accounts added")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
+        builder = builder.item(&empty_item);
+    }
+
+    builder = builder.separator();
+
+    // 2. Sectioned accounts by provider
+    if codex_enabled {
+        let header_codex = MenuItemBuilder::with_id("header-codex", "── Codex ──")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
+        builder = builder.item(&header_codex);
+
+        if codex_accounts.is_empty() {
+            let item = MenuItemBuilder::with_id("empty-codex", "   No Codex accounts added")
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
+            builder = builder.item(&item);
+        } else {
+            let sorted_codex = sort_accounts_for_provider(&codex_accounts, data.active_account_id.as_deref());
+            for account in sorted_codex {
+                let is_active = data.active_account_id.as_deref() == Some(account.id.as_str());
+                let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
+                let is_recommended = !needs_relogin && rec_codex.is_some_and(|item| item.id == account.id);
+                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+
+                let item = MenuItemBuilder::with_id(
+                    format!("{SWITCH_CODEX_ACCOUNT_PREFIX}{}", account.id),
+                    label,
+                )
+                .enabled(!is_active && !needs_relogin)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray account item: {error}")))?;
+                builder = builder.item(&item);
+            }
+        }
+    }
+
+    if codex_enabled && gemini_enabled {
+        builder = builder.separator();
+    }
+
+    if gemini_enabled {
+        let header_gemini = MenuItemBuilder::with_id("header-antigravity", "── Antigravity ──")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
+        builder = builder.item(&header_gemini);
+
+        if gemini_accounts.is_empty() {
+            let item = MenuItemBuilder::with_id("empty-gemini", "   No Antigravity accounts added")
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
+            builder = builder.item(&item);
+        } else {
+            let sorted_gemini = sort_accounts_for_provider(&gemini_accounts, data.active_gemini_account_id.as_deref());
+            for account in sorted_gemini {
+                let is_active = data.active_gemini_account_id.as_deref() == Some(account.id.as_str());
+                let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
+                let is_recommended = !needs_relogin && rec_gemini.is_some_and(|item| item.id == account.id);
+                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+
+                let item = MenuItemBuilder::with_id(
+                    format!("{SWITCH_GEMINI_ACCOUNT_PREFIX}{}", account.id),
+                    label,
+                )
+                .enabled(!is_active && !needs_relogin)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray account item: {error}")))?;
+                builder = builder.item(&item);
+            }
+        }
+    }
+
     let menu = builder
-        .text("show", "Open SwitchAI")
+        .separator()
+        .text("show", "Show account manager")
         .text("refresh", "Refresh quotas now")
         .separator()
         .text("quit", "Quit")
@@ -707,5 +994,70 @@ mod tests {
         let masked = alert_body(&account, 1, 20.0, true);
         assert!(masked.contains("ve••••••3@gmail.com"));
         assert!(!masked.contains("vezlin13@gmail.com"));
+    }
+
+    #[test]
+    fn test_quota_suffix() {
+        let healthy = make_account("1", "u@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
+        assert_eq!(quota_suffix(&healthy), " · 90% left");
+
+        let no_quota = make_account("4", "u@test.com", AccountProvider::Codex, None);
+        assert_eq!(quota_suffix(&no_quota), " · quota unavailable");
+
+        let mut relogin = make_account("5", "u@test.com", AccountProvider::Codex, Some(10.0));
+        relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
+        assert_eq!(quota_suffix(&relogin), " · re-login required");
+    }
+
+    #[test]
+    fn test_account_menu_label() {
+        let account = make_account("1", "user@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
+
+        // Active
+        let label_active = account_menu_label(&account, true, false, false);
+        assert_eq!(label_active, "✓ user@test.com · 90% left");
+
+        // Active & Recommended
+        let label_active_rec = account_menu_label(&account, true, true, false);
+        assert_eq!(label_active_rec, "✓ user@test.com · 90% left (recommended)");
+
+        // Inactive & Recommended
+        let label_rec = account_menu_label(&account, false, true, false);
+        assert_eq!(label_rec, "★ user@test.com · 90% left (recommended)");
+
+        // Inactive normal
+        let label_normal = account_menu_label(&account, false, false, false);
+        assert_eq!(label_normal, "• user@test.com · 90% left");
+
+        // Needs relogin
+        let mut relogin = make_account("2", "relogin@test.com", AccountProvider::Codex, Some(10.0));
+        relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
+
+        let label_relogin = account_menu_label(&relogin, false, false, false);
+        assert_eq!(label_relogin, "⚠️ relogin@test.com (re-login required)");
+
+        let label_relogin_active = account_menu_label(&relogin, true, false, false);
+        assert_eq!(label_relogin_active, "✓ ⚠️ relogin@test.com (re-login required)");
+    }
+
+    #[test]
+    fn test_sort_accounts_for_provider() {
+        let c1 = make_account("c1", "low@test.com", AccountProvider::Codex, Some(80.0)); // 20% left
+        let c2 = make_account("c2", "high@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
+        let mut c3 = make_account("c3", "relogin@test.com", AccountProvider::Codex, Some(5.0)); // 95% left but relogin
+        c3.token_health.status = TokenHealthStatus::NeedsRelogin;
+        let c4 = make_account("c4", "mid@test.com", AccountProvider::Codex, Some(50.0)); // 50% left
+
+        let accounts = vec![&c1, &c2, &c3, &c4];
+
+        // Case 1: c1 is active -> c1 must be first, then c2 (90%), c4 (50%), and c3 (relogin) last
+        let sorted = sort_accounts_for_provider(&accounts, Some("c1"));
+        let ids: Vec<&str> = sorted.into_iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["c1", "c2", "c4", "c3"]);
+
+        // Case 2: no active account -> c2 (90%), c4 (50%), c1 (20%), c3 (relogin)
+        let sorted2 = sort_accounts_for_provider(&accounts, None);
+        let ids2: Vec<&str> = sorted2.into_iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids2, vec!["c2", "c4", "c1", "c3"]);
     }
 }
