@@ -68,6 +68,7 @@ export type AppSettings = {
   autoCheckUpdates: boolean
   ignoredUpdateVersion?: string | null
   privacyMode?: boolean
+  privacyMigrationPending?: boolean
 }
 
 export type UpdateCheckResult = {
@@ -77,6 +78,7 @@ export type UpdateCheckResult = {
   releaseDate?: string | null
   releaseNotes?: string | null
   downloadSize?: number | null
+  stagedReady?: boolean
 }
 
 export type UpdateProgress = {

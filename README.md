@@ -155,6 +155,12 @@ Read the full [Privacy](docs/PRIVACY.md) and
 - Rust stable
 - Platform build tools for Tauri
 
+Tagged Windows releases require the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions
+secret (and its optional password). The corresponding public key is compiled
+into the application; keep it paired with the private key so `SwitchAI.exe.sig`
+and `latest.json` are generated and published together. Tagged builds fail when
+the key is missing instead of publishing an updater-incomplete release.
+
 ### Run locally
 
 ```bash

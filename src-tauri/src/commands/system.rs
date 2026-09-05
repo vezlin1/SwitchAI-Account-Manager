@@ -118,6 +118,30 @@ pub fn open_recovery_data_directory() -> Result<(), IpcErrorDto> {
 }
 
 #[tauri::command]
+pub fn migrate_privacy_mode(
+    legacy_enabled: bool,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<AppDataDto, IpcErrorDto> {
+    command_result((|| {
+        let data = lock_data(state.inner())?;
+        if !data.app_settings.privacy_migration_pending {
+            return Ok(AppDataDto::from(&*data));
+        }
+        let mut next = data.clone();
+        next.app_settings.migrate_privacy(legacy_enabled);
+        let committed = commit_state_data(state.inner(), data, next)?;
+        crate::tray_dashboard::refresh_dashboard(state.inner());
+        crate::tray_dashboard::emit_state_changed(state.inner(), "settings", Vec::new());
+        Ok(AppDataDto::from(&committed))
+    })())
+}
+
+#[tauri::command]
+pub fn acknowledge_update_startup() -> Result<(), IpcErrorDto> {
+    command_result(crate::portable_updater::acknowledge_update_startup())
+}
+
+#[tauri::command]
 pub fn get_auto_refresh_status(
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AutoRefreshStatusDto, IpcErrorDto> {
@@ -135,6 +159,7 @@ pub fn set_app_settings(
         let mut settings = crate::models::AppSettings::from(settings).normalized();
         let (data, next) = {
             let data = lock_data(state.inner())?;
+            settings.privacy_migration_pending = data.app_settings.privacy_migration_pending;
             settings.hidden_account_ids.retain(|account_id| {
                 data.accounts
                     .iter()

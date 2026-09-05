@@ -212,25 +212,27 @@ pub(crate) fn set_active_account_data(
     Ok(result)
 }
 
+pub(crate) fn switch_codex_account(
+    account_id: &str,
+    state: &Arc<SharedState>,
+) -> AppResult<(AppData, Option<String>)> {
+    let data = set_active_account_data(account_id, state)?;
+    crate::tray_dashboard::emit_state_changed(state, "accounts", vec![account_id.to_string()]);
+    let warning = restart_codex_process().err().map(|err| err.user_message());
+    Ok((data, warning))
+}
+
 #[tauri::command]
 pub fn switch_active_account_and_restart_codex(
     account_id: String,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<SwitchAccountRestartResponse, IpcErrorDto> {
-    command_result((|| {
-        let state_data = set_active_account_data(&account_id, state.inner())?;
-        crate::tray_dashboard::emit_state_changed(
-            state.inner(),
-            "accounts",
-            vec![account_id.clone()],
-        );
-        let restart_warning = restart_codex_process().err().map(|err| err.user_message());
-
-        Ok(SwitchAccountRestartResponse {
-            state: AppDataDto::from(&state_data),
+    command_result(switch_codex_account(&account_id, state.inner()).map(
+        |(data, restart_warning)| SwitchAccountRestartResponse {
+            state: AppDataDto::from(&data),
             restart_warning,
-        })
-    })())
+        },
+    ))
 }
 
 pub(crate) async fn set_active_gemini_account_data(
@@ -290,43 +292,49 @@ pub(crate) async fn set_active_gemini_account_data(
     Ok(result)
 }
 
+fn restart_gemini_targets(
+    targets: &[String],
+    mut restart: impl FnMut(&str) -> AppResult<()>,
+) -> Option<String> {
+    let mut warnings = Vec::new();
+    for (target, label) in [("antigravity", "Antigravity"), ("ide", "Antigravity IDE")] {
+        if targets.iter().any(|value| value == target)
+            && let Err(error) = restart(target)
+        {
+            warnings.push(format!("{label}: {}", error.user_message()));
+        }
+    }
+    (!warnings.is_empty()).then(|| warnings.join("; "))
+}
+
+pub(crate) async fn switch_gemini_account(
+    account_id: &str,
+    state: &Arc<SharedState>,
+) -> AppResult<(AppData, Option<String>)> {
+    let data = set_active_gemini_account_data(account_id, state).await?;
+    crate::tray_dashboard::emit_state_changed(state, "accounts", vec![account_id.to_string()]);
+    let warning =
+        restart_gemini_targets(
+            &data.app_settings.gemini_switch_targets,
+            |target| match target {
+                "ide" => crate::gemini::restart_antigravity_ide_process(),
+                _ => crate::gemini::restart_antigravity_process(),
+            },
+        );
+    Ok((data, warning))
+}
+
 #[tauri::command]
 pub async fn switch_active_gemini_account_and_restart_antigravity(
     account_id: String,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<SwitchAccountRestartResponse, IpcErrorDto> {
-    command_result(
-        async {
-            let state_data = set_active_gemini_account_data(&account_id, state.inner()).await?;
-            crate::tray_dashboard::emit_state_changed(state.inner(), "accounts", vec![account_id]);
-
-            let targets = &state_data.app_settings.gemini_switch_targets;
-            let mut warnings = Vec::new();
-
-            if targets.iter().any(|t| t == "antigravity")
-                && let Err(err) = crate::gemini::restart_antigravity_process()
-            {
-                warnings.push(format!("Antigravity: {}", err.user_message()));
-            }
-            if targets.iter().any(|t| t == "ide")
-                && let Err(err) = crate::gemini::restart_antigravity_ide_process()
-            {
-                warnings.push(format!("Antigravity IDE: {}", err.user_message()));
-            }
-
-            let restart_warning = if warnings.is_empty() {
-                None
-            } else {
-                Some(warnings.join("; "))
-            };
-
-            Ok(SwitchAccountRestartResponse {
-                state: AppDataDto::from(&state_data),
-                restart_warning,
-            })
-        }
-        .await,
-    )
+    command_result(switch_gemini_account(&account_id, state.inner()).await.map(
+        |(data, restart_warning)| SwitchAccountRestartResponse {
+            state: AppDataDto::from(&data),
+            restart_warning,
+        },
+    ))
 }
 
 #[tauri::command]
@@ -563,4 +571,39 @@ pub fn set_account_order(
         let result = commit_state_data(state.inner(), data, next)?;
         Ok(AppDataDto::from(&result))
     })())
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    #[test]
+    fn configured_restart_targets_are_honored_and_all_warnings_survive() {
+        for targets in [
+            vec![],
+            vec!["ide"],
+            vec!["antigravity"],
+            vec!["antigravity", "ide"],
+        ] {
+            let targets: Vec<String> = targets.into_iter().map(str::to_string).collect();
+            let mut called = Vec::new();
+            let warning = restart_gemini_targets(&targets, |target| {
+                called.push(target.to_string());
+                Err(AppError::msg(format!("{target} unavailable")))
+            });
+            assert_eq!(called, targets);
+            if called.is_empty() {
+                assert!(warning.is_none());
+            } else {
+                for target in called {
+                    assert!(
+                        warning
+                            .as_ref()
+                            .unwrap()
+                            .contains(&format!("{target} unavailable"))
+                    );
+                }
+            }
+        }
+        assert!(restart_gemini_targets(&["ide".to_string()], |_| Ok(())).is_none());
+    }
 }

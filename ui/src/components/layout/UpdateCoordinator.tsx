@@ -71,6 +71,7 @@ export function UpdateCoordinator({
         isOpen={updateModalOpen}
         onClose={() => setUpdateModalOpen(false)}
         updateInfo={updateInfo}
+        onStageReady={() => setUpdateInfo({ ...updateInfo, stagedReady: true })}
         onDismissVersion={async (ver) => {
           await api.dismissUpdateVersion(ver)
           setUpdateInfo(null)

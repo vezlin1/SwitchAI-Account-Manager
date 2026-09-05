@@ -1,3 +1,5 @@
+import { api, describeIpcError } from './api'
+import { subscribeFocusSync } from './utils/focusSync'
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -62,7 +64,9 @@ function App() {
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
   const syncedProviderRef = useRef<AccountProvider | null>(null)
+  const [privacyError, setPrivacyError] = useState<string | null>(null)
   const pendingPrivacyRef = useRef<boolean | null>(null)
+  const updateAckSentRef = useRef(false)
 
   useEffect(() => {
     warmUpAntigravitySurfacesCache()
@@ -107,6 +111,12 @@ function App() {
 
   useEffect(() => {
     if (!data?.appSettings) return
+    if (data.appSettings.privacyMigrationPending) {
+      let legacyEnabled = privacyMode
+      try { legacyEnabled = localStorage.getItem('switchai:privacy-mode') === 'true' } catch { /* keep current preference */ }
+      void api.migratePrivacyMode(legacyEnabled).then((state) => { setPrivacyError(null); setData(state) }).catch((error) => setPrivacyError(describeIpcError(error)))
+      return
+    }
     if (pendingPrivacyRef.current !== null) {
       const target = pendingPrivacyRef.current
       pendingPrivacyRef.current = null
@@ -127,7 +137,13 @@ function App() {
         // ignore
       }
     }
-  }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings])
+  }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings, setData])
+
+  useEffect(() => {
+    if (updateAckSentRef.current || !data || loading || startup?.mode !== 'ready' || data.appSettings.privacyMigrationPending) return
+    updateAckSentRef.current = true
+    void api.acknowledgeUpdateStartup().catch(() => undefined)
+  }, [data, loading, startup?.mode])
 
   const handleTogglePrivacyMode = useCallback(() => {
     const next = !privacyMode
@@ -176,26 +192,9 @@ function App() {
     }
   }, [data, error, loading])
 
-  const lastFocusReloadRef = useRef(0)
-
-  useEffect(() => {
-    let unlistenFocus: (() => void) | undefined
-    void appWindow.onFocusChanged(({ payload: focused }) => {
-      if (focused) {
-        const now = Date.now()
-        if (now - lastFocusReloadRef.current > 60_000) {
-          lastFocusReloadRef.current = now
-          void reload()
-        }
-      }
-    }).then((stop) => {
-      unlistenFocus = stop
-    }).catch(() => undefined)
-
-    return () => {
-      unlistenFocus?.()
-    }
-  }, [reload])
+  useEffect(() => subscribeFocusSync(
+    (listener) => appWindow.onFocusChanged(listener), document, reload
+  ), [reload])
 
   // Global Keyboard Shortcuts
   const isModalOpen = settingsOpen || updateModalOpen || startup?.mode === 'recovery_required'
@@ -210,6 +209,14 @@ function App() {
     [handleSelectProvider, handleTogglePrivacyMode]
   )
   useKeyboardShortcuts(shortcuts, !isModalOpen)
+
+  // Do not mount personal data until persisted privacy and the rendering context agree.
+  if (data && (data.appSettings.privacyMigrationPending ||
+      (data.appSettings.privacyMode !== undefined && data.appSettings.privacyMode !== privacyMode))) {
+    return <div role="status" className="h-full flex flex-col items-center justify-center">
+      {privacyError ? <>Could not save privacy preferences: {privacyError}<button onClick={() => void reload()}>Retry</button></> : 'Loading privacy preferences...'}
+    </div>
+  }
 
   return (
     <div className={`app-outer h-full w-full text-ag-text ${privacyMode ? 'privacy-mode' : ''}`}>

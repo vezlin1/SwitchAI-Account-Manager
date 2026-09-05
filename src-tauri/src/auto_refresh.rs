@@ -539,7 +539,22 @@ async fn refresh_all_accounts_inner(
                         warnings: Vec::new(),
                     });
                 }
-                match refresh_single_account(&shared, &account_id).await {
+                let result = refresh_single_account(&shared, &account_id).await;
+                // Persist failures before releasing the same gate used by individual refreshes.
+                // Success already commits its adaptive deadline with the quota snapshot.
+                let (succeeded, retry_after) = match &result {
+                    Ok(refresh) => (refresh.succeeded, None),
+                    Err(error) => (false, error.retry_after_seconds()),
+                };
+                if let Err(error) =
+                    update_account_schedule_with_retry(&shared, &account_id, succeeded, retry_after)
+                {
+                    log::warn!(
+                        "Failed to persist refresh schedule for {account_id}: {}",
+                        error.user_message()
+                    );
+                }
+                match result {
                     Ok(refresh) => {
                         if let Ok(data) = lock_data(&shared)
                             && let Some(app) = shared.app_handle.get()
@@ -568,25 +583,21 @@ async fn refresh_all_accounts_inner(
     }
 
     let mut outcome = RefreshRunOutcome::default();
-    let mut schedule_updates = Vec::with_capacity(handles.len());
 
     for handle in handles {
         match handle.await {
             Ok((account_id, Ok(refresh))) => {
                 if refresh.succeeded {
                     outcome.succeeded = outcome.succeeded.saturating_add(1);
-                    schedule_updates.push((account_id, true, None));
                 } else {
                     outcome.failed = outcome.failed.saturating_add(1);
-                    schedule_updates.push((account_id.clone(), false, None));
                     outcome.failed_account_ids.push(account_id);
                 }
                 outcome.warnings.extend(refresh.warnings);
             }
             Ok((account_id, Err(error))) => {
                 outcome.failed = outcome.failed.saturating_add(1);
-                let retry_after = error.retry_after_seconds();
-                schedule_updates.push((account_id.clone(), false, retry_after));
+                log::warn!("Account refresh failed: {}", error.user_message());
                 outcome.failed_account_ids.push(account_id);
             }
             Err(_) => {
@@ -596,13 +607,6 @@ async fn refresh_all_accounts_inner(
                     .push("unknown-worker".to_string());
             }
         }
-    }
-
-    if let Err(error) = batch_update_account_schedules(state, &schedule_updates) {
-        log::warn!(
-            "Failed to persist batch account schedules: {}",
-            error.user_message()
-        );
     }
 
     outcome
@@ -916,77 +920,6 @@ pub(crate) fn update_account_schedule_with_retry(
     Ok(())
 }
 
-fn batch_update_account_schedules(
-    state: &Arc<SharedState>,
-    updates: &[(String, bool, Option<i64>)],
-) -> AppResult<()> {
-    if updates.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_ts();
-    let chatgpt_geo_blocked = lock_auto_refresh(state)
-        .map(|runtime| runtime.chatgpt_geo_blocked)
-        .unwrap_or(false);
-
-    let (data, backed_off_accounts, next_run_at, next) = {
-        let data = lock_data(state)?;
-        let mut next = data.clone();
-        let settings = next.app_settings.clone().normalized();
-        let active_codex = next
-            .active_account_id
-            .as_ref()
-            .and_then(|active_id| next.accounts.iter().find(|a| &a.id == active_id).cloned());
-        let active_gemini_id = next.active_gemini_account_id.clone();
-
-        for (account_id, succeeded, retry_after) in updates {
-            let Some(account) = next.accounts.iter_mut().find(|a| &a.id == account_id) else {
-                continue;
-            };
-            let is_active =
-                is_account_active(account, active_codex.as_ref(), active_gemini_id.as_deref());
-            if *succeeded {
-                account.quota_refresh_failures = 0;
-                let delay = base_refresh_seconds(&settings, is_active);
-                account.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
-            } else {
-                account.quota_refresh_failures = account.quota_refresh_failures.saturating_add(1);
-                if let Some(retry_after) = retry_after {
-                    account.quota_next_refresh_at = Some(now.saturating_add((*retry_after).max(5)));
-                } else {
-                    let multiplier = 1_i64 << account.quota_refresh_failures.min(6);
-                    let delay = base_refresh_seconds(&settings, is_active)
-                        .saturating_mul(multiplier)
-                        .min(MAX_BACKOFF_SECONDS);
-                    account.quota_next_refresh_at = Some(now.saturating_add(jittered_delay(delay)));
-                }
-            }
-        }
-
-        let backed_off_accounts = next
-            .accounts
-            .iter()
-            .filter(|account| {
-                account.token_health.status != TokenHealthStatus::NeedsRelogin
-                    && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
-                    && account.quota_refresh_failures > 0
-            })
-            .count() as u32;
-        let next_run_at = next_scheduled_run_for_data(&next, &settings, chatgpt_geo_blocked);
-        (data, backed_off_accounts, next_run_at, next)
-    };
-
-    commit_state_data(state, data, next)?;
-
-    let mut runtime = lock_auto_refresh(state)?;
-    runtime.status.backed_off_accounts = backed_off_accounts;
-    runtime.status.next_run_at = next_run_at;
-    drop(runtime);
-    notify_schedule_changed(state);
-    emit_status_changed(state);
-    Ok(())
-}
-
 fn next_scheduled_run_for_data(
     data: &AppData,
     settings: &AppSettings,
@@ -1159,7 +1092,7 @@ mod tests {
     use super::{
         ACTIVE_MIN_REFRESH_SECONDS, INACTIVE_MIN_REFRESH_SECONDS, RefreshRunOutcome,
         effective_next_attempt_at, mark_refresh_finished, next_after_success, refresh_work_items,
-        scheduler_wait_seconds,
+        scheduler_wait_seconds, update_account_schedule_with_retry,
     };
 
     fn account(used_percent: f64, fetched_at: i64, reset_at: Option<i64>) -> Account {
@@ -1240,6 +1173,28 @@ mod tests {
             effective_next_attempt_at(&account, &settings, true, now),
             now + 5_000
         );
+    }
+
+    #[test]
+    fn successful_bulk_schedule_keeps_provider_adaptive_deadline() {
+        let now = crate::models::now_ts();
+        let mut current = account(90.0, now, Some(now + 20_000));
+        current.quota_next_refresh_at = Some(now + 300);
+        let data = AppData {
+            accounts: vec![current],
+            active_account_id: Some("account-1".to_string()),
+            ..AppData::default()
+        };
+        let state =
+            Arc::new(SharedState::new_with_startup_error(data, None).expect("create shared state"));
+
+        update_account_schedule_with_retry(&state, "account-1", true, None)
+            .expect("update runtime schedule");
+        let stored = crate::app_state::lock_data(&state)
+            .expect("lock state")
+            .accounts[0]
+            .quota_next_refresh_at;
+        assert_eq!(stored, Some(now + 300));
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub async fn check_for_updates_internal(
             release_date: None,
             release_notes: None,
             download_size: None,
+            staged_ready: false,
         });
     }
 
@@ -46,6 +47,7 @@ pub async fn check_for_updates_internal(
                 release_date: manifest.release_date,
                 release_notes: manifest.notes,
                 download_size: manifest.platforms.get(platform_key).and_then(|p| p.size),
+                staged_ready: crate::portable_updater::read_staged_update_metadata()?.is_some(),
             });
         }
 
@@ -64,6 +66,7 @@ pub async fn check_for_updates_internal(
             release_date,
             release_notes,
             download_size,
+            staged_ready: crate::portable_updater::read_staged_update_metadata()?.is_some(),
         })
     } else {
         *crate::app_state::lock_available_update(state)? = None;
@@ -76,6 +79,7 @@ pub async fn check_for_updates_internal(
             release_date: None,
             release_notes: None,
             download_size: None,
+            staged_ready: false,
         })
     }
 }
@@ -134,16 +138,16 @@ pub async fn download_and_stage_update(
 
             let pubkey = crate::portable_updater::get_update_public_key();
 
-            crate::portable_updater::download_and_stage_update(
-                &app,
-                &state.http_client,
-                &platform.url,
-                platform.size,
-                &platform.signature,
-                platform.sha256.as_deref(),
-                pubkey,
-            )
-            .await?;
+            let request = crate::portable_updater::UpdateDownloadRequest {
+                download_url: &platform.url,
+                expected_size: platform.size,
+                signature: &platform.signature,
+                expected_sha256: platform.sha256.as_deref(),
+                public_key: pubkey,
+                version: &manifest.version,
+            };
+            crate::portable_updater::download_and_stage_update(&app, &state.http_client, &request)
+                .await?;
 
             Ok(true)
         }

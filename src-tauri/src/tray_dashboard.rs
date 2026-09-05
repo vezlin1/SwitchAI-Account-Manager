@@ -675,7 +675,11 @@ pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
     });
 }
 
-pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
+pub fn notify_account_selected(
+    state: &Arc<SharedState>,
+    account: &Account,
+    restart_warning: Option<&str>,
+) {
     let Some(app) = state.app_handle.get() else {
         return;
     };
@@ -689,10 +693,16 @@ pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
     let _ = show_notification(
         app,
         "Account selected",
-        format!(
-            "{} will be used on the next {client} launch. The running client was not restarted.",
-            account_label(account, privacy_mode)
-        ),
+        match restart_warning {
+            Some(warning) => format!(
+                "{} selected. {client} restart warning: {warning}",
+                account_label(account, privacy_mode)
+            ),
+            None => format!(
+                "{} selected. Configured {client} restart completed.",
+                account_label(account, privacy_mode)
+            ),
+        },
     );
 }
 

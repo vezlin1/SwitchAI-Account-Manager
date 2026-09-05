@@ -38,7 +38,11 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if crate::portable_updater::run_update_helper() {
+        return;
+    }
     crate::portable_updater::handle_after_update_wait();
+    crate::portable_updater::cleanup_stale_update_files();
     let (mut initial_data, startup_error) = match load_app_data() {
         Ok(data) => (data, None),
         Err(err) => {
@@ -132,13 +136,8 @@ pub fn run() {
                                     id.strip_prefix(tray_dashboard::QUICK_SWITCH_CODEX_PREFIX)
                                 })
                             {
-                                match commands::set_active_account_data(account_id, &tray_state) {
-                                    Ok(data) => {
-                                        tray_dashboard::emit_state_changed(
-                                            &tray_state,
-                                            "accounts",
-                                            vec![account_id.to_string()],
-                                        );
+                                match commands::switch_codex_account(account_id, &tray_state) {
+                                    Ok((data, restart_warning)) => {
                                         if let Some(account) = data
                                             .accounts
                                             .iter()
@@ -147,6 +146,7 @@ pub fn run() {
                                             tray_dashboard::notify_account_selected(
                                                 &tray_state,
                                                 account,
+                                                restart_warning.as_deref(),
                                             );
                                         }
                                         tray_dashboard::refresh_dashboard(&tray_state);
@@ -165,18 +165,13 @@ pub fn run() {
                                 let selection_state = Arc::clone(&tray_state);
                                 let account_id = account_id.to_string();
                                 tauri::async_runtime::spawn(async move {
-                                    match commands::set_active_gemini_account_data(
+                                    match commands::switch_gemini_account(
                                         &account_id,
                                         &selection_state,
                                     )
                                     .await
                                     {
-                                        Ok(data) => {
-                                            tray_dashboard::emit_state_changed(
-                                                &selection_state,
-                                                "accounts",
-                                                vec![account_id.clone()],
-                                            );
+                                        Ok((data, restart_warning)) => {
                                             if let Some(account) = data
                                                 .accounts
                                                 .iter()
@@ -185,6 +180,7 @@ pub fn run() {
                                                 tray_dashboard::notify_account_selected(
                                                     &selection_state,
                                                     account,
+                                                    restart_warning.as_deref(),
                                                 );
                                             }
                                             tray_dashboard::refresh_dashboard(&selection_state);
@@ -268,6 +264,12 @@ pub fn run() {
                         }
                     }
                 });
+                if !crate::portable_updater::is_supervised_update_launch() {
+                    // Legacy v1.2 launches used --after-update without the
+                    // helper handshake; keep that path compatible while new
+                    // updates are confirmed by the frontend acknowledgement.
+                    crate::portable_updater::confirm_update_startup();
+                }
             }
             show_main_window(app.handle());
 
@@ -305,6 +307,8 @@ pub fn run() {
             commands::get_account,
             commands::get_auto_refresh_status,
             commands::set_app_settings,
+            commands::migrate_privacy_mode,
+            commands::acknowledge_update_startup,
             commands::start_oauth_flow,
             commands::get_oauth_flow_status,
             commands::cancel_oauth_flow,

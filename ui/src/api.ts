@@ -63,6 +63,8 @@ export function describeIpcError(error: unknown): string {
 
 export const api = {
   getState: () => invoke<AppData>('get_app_state'),
+  migratePrivacyMode: (legacyEnabled: boolean) => invoke<AppData>('migrate_privacy_mode', { legacyEnabled }),
+  acknowledgeUpdateStartup: () => invoke<void>('acknowledge_update_startup'),
   getStartupStatus: () => invoke<StartupStatus>('get_startup_status'),
   restoreStateBackup: () => invoke<StartupStatus>('restore_state_backup'),
   startFresh: () => invoke<StartupStatus>('start_fresh'),

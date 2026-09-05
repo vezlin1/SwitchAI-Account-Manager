@@ -37,7 +37,8 @@ if (fs.existsSync(exePath)) {
   size = fileBuffer.length
   sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex')
 } else {
-  console.warn(`[generate-update-manifest] Executable not found at: ${exePath}`)
+  console.error(`[generate-update-manifest] Error: executable not found at: ${exePath}`)
+  process.exit(1)
 }
 
 // Read signature
@@ -51,6 +52,11 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim()
 if (!signature) {
   console.error(`[generate-update-manifest] Error: Signature file is empty at: ${sigPath}`)
   console.error('[generate-update-manifest] An update manifest cannot be generated with an empty signature.')
+  process.exit(1)
+}
+
+if (!sha256 || size <= 0) {
+  console.error('[generate-update-manifest] Error: executable hash and size are required')
   process.exit(1)
 }
 

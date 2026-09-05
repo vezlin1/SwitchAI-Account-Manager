@@ -163,6 +163,18 @@ pub struct AppSettings {
     pub auto_check_updates: bool,
     pub ignored_update_version: Option<String>,
     pub privacy_mode: bool,
+    pub privacy_migration_pending: bool,
+}
+
+impl AppSettings {
+    pub(crate) fn migrate_privacy(&mut self, legacy_enabled: bool) -> bool {
+        if !self.privacy_migration_pending {
+            return false;
+        }
+        self.privacy_mode = legacy_enabled;
+        self.privacy_migration_pending = false;
+        true
+    }
 }
 
 impl Default for AppSettings {
@@ -186,6 +198,7 @@ impl Default for AppSettings {
             auto_check_updates: true,
             ignored_update_version: None,
             privacy_mode: false,
+            privacy_migration_pending: false,
         }
     }
 }

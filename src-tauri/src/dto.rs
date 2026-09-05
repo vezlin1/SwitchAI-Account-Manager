@@ -92,6 +92,8 @@ pub struct AppSettingsDto {
     pub ignored_update_version: Option<String>,
     #[serde(default)]
     pub privacy_mode: bool,
+    #[serde(default)]
+    pub privacy_migration_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +105,8 @@ pub struct UpdateCheckResultDto {
     pub release_date: Option<String>,
     pub release_notes: Option<String>,
     pub download_size: Option<u64>,
+    #[serde(default)]
+    pub staged_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +290,7 @@ impl From<&AppSettings> for AppSettingsDto {
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version.clone(),
             privacy_mode: settings.privacy_mode,
+            privacy_migration_pending: settings.privacy_migration_pending,
         }
     }
 }
@@ -305,6 +310,7 @@ impl From<AppSettingsDto> for AppSettings {
             auto_check_updates: settings.auto_check_updates,
             ignored_update_version: settings.ignored_update_version,
             privacy_mode: settings.privacy_mode,
+            privacy_migration_pending: settings.privacy_migration_pending,
         }
     }
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
+use crate::atomic_file::write_atomic;
 use crate::errors::{AppError, AppResult};
 
 pub const DEFAULT_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwNTU1MDVDNDhENEI2QTQKUldTa3R0UklYRkJWTUxVb2d6dUUwUVAzdTZINU4rY0RGNFFUeEJIeWhuK2QyWXFSYkFJMkg4V3kK";
@@ -37,6 +38,27 @@ pub struct UpdateManifest {
     #[serde(default, rename = "pub_date")]
     pub release_date: Option<String>,
     pub platforms: HashMap<String, UpdateManifestPlatform>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagedUpdateMetadata {
+    pub version: String,
+    pub url: String,
+    pub signature: String,
+    pub sha256: Option<String>,
+    pub size: Option<u64>,
+    pub public_key: String,
+    #[serde(default)]
+    pub ack_token: Option<String>,
+}
+
+pub struct UpdateDownloadRequest<'a> {
+    pub download_url: &'a str,
+    pub expected_size: Option<u64>,
+    pub signature: &'a str,
+    pub expected_sha256: Option<&'a str>,
+    pub public_key: &'a str,
+    pub version: &'a str,
 }
 
 pub fn current_platform_key() -> &'static str {
@@ -99,13 +121,127 @@ pub fn is_newer_version(current: &str, candidate: &str) -> bool {
 pub fn get_exe_paths() -> AppResult<(PathBuf, PathBuf, PathBuf)> {
     let current_exe = std::env::current_exe()
         .map_err(|e| AppError::msg(format!("Cannot determine current executable path: {e}")))?;
+    get_exe_paths_for(&current_exe)
+}
+
+fn get_exe_paths_for(current_exe: &Path) -> AppResult<(PathBuf, PathBuf, PathBuf)> {
     let file_name = current_exe
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("SwitchAI.exe");
     let old_exe = current_exe.with_file_name(format!("{file_name}.old"));
     let tmp_exe = current_exe.with_file_name(format!("{file_name}.update.tmp"));
-    Ok((current_exe, old_exe, tmp_exe))
+    Ok((current_exe.to_path_buf(), old_exe, tmp_exe))
+}
+
+pub fn get_stage_metadata_path() -> AppResult<PathBuf> {
+    let (current_exe, _, _) = get_exe_paths()?;
+    get_stage_metadata_path_for(&current_exe)
+}
+
+fn get_stage_metadata_path_for(current_exe: &Path) -> AppResult<PathBuf> {
+    let name = current_exe
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("SwitchAI.exe");
+    Ok(current_exe.with_file_name(format!("{name}.update.json")))
+}
+
+fn get_update_helper_path_for(current_exe: &Path) -> AppResult<PathBuf> {
+    let name = current_exe
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("SwitchAI.exe");
+    Ok(current_exe.with_file_name(format!("{name}.update-helper.exe")))
+}
+
+fn get_update_ack_path_for(current_exe: &Path) -> AppResult<PathBuf> {
+    let name = current_exe
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("SwitchAI.exe");
+    Ok(current_exe.with_file_name(format!("{name}.update.ready")))
+}
+
+fn command_arg(name: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+}
+
+pub fn is_supervised_update_launch() -> bool {
+    command_arg("--update-ack-path").is_some() && command_arg("--update-ack-token").is_some()
+}
+
+pub fn acknowledge_update_startup() -> AppResult<()> {
+    if !is_supervised_update_launch() {
+        return Ok(());
+    }
+    let current_exe = get_exe_paths()?.0;
+    let expected_path = get_update_ack_path_for(&current_exe)?;
+    let supplied_path = PathBuf::from(
+        command_arg("--update-ack-path")
+            .ok_or_else(|| AppError::msg("Update acknowledgement path is missing"))?,
+    );
+    if supplied_path != expected_path {
+        return Err(AppError::msg("Update acknowledgement path is invalid"));
+    }
+    let token = command_arg("--update-ack-token")
+        .ok_or_else(|| AppError::msg("Update acknowledgement token is missing"))?;
+    if token.len() < 16 || token.len() > 128 {
+        return Err(AppError::msg("Update acknowledgement token is invalid"));
+    }
+    write_atomic(&expected_path, token.as_bytes(), false)
+}
+
+pub fn read_staged_update_metadata() -> AppResult<Option<StagedUpdateMetadata>> {
+    let (current_exe, _, _) = get_exe_paths()?;
+    read_staged_update_metadata_for(&current_exe)
+}
+
+pub fn read_staged_update_metadata_for(
+    current_exe: &Path,
+) -> AppResult<Option<StagedUpdateMetadata>> {
+    let metadata_path = get_stage_metadata_path_for(current_exe)?;
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let (_, _, tmp_path) = get_exe_paths_for(current_exe)?;
+    let metadata: StagedUpdateMetadata = match std::fs::read(&metadata_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        Some(value) if tmp_path.exists() => value,
+        _ => {
+            let _ = std::fs::remove_file(&metadata_path);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Ok(None);
+        }
+    };
+    let bytes = std::fs::read(&tmp_path)
+        .map_err(|error| AppError::msg(format!("Failed to read staged update: {error}")))?;
+    if !is_newer_version(env!("CARGO_PKG_VERSION"), &metadata.version)
+        || metadata
+            .size
+            .is_some_and(|expected_size| expected_size != bytes.len() as u64)
+        || verify_payload_integrity(
+            &bytes,
+            metadata.sha256.as_deref(),
+            &metadata.signature,
+            // The signing key is part of the application build, not trusted
+            // input from the sidecar file. Otherwise an attacker who can
+            // replace both the staged binary and metadata could supply their
+            // own public key and make the candidate appear valid.
+            get_update_public_key(),
+        )
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&metadata_path);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Ok(None);
+    }
+    Ok(Some(metadata))
 }
 
 pub fn check_directory_write_permissions() -> AppResult<()> {
@@ -145,9 +281,9 @@ pub async fn check_for_updates(
         })?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        // No update manifest published yet on GitHub Releases (e.g. current version is latest,
-        // or latest release was published before manifests were introduced).
-        return Ok(None);
+        return Err(AppError::msg(
+            "Update manifest is unavailable for the latest release. Please download the update manually from GitHub Releases.",
+        ));
     }
 
     if !response.status().is_success() {
@@ -261,28 +397,53 @@ pub fn verify_payload_integrity(
 }
 
 pub fn cleanup_stale_update_files() {
-    if let Ok((_exe_path, old_path, tmp_path)) = get_exe_paths() {
-        for path in [&old_path, &tmp_path] {
-            if path.exists() {
-                for _ in 0..3 {
-                    if std::fs::remove_file(path).is_ok() || !path.exists() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
+    if is_after_update_launch() {
+        return;
+    }
+    if let Ok((_exe_path, _old_path, tmp_path)) = get_exe_paths() {
+        let staged_is_valid = read_staged_update_metadata().ok().flatten().is_some();
+        if !staged_is_valid {
+            if let Ok(metadata_path) = get_stage_metadata_path() {
+                let _ = std::fs::remove_file(metadata_path);
+            }
+            let _ = std::fs::remove_file(tmp_path);
+        }
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Ok(helper_path) = get_update_helper_path_for(&current_exe) {
+                let _ = std::fs::remove_file(helper_path);
+            }
+            if let Ok(ack_path) = get_update_ack_path_for(&current_exe) {
+                let _ = std::fs::remove_file(ack_path);
             }
         }
+    }
+}
+
+pub fn is_after_update_launch() -> bool {
+    std::env::args().any(|argument| argument == "--after-update")
+}
+
+/// Removes the previous executable only after the replacement has loaded its
+/// state and completed Tauri setup. A failed startup leaves the backup in place
+/// for manual recovery instead of deleting the only known-good binary early.
+pub fn confirm_update_startup() {
+    if !is_after_update_launch() {
+        return;
+    }
+    if let Ok((_exe_path, old_path, _tmp_path)) = get_exe_paths()
+        && old_path.exists()
+    {
+        let _ = std::fs::remove_file(old_path);
+    }
+    if let Ok(metadata_path) = get_stage_metadata_path() {
+        let _ = std::fs::remove_file(metadata_path);
     }
 }
 
 pub async fn download_and_stage_update<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     client: &reqwest::Client,
-    download_url: &str,
-    expected_size: Option<u64>,
-    signature_b64: &str,
-    expected_sha256: Option<&str>,
-    pubkey_b64: &str,
+    request: &UpdateDownloadRequest<'_>,
 ) -> AppResult<PathBuf> {
     check_directory_write_permissions()?;
     let (_, _, tmp_path) = get_exe_paths()?;
@@ -294,7 +455,7 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
     use tauri::Emitter;
 
     let mut response = client
-        .get(download_url)
+        .get(request.download_url)
         .header("User-Agent", "SwitchAI-Portable-Updater")
         .timeout(std::time::Duration::from_secs(600))
         .send()
@@ -311,7 +472,7 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
         )));
     }
 
-    let total_bytes = response.content_length().or(expected_size);
+    let total_bytes = response.content_length().or(request.expected_size);
     let mut file = std::fs::File::create(&tmp_path).map_err(|e| {
         AppError::msg(format!(
             "Failed to create temporary file {}: {e}",
@@ -375,8 +536,17 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
     }
     drop(file);
 
+    if let Some(expected) = request.expected_size
+        && downloaded != expected
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(AppError::msg(format!(
+            "Downloaded update size mismatch: expected {expected} bytes, got {downloaded}"
+        )));
+    }
+
     // Verify SHA-256 checksum from streaming hasher
-    if let Some(expected) = expected_sha256 {
+    if let Some(expected) = request.expected_sha256 {
         let computed = hasher
             .finalize()
             .iter()
@@ -401,9 +571,29 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
     })?;
 
     // Verify minisign cryptographic signature
-    if let Err(err) = verify_minisign_signature(&staged_bytes, signature_b64, pubkey_b64) {
+    if let Err(err) =
+        verify_minisign_signature(&staged_bytes, request.signature, request.public_key)
+    {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);
+    }
+
+    let metadata = StagedUpdateMetadata {
+        version: request.version.to_string(),
+        url: request.download_url.to_string(),
+        signature: request.signature.to_string(),
+        sha256: request.expected_sha256.map(str::to_string),
+        size: request.expected_size.or(Some(downloaded)),
+        public_key: request.public_key.to_string(),
+        ack_token: Some(uuid::Uuid::new_v4().to_string()),
+    };
+    let metadata_path = get_stage_metadata_path()?;
+    let metadata_bytes = serde_json::to_vec_pretty(&metadata).map_err(|error| {
+        AppError::msg(format!("Failed to encode staged update metadata: {error}"))
+    })?;
+    if let Err(error) = write_atomic(&metadata_path, &metadata_bytes, false) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error);
     }
 
     // Final 100% progress emit
@@ -521,6 +711,218 @@ impl Drop for PausedAutoRefresh {
     }
 }
 
+fn configure_background_command(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+}
+
+fn parse_update_helper_request() -> AppResult<Option<(u32, PathBuf)>> {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--update-helper")
+    else {
+        return Ok(None);
+    };
+    let pid = args
+        .get(index + 1)
+        .ok_or_else(|| AppError::msg("Update helper parent PID is missing"))?
+        .parse::<u32>()
+        .map_err(|_| AppError::msg("Update helper parent PID is invalid"))?;
+    let executable = args
+        .get(index + 2)
+        .ok_or_else(|| AppError::msg("Update helper executable path is missing"))?;
+    let executable = PathBuf::from(executable);
+    if !executable.is_absolute() {
+        return Err(AppError::msg(
+            "Update helper executable path must be absolute",
+        ));
+    }
+    Ok(Some((pid, executable)))
+}
+
+fn rollback_and_relaunch_previous(
+    executable: &Path,
+    backup: &Path,
+    temporary: &Path,
+    metadata: &Path,
+    acknowledgement: &Path,
+) {
+    let _ = std::fs::remove_file(acknowledgement);
+    if let Err(error) = rollback_swap(executable, backup, temporary) {
+        log::error!("Failed to restore previous executable after update failure: {error}");
+        return;
+    }
+    let _ = std::fs::remove_file(metadata);
+    let mut command = std::process::Command::new(executable);
+    configure_background_command(&mut command);
+    if let Err(error) = command.spawn() {
+        log::error!("Failed to relaunch previous executable after rollback: {error}");
+    }
+}
+
+fn relaunch_original(executable: &Path) {
+    let mut command = std::process::Command::new(executable);
+    configure_background_command(&mut command);
+    if let Err(error) = command.spawn() {
+        log::error!("Failed to relaunch SwitchAI after cancelling update: {error}");
+    }
+}
+
+fn run_update_helper_inner(parent_pid: u32, executable: &Path) -> AppResult<()> {
+    let helper_executable = std::env::current_exe()
+        .map_err(|error| AppError::msg(format!("Cannot determine update helper path: {error}")))?;
+    let expected_helper = get_update_helper_path_for(executable)?;
+    let helper_matches = std::fs::canonicalize(&helper_executable)
+        .ok()
+        .zip(std::fs::canonicalize(&expected_helper).ok())
+        .is_some_and(|(actual, expected)| actual == expected);
+    if !helper_matches {
+        return Err(AppError::msg(
+            "Update helper path is not owned by this installation",
+        ));
+    }
+
+    let (current_path, backup_path, temporary_path) = get_exe_paths_for(executable)?;
+    let metadata_path = get_stage_metadata_path_for(executable)?;
+    let acknowledgement_path = get_update_ack_path_for(executable)?;
+    if current_path != executable || !current_path.exists() {
+        return Err(AppError::msg("Update target executable is unavailable"));
+    }
+    if parent_pid != 0 && !wait_for_process_exit(parent_pid, 10_000) {
+        return Err(AppError::msg(
+            "The previous SwitchAI process did not exit in time; update was cancelled safely.",
+        ));
+    }
+
+    let metadata = match read_staged_update_metadata_for(executable) {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => {
+            relaunch_original(executable);
+            return Err(AppError::msg(
+                "No verified staged update is available; update was cancelled safely.",
+            ));
+        }
+        Err(error) => {
+            relaunch_original(executable);
+            return Err(error);
+        }
+    };
+    let ack_token = metadata
+        .ack_token
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let _ = std::fs::remove_file(&acknowledgement_path);
+
+    if let Err(error) = atomic_swap(&current_path, &backup_path, &temporary_path) {
+        relaunch_original(executable);
+        return Err(AppError::msg(format!("Atomic file swap failed: {error}")));
+    }
+
+    let mut candidate_command = std::process::Command::new(&current_path);
+    candidate_command
+        .arg("--after-update")
+        .arg(parent_pid.to_string())
+        .arg("--update-ack-path")
+        .arg(&acknowledgement_path)
+        .arg("--update-ack-token")
+        .arg(&ack_token);
+    configure_background_command(&mut candidate_command);
+    let mut candidate = match candidate_command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            rollback_and_relaunch_previous(
+                &current_path,
+                &backup_path,
+                &temporary_path,
+                &metadata_path,
+                &acknowledgement_path,
+            );
+            return Err(AppError::msg(format!(
+                "Failed to launch updated binary: {error}"
+            )));
+        }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let healthy = loop {
+        if std::fs::read_to_string(&acknowledgement_path)
+            .ok()
+            .is_some_and(|value| value == ack_token)
+        {
+            let grace_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let survived_grace = loop {
+                if candidate
+                    .try_wait()
+                    .map_err(|error| {
+                        AppError::msg(format!("Failed to monitor updated binary: {error}"))
+                    })?
+                    .is_some()
+                {
+                    break false;
+                }
+                if std::time::Instant::now() >= grace_deadline {
+                    break true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            };
+            break survived_grace;
+        }
+        if candidate
+            .try_wait()
+            .map_err(|error| AppError::msg(format!("Failed to monitor updated binary: {error}")))?
+            .is_some()
+        {
+            break false;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+
+    if healthy {
+        let _ = std::fs::remove_file(&backup_path);
+        let _ = std::fs::remove_file(&metadata_path);
+        let _ = std::fs::remove_file(&acknowledgement_path);
+        return Ok(());
+    }
+
+    let _ = candidate.kill();
+    let _ = candidate.wait();
+    rollback_and_relaunch_previous(
+        &current_path,
+        &backup_path,
+        &temporary_path,
+        &metadata_path,
+        &acknowledgement_path,
+    );
+    Err(AppError::msg(
+        "Updated SwitchAI did not complete startup in time; the previous version was restored.",
+    ))
+}
+
+/// Runs the updater helper before Tauri initializes. Returning true tells the
+/// regular application entrypoint to stop before loading state or plugins.
+pub fn run_update_helper() -> bool {
+    let request = match parse_update_helper_request() {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("SwitchAI update helper: {}", error.user_message());
+            return true;
+        }
+    };
+    let Some((parent_pid, executable)) = request else {
+        return false;
+    };
+    if let Err(error) = run_update_helper_inner(parent_pid, &executable) {
+        eprintln!("SwitchAI update helper: {}", error.user_message());
+    }
+    true
+}
+
 pub async fn perform_atomic_swap_and_restart(
     app: &tauri::AppHandle,
     state: &Arc<SharedState>,
@@ -533,28 +935,30 @@ pub async fn perform_atomic_swap_and_restart(
     // Lifecycle safety 3: drain refresh_all_gate
     let _gate = state.refresh_all_gate.lock().await;
 
-    let (exe_path, old_path, tmp_path) = get_exe_paths()?;
-    if !tmp_path.exists() {
+    let (exe_path, _old_path, tmp_path) = get_exe_paths()?;
+    if !tmp_path.exists() || read_staged_update_metadata()?.is_none() {
         return Err(AppError::msg(
-            "Staged update file not found. Please download the update first.",
+            "No verified staged update is available. Please download the update first.",
         ));
     }
 
-    atomic_swap(&exe_path, &old_path, &tmp_path)
-        .map_err(|e| AppError::msg(format!("Atomic file swap failed: {e}")))?;
-
     let current_pid = std::process::id();
-    if let Err(e) = std::process::Command::new(&exe_path)
-        .arg("--after-update")
+    let helper_path = get_update_helper_path_for(&exe_path)?;
+    std::fs::copy(&exe_path, &helper_path).map_err(|error| {
+        AppError::msg(format!(
+            "Failed to create the isolated update helper: {error}"
+        ))
+    })?;
+    let mut helper_command = std::process::Command::new(&helper_path);
+    helper_command
+        .arg("--update-helper")
         .arg(current_pid.to_string())
-        .spawn()
-    {
-        log::error!("Failed to launch updated binary: {e}. Rolling back atomic swap...");
-        if let Err(rollback_err) = rollback_swap(&exe_path, &old_path, &tmp_path) {
-            log::error!("Rollback failed to restore executable: {rollback_err}");
-        }
+        .arg(&exe_path);
+    configure_background_command(&mut helper_command);
+    if let Err(e) = helper_command.spawn() {
+        let _ = std::fs::remove_file(&helper_path);
         return Err(AppError::msg(format!(
-            "Failed to launch updated binary: {e}"
+            "Failed to launch isolated update helper: {e}"
         )));
     }
 
@@ -567,24 +971,29 @@ pub async fn perform_atomic_swap_and_restart(
 }
 
 #[cfg(windows)]
-pub fn wait_for_process_exit(pid: u32, timeout_ms: u32) {
+pub fn wait_for_process_exit(pid: u32, timeout_ms: u32) -> bool {
+    if pid == 0 {
+        return true;
+    }
     use windows_sys::Win32::Foundation::{CloseHandle, FALSE, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
     unsafe {
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
-        if !handle.is_null() {
-            let wait_res = WaitForSingleObject(handle, timeout_ms);
-            if wait_res == WAIT_TIMEOUT {
-                log::warn!("Process {pid} did not exit within {timeout_ms}ms, terminating");
-                TerminateProcess(handle, 1);
-                WaitForSingleObject(handle, 1000);
-            }
-            CloseHandle(handle);
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, FALSE, pid);
+        if handle.is_null() {
+            return true;
         }
+        let exited = WaitForSingleObject(handle, timeout_ms) != WAIT_TIMEOUT;
+        CloseHandle(handle);
+        exited
     }
+}
+
+#[cfg(not(windows))]
+pub fn wait_for_process_exit(_pid: u32, _timeout_ms: u32) -> bool {
+    true
 }
 
 pub fn handle_after_update_wait() {
@@ -603,7 +1012,7 @@ pub fn handle_after_update_wait() {
 
     if let Some(pid) = old_pid {
         #[cfg(windows)]
-        wait_for_process_exit(pid, 5000);
+        let _ = wait_for_process_exit(pid, 5000);
 
         #[cfg(not(windows))]
         {
@@ -611,8 +1020,9 @@ pub fn handle_after_update_wait() {
         }
     }
 
-    // Clean up any stale .old or .update.tmp files (from this update or prior interrupted sessions)
-    cleanup_stale_update_files();
+    // Supervised candidates keep the backup until the frontend calls
+    // `acknowledge_update_startup`; legacy direct launches are confirmed from
+    // the Tauri setup callback for compatibility with older releases.
 }
 
 #[cfg(test)]

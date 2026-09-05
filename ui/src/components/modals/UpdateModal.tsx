@@ -20,6 +20,7 @@ type UpdateModalProps = {
   onClose: () => void
   updateInfo: UpdateCheckResult | null
   onDismissVersion?: (version: string) => Promise<void>
+  onStageReady?: () => void
 }
 
 function SimpleMarkdown({ content }: { content: string }) {
@@ -125,7 +126,8 @@ export function UpdateModal({
   isOpen,
   onClose,
   updateInfo,
-  onDismissVersion
+  onDismissVersion,
+  onStageReady
 }: UpdateModalProps) {
   const { isMac } = usePlatform()
   const [stage, setStage] = useState<'info' | 'downloading' | 'ready' | 'error'>('info')
@@ -133,6 +135,7 @@ export function UpdateModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const effectiveStage = updateInfo?.stagedReady && stage === 'info' ? 'ready' : stage
 
   const handleClose = () => {
     setStage('info')
@@ -142,7 +145,7 @@ export function UpdateModal({
     onClose()
   }
 
-  useDialogFocus(dialogRef, handleClose, !busy && stage !== 'downloading')
+  useDialogFocus(dialogRef, handleClose, !busy && effectiveStage !== 'downloading')
 
   // Listen for download progress events from Tauri backend
   useEffect(() => {
@@ -171,6 +174,7 @@ export function UpdateModal({
       setErrorMsg(null)
       setBusy(true)
       await api.downloadAndStageUpdate()
+      onStageReady?.()
       setStage('ready')
     } catch (err: unknown) {
       setStage('error')
@@ -234,7 +238,7 @@ export function UpdateModal({
             type="button"
             className="settings-dialog-close"
             onClick={handleClose}
-            disabled={busy || stage === 'downloading'}
+            disabled={busy || effectiveStage === 'downloading'}
             title="Close"
             aria-label="Close"
           >
@@ -244,7 +248,7 @@ export function UpdateModal({
 
         {/* Body */}
         <div className="settings-dialog-body flex flex-col gap-4 py-3">
-          {stage === 'info' && (
+          {effectiveStage === 'info' && (
             <>
               {isMac && (
                 <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
@@ -291,7 +295,7 @@ export function UpdateModal({
             </>
           )}
 
-          {stage === 'downloading' && (
+          {effectiveStage === 'downloading' && (
             <div className="py-6 flex flex-col items-center justify-center gap-4 text-center">
               <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 animate-pulse">
                 <Download size={24} />
@@ -325,7 +329,7 @@ export function UpdateModal({
             </div>
           )}
 
-          {stage === 'ready' && (
+          {effectiveStage === 'ready' && (
             <div className="py-5 flex flex-col items-center justify-center gap-3 text-center">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                 <CheckCircle2 size={24} />
@@ -339,7 +343,7 @@ export function UpdateModal({
             </div>
           )}
 
-          {stage === 'error' && (
+          {effectiveStage === 'error' && (
             <div className="py-4 flex flex-col items-center justify-center gap-3 text-center">
               <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
                 <AlertTriangle size={24} />
@@ -356,7 +360,7 @@ export function UpdateModal({
 
         {/* Footer */}
         <div className="settings-dialog-footer flex items-center justify-between gap-2">
-          {stage === 'info' && (
+          {effectiveStage === 'info' && (
             <>
               <button
                 type="button"
@@ -404,7 +408,7 @@ export function UpdateModal({
             </>
           )}
 
-          {stage === 'downloading' && (
+          {effectiveStage === 'downloading' && (
             <div className="w-full flex justify-end">
               <span className="text-xs text-ag-muted flex items-center gap-2">
                 <Loader2 size={13} className="animate-spin text-blue-400" />
@@ -413,7 +417,7 @@ export function UpdateModal({
             </div>
           )}
 
-          {stage === 'ready' && (
+          {effectiveStage === 'ready' && (
             <div className="w-full flex items-center justify-between">
               <button
                 type="button"
@@ -439,7 +443,7 @@ export function UpdateModal({
             </div>
           )}
 
-          {stage === 'error' && (
+          {effectiveStage === 'error' && (
             <div className="w-full flex items-center justify-between">
               <button
                 type="button"

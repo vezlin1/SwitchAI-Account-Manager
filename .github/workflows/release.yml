@@ -133,6 +133,12 @@ jobs:
           $hasKey = ![string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
           "configured=$($hasKey.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
+      - name: Require updater signing for tagged releases
+        if: github.ref_type == 'tag' && steps.minisign-config.outputs.configured != 'true'
+        shell: pwsh
+        run: |
+          throw "Tagged releases require TAURI_SIGNING_PRIVATE_KEY so latest.json and SwitchAI.exe.sig can be published."
+
       - name: Sign Windows executable with Minisign (Tauri Signer)
         if: steps.minisign-config.outputs.configured == 'true'
         shell: pwsh
