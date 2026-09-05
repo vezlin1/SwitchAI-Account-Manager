@@ -330,17 +330,6 @@ jobs:
           name: macos-release
           path: dist/release
 
-      - name: Aggregate SHA256SUMS
-        run: |
-          cd dist/release
-          touch SHA256SUMS.txt
-          for sumfile in SHA256SUMS-*.txt; do
-            if [ -f "$sumfile" ]; then
-              cat "$sumfile" >> SHA256SUMS.txt
-              rm -f "$sumfile"
-            fi
-          done
-
       - name: Publish versioned GitHub Release (tags)
         uses: softprops/action-gh-release@v2
         with:
@@ -351,7 +340,6 @@ jobs:
             dist/release/*.sig
             dist/release/latest.json
             dist/release/*.dmg
-            dist/release/SHA256SUMS.txt
           draft: false
           prerelease: false
         env:

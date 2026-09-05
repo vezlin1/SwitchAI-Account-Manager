@@ -15,4 +15,4 @@ As this is an open-source application without an expensive Microsoft enterprise 
 1. Click **"More info"**.
 2. Click **"Run anyway"**.
 
-🛡️ **VirusTotal Report:** [View Scan Analysis](https://www.virustotal.com/gui/file-analysis/ZDA0ZGJjYTRmZTVkNjU3ZGQ3ZTY0NTYyNTE2NTY2OTM6MTc4ODM2MTYwMg==)
+🛡️ **VirusTotal Report:** [View Scan Analysis](https://www.virustotal.com/gui/file-analysis/ZDE4ZGJkYzEwNzM4OWQ4Y2ZjODU4ZDkwYjMzNDNmNTk6MTc4ODUzMTYzNg==)
