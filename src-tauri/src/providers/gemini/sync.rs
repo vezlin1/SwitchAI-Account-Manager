@@ -168,8 +168,10 @@ fn decode_credential_blob(bytes: Vec<u8>) -> AppResult<String> {
             &bytes[..]
         };
         let u16_vec: Vec<u16> = slice
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u16::from_le_bytes(*chunk))
             .collect();
         String::from_utf16(&u16_vec).map_err(|error| {
             AppError::msg(format!(
