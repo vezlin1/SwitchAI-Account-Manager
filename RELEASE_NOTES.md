@@ -13,4 +13,4 @@
 ---
 
 ### ℹ️ If Windows SmartScreen shows a warning:
-The Windows executable is not Authenticode-signed. Verify the download against **SHA256SUMS-win.txt** before running it. Minisign protects in-app updates and does not remove SmartScreen warnings.
+The Windows executable is not Authenticode-signed. Verify the download against the SHA-256 digest displayed next to the file in GitHub Assets before running it. Minisign protects in-app updates and does not remove SmartScreen warnings.

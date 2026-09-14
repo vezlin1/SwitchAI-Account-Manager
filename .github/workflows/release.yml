@@ -149,7 +149,7 @@ jobs:
         if: github.ref_type == 'tag' && steps.minisign-config.outputs.configured != 'true'
         shell: pwsh
         run: |
-          throw "Tagged releases require TAURI_SIGNING_PRIVATE_KEY so latest.json and SwitchAI.exe.sig can be published."
+          throw "Tagged releases require TAURI_SIGNING_PRIVATE_KEY so latest.json can include a valid update signature."
 
       - name: Sign Windows executable with Minisign (Tauri Signer)
         if: steps.minisign-config.outputs.configured == 'true'
@@ -357,11 +357,8 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             dist/release/SwitchAI.exe
-            dist/release/*.sig
             dist/release/latest.json
             dist/release/*.dmg
-            dist/release/SHA256SUMS-win.txt
-            dist/release/SHA256SUMS-mac.txt
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
