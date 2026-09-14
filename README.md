@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-18a8e8?style=flat-square">
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/vezlin1/SwitchAI-Account-Manager?label=version&color=18a8e8&style=flat-square">
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=flat-square&logo=windows">
   <img alt="macOS 11 or newer" src="https://img.shields.io/badge/macOS-11%2B-111111?style=flat-square&logo=apple">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square">

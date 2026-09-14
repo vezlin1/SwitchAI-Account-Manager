@@ -5,6 +5,17 @@
 This file lists changes that are useful to SwitchAI users. Release dates are
 added when a version is published.
 
+## 1.3.0 — Unreleased
+
+### What's New:
+* **Independent Account Refresh:** Codex and Gemini now refresh in separate queues, with per-account activity indicators and progress.
+* **Smarter Account Recommendations:** suggestions now take quota freshness and account health into account, excluding stale quotas and accounts with quota errors.
+* **Clearer Quota Information:** quota age indicators, consistent event timestamps, and more accurate quota window labels.
+* **More Reliable Session Sync:** improved synchronization with external Codex and Antigravity sessions, with retries that respect service cooldowns.
+* **Safer Windows Updates:** fixed rollback when an older executable backup is locked, so recovery restores the actual previous version.
+* **Improved Credential Recovery:** protected credentials take priority over legacy plaintext backups, and migrated token files are cleaned up after successful migration.
+* Reduced redundant background requests, UI updates, and metadata writes, plus general stability improvements.
+
 ## 1.2.0 — 2026-09-04
 
 ### What's New:

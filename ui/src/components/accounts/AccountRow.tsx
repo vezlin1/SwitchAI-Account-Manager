@@ -4,7 +4,7 @@ import { ChevronRight, EyeOff, GripVertical, KeyRound, Loader2, Trash2, UserChec
 import type { Account } from '../../types'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
-import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
+import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { usePrivacy } from '../../context/usePrivacy'
 
@@ -120,10 +120,9 @@ export const AccountRow = memo(function AccountRow({
           <ChevronRight size={14} className="account-identity-arrow text-ag-muted opacity-40 group-hover:opacity-100 flex-shrink-0" aria-hidden="true" />
         </button>
       </th>
-      {quotaColumns.map((column) => {
-        const window = quotaWindowForColumn(quota, column)
+      {quotaCellsForAccount(quota, quotaColumns).map(({ column, window, colSpan }) => {
         return (
-          <td key={column.key} className="account-row-quota" data-label={column.label}>
+          <td key={column.key} colSpan={colSpan} className="account-row-quota" data-label={column.label}>
             <QuotaCell
               value={window?.usedPercent}
               resetAt={window?.resetAt}

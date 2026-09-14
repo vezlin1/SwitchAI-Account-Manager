@@ -303,9 +303,7 @@ export function AccountsTable({
                   {accounts.map((account) => {
                     const statusFlags = computeAccountStatusFlags(
                       account.id,
-                      busyKeys,
-                      refreshingAll,
-                      autoRefreshing
+                      busyKeys
                     )
                     return (
                       <SortableAccountRow
@@ -356,9 +354,7 @@ export function AccountsTable({
             {accounts.map((account) => {
               const statusFlags = computeAccountStatusFlags(
                 account.id,
-                busyKeys,
-                refreshingAll,
-                autoRefreshing
+                busyKeys
               )
               return (
                 <li key={account.id}>

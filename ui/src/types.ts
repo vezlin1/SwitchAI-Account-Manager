@@ -169,6 +169,8 @@ export type RefreshRunSummary = {
 export type AutoRefreshStatus = {
   enabled: boolean
   inFlight: boolean
+  refreshingAccountIds: string[]
+  progress: { provider: AccountProvider; total: number; completed: number; failed: number }[]
   lastStartedAt: number | null
   lastFinishedAt: number | null
   lastError: string | null

@@ -45,6 +45,28 @@ function state(revision, overrides = {}) {
   }
 }
 
+test('identical IPC snapshots preserve state and account references', () => {
+  const current = state(12, { accounts: [account('one')] })
+  const cloned = structuredClone(current)
+  assert.equal(mergeIncomingState(current, cloned, null), current)
+  cloned.revision = 13
+  const newer = mergeIncomingState(current, cloned, null)
+  assert.equal(newer.accounts, current.accounts)
+  assert.equal(newer.appSettings, current.appSettings)
+  assert.equal(newer.revision, 13)
+})
+
+test('only changed rows are replaced when a complete snapshot arrives', () => {
+  const current = state(12, { accounts: [account('one'), account('two')] })
+  const next = structuredClone(current)
+  next.revision = 13
+  next.accounts[1].tokenHealth = { ...next.accounts[1].tokenHealth, status: 'healthy', lastCheckedAt: 2000 }
+  const merged = mergeIncomingState(current, next, null)
+  assert.equal(merged.accounts[0], current.accounts[0])
+  assert.notEqual(merged.accounts[1], current.accounts[1])
+  assert.equal(merged.accounts[1].tokenHealth.status, 'healthy')
+})
+
 test('stale revisions are rejected while preserving latest settings overlays', () => {
   const current = state(42, {
     appSettings: {

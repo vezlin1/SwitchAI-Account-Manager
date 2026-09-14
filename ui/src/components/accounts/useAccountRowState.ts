@@ -14,17 +14,12 @@ export type AccountRowState = AccountStatusFlags & {
 
 export function computeAccountStatusFlags(
   accountId: string,
-  busyKeys: ReadonlySet<string>,
-  refreshingAll: boolean,
-  autoRefreshing: boolean
+  busyKeys: ReadonlySet<string>
 ): AccountStatusFlags {
   const isSwitching = busyKeys.has(`switch:${accountId}`)
   const isRemoving = busyKeys.has(`delete:${accountId}`)
   const isRelogining = busyKeys.has(`relogin:${accountId}`)
   const isRefreshing =
-    refreshingAll ||
-    autoRefreshing ||
-    busyKeys.has('refresh') ||
     busyKeys.has(`quota:${accountId}`) ||
     busyKeys.has(`subscription-detect:${accountId}`) ||
     busyKeys.has(`relogin:${accountId}`) ||

@@ -400,6 +400,7 @@ pub async fn import_antigravity_account(
                     .ok_or_else(|| AppError::msg("Account disappeared during Antigravity import"))?;
                 match quota_result {
                     Ok(result) => {
+                        account_mut.subscription_checked_at = result.discovery_checked_at;
                         if let Some(plan_type) = result.quota.plan_type.as_ref() {
                             account_mut.subscription_plan = Some(plan_type.clone());
                             account_mut.subscription_detected_at = Some(now_ts());

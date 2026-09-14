@@ -1056,6 +1056,7 @@ a {
 }
 
 .account-details-title-group {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1070,6 +1071,7 @@ a {
 }
 
 .account-details-title-line h2 {
+  overflow-wrap: anywhere;
   margin: 0;
   font-size: 16px;
   font-weight: 650;
@@ -1164,7 +1166,7 @@ a {
 
 .account-details-body {
   display: grid;
-  grid-template-columns: 1fr 300px;
+  grid-template-columns: minmax(0, 1fr) 300px;
   gap: 16px;
 }
 
@@ -1174,7 +1176,14 @@ a {
   }
 }
 
+@media (max-width: 600px) {
+  .account-details-title-group {
+    flex-basis: 100%;
+  }
+}
+
 .account-details-main {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1189,6 +1198,7 @@ a {
 }
 
 .account-detail-section-heading {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1249,12 +1259,15 @@ a {
 }
 
 .account-details-sidebar {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
 .account-detail-sidebar-section {
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 16px;
   border-radius: 12px;
   border: 1px solid rgb(var(--ag-border));
@@ -1302,14 +1315,15 @@ a {
 .account-detail-metadata {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   margin: 0;
 }
 
-.account-detail-metadata div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.account-detail-metadata > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
   font-size: 11.5px;
 }
 
@@ -1318,9 +1332,11 @@ a {
 }
 
 .account-detail-metadata dd {
+  min-width: 0;
+  text-align: right;
   margin: 0;
   color: rgb(var(--ag-text));
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .account-detail-health-loading {
@@ -1939,6 +1955,111 @@ a {
   font-weight: 500;
 }
 
+.account-detail-metadata > .account-detail-id-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.account-detail-metadata .account-detail-id-value {
+  text-align: left;
+}
+
+.account-detail-copy-field {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid rgb(var(--ag-border));
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+  color: rgb(var(--ag-text));
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.account-detail-copy-field:hover {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(var(--ag-primary), 0.5);
+}
+
+.account-detail-copy-field-copied {
+  color: rgb(var(--ag-success));
+  border-color: rgba(var(--ag-success), 0.35);
+}
+
+.account-detail-id-text {
+  flex: 1;
+  min-width: 0;
+  padding: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.account-detail-copy-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  border-left: 1px solid rgb(var(--ag-border));
+  color: rgb(var(--ag-muted));
+}
+
+.account-detail-copy-field:hover .account-detail-copy-icon,
+.account-detail-copy-field-copied .account-detail-copy-icon {
+  color: inherit;
+}
+
+.account-event-time {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.account-event-time time {
+  cursor: help;
+  text-decoration: none;
+}
+
+.account-event-time time:hover,
+.account-event-time time:focus-visible {
+  text-decoration: underline dotted rgba(255, 255, 255, 0.4);
+  text-underline-offset: 4px;
+}
+
+.account-event-time-tooltip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 10;
+  width: max-content;
+  max-width: min(230px, 60vw);
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--ag-border));
+  border-radius: 8px;
+  background: rgb(var(--ag-card));
+  box-shadow: var(--shadow-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.account-event-time:hover .account-event-time-tooltip,
+.account-event-time:focus-within .account-event-time-tooltip {
+  visibility: visible;
+  opacity: 1;
+}
+
 .recovery-details dd {
   margin: 0;
   color: rgb(var(--ag-text));
@@ -2173,6 +2294,10 @@ a {
   font-size: 12px;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.account-card-quota > div {
+  flex: 1;
 }
 
 .account-card-label {

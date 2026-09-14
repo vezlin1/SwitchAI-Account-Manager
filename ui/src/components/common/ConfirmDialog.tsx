@@ -8,6 +8,7 @@ type ConfirmDialogProps = {
   confirmLabel: string
   variant?: 'primary' | 'danger'
   busy?: boolean
+  error?: string | null
   onCancel: () => void
   onConfirm: () => void
 }
@@ -18,6 +19,7 @@ export function ConfirmDialog({
   confirmLabel,
   variant = 'primary',
   busy = false,
+  error,
   onCancel,
   onConfirm
 }: ConfirmDialogProps) {
@@ -49,6 +51,7 @@ export function ConfirmDialog({
         </div>
         <div className="confirm-dialog-body">
           <p id="confirm-dialog-message" className="allow-select">{message}</p>
+          {error && <p role="alert" className="text-sm text-red-400 mt-3">{error}</p>}
         </div>
         <div className="confirm-dialog-footer">
           <button

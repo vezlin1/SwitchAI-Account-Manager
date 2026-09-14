@@ -613,7 +613,7 @@ pub async fn download_and_stage_update<R: tauri::Runtime>(
     Ok(tmp_path)
 }
 
-pub fn atomic_swap(current: &Path, backup: &Path, replacement: &Path) -> std::io::Result<()> {
+pub fn atomic_swap(current: &Path, backup: &Path, replacement: &Path) -> std::io::Result<PathBuf> {
     let mut actual_backup = backup.to_path_buf();
     if backup.exists() {
         let mut removed = false;
@@ -639,7 +639,7 @@ pub fn atomic_swap(current: &Path, backup: &Path, replacement: &Path) -> std::io
         let _ = std::fs::rename(&actual_backup, current);
         return Err(err);
     }
-    Ok(())
+    Ok(actual_backup)
 }
 
 pub fn rollback_swap(exe_path: &Path, old_path: &Path, tmp_path: &Path) -> std::io::Result<()> {
@@ -816,10 +816,13 @@ fn run_update_helper_inner(parent_pid: u32, executable: &Path) -> AppResult<()> 
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let _ = std::fs::remove_file(&acknowledgement_path);
 
-    if let Err(error) = atomic_swap(&current_path, &backup_path, &temporary_path) {
-        relaunch_original(executable);
-        return Err(AppError::msg(format!("Atomic file swap failed: {error}")));
-    }
+    let backup_path = match atomic_swap(&current_path, &backup_path, &temporary_path) {
+        Ok(actual_backup) => actual_backup,
+        Err(error) => {
+            relaunch_original(executable);
+            return Err(AppError::msg(format!("Atomic file swap failed: {error}")));
+        }
+    };
 
     let mut candidate_command = std::process::Command::new(&current_path);
     candidate_command
@@ -932,8 +935,9 @@ pub async fn perform_atomic_swap_and_restart(
     // Lifecycle safety 2: stop background auto refresh
     let mut paused_refresh = PausedAutoRefresh::new(state)?;
 
-    // Lifecycle safety 3: drain refresh_all_gate
-    let _gate = state.refresh_all_gate.lock().await;
+    // Drain both provider queues in the same order as a combined manual refresh.
+    let _codex_gate = state.refresh_codex_gate.lock().await;
+    let _gemini_gate = state.refresh_gemini_gate.lock().await;
 
     let (exe_path, _old_path, tmp_path) = get_exe_paths()?;
     if !tmp_path.exists() || read_staged_update_metadata()?.is_none() {
@@ -942,6 +946,7 @@ pub async fn perform_atomic_swap_and_restart(
         ));
     }
 
+    crate::storage::flush_refresh_metadata(state)?;
     let current_pid = std::process::id();
     let helper_path = get_update_helper_path_for(&exe_path)?;
     std::fs::copy(&exe_path, &helper_path).map_err(|error| {
@@ -1028,6 +1033,35 @@ pub fn handle_after_update_wait() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_old_backup_rolls_back_to_the_actual_previous_executable() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("switchai-locked-backup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("app.exe");
+        let backup = dir.join("app.exe.old");
+        let staged = dir.join("app.exe.tmp");
+        std::fs::write(&current, "v1").unwrap();
+        std::fs::write(&backup, "v0").unwrap();
+        std::fs::write(&staged, "v2").unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&backup)
+            .unwrap();
+        let actual = atomic_swap(&current, &backup, &staged).unwrap();
+        assert_ne!(actual, backup);
+        assert_eq!(std::fs::read_to_string(&actual).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(&current).unwrap(), "v2");
+        rollback_swap(&current, &actual, &staged).unwrap();
+        assert_eq!(std::fs::read_to_string(&current).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "v0");
+        drop(lock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn terminal_oauth_flows_do_not_block_updates() {

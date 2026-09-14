@@ -24,18 +24,24 @@ pub async fn refresh_account_subscription(
             let gate = auto_refresh::account_gate_for_id(state.inner(), &account_id)?;
             let _guard = gate.lock().await;
             if is_gemini {
-                let outcome =
-                    crate::gemini_quota::refresh_gemini_account(state.inner(), &account_id).await?;
-                auto_refresh::update_account_schedule(
+                let outcome = crate::gemini_quota::refresh_gemini_account_with_options(
+                    state.inner(),
+                    &account_id,
+                    true,
+                    false,
+                )
+                .await?;
+                auto_refresh::update_account_schedule_with_retry(
                     state.inner(),
                     &account_id,
                     outcome.succeeded,
+                    outcome.retry_after_seconds,
                 )?;
                 let snapshot = lock_data(state.inner())?.clone();
                 crate::tray_dashboard::refresh_dashboard_and_alerts(state.inner());
                 crate::tray_dashboard::emit_state_changed(
                     state.inner(),
-                    "account",
+                    "accounts",
                     vec![account_id.clone()],
                 );
                 let warnings = outcome
@@ -77,9 +83,10 @@ pub async fn refresh_account_subscription(
                 })
                 .collect();
             crate::tray_dashboard::refresh_dashboard(state.inner());
+            // Refresh may reconcile a manual account switch in the external client.
             crate::tray_dashboard::emit_state_changed(
                 state.inner(),
-                "account",
+                "accounts",
                 vec![account_id.clone()],
             );
             let account = result
@@ -112,16 +119,17 @@ pub async fn refresh_account_quota(
             if is_gemini {
                 let outcome =
                     crate::gemini_quota::refresh_gemini_account(state.inner(), &account_id).await?;
-                auto_refresh::update_account_schedule(
+                auto_refresh::update_account_schedule_with_retry(
                     state.inner(),
                     &account_id,
                     outcome.succeeded,
+                    outcome.retry_after_seconds,
                 )?;
                 let next_state = lock_data(state.inner())?.clone();
                 crate::tray_dashboard::refresh_dashboard_and_alerts(state.inner());
                 crate::tray_dashboard::emit_state_changed(
                     state.inner(),
-                    "account",
+                    "accounts",
                     vec![account_id.clone()],
                 );
                 let mut warnings = outcome
@@ -176,12 +184,17 @@ pub async fn refresh_account_quota(
                 .refresh_account_quota(&account_id)
                 .await?;
             let refresh_succeeded = outcome.succeeded;
-            auto_refresh::update_account_schedule(state.inner(), &account_id, refresh_succeeded)?;
+            auto_refresh::update_account_schedule_with_retry(
+                state.inner(),
+                &account_id,
+                refresh_succeeded,
+                outcome.retry_after_seconds,
+            )?;
             let next_state = lock_data(state.inner())?.clone();
             crate::tray_dashboard::refresh_dashboard_and_alerts(state.inner());
             crate::tray_dashboard::emit_state_changed(
                 state.inner(),
-                "account",
+                "accounts",
                 vec![account_id.clone()],
             );
 

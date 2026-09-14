@@ -39,6 +39,7 @@ pub enum QuotaRefreshWarning {
 #[derive(Debug, Clone)]
 pub struct QuotaRefreshOutcome {
     pub succeeded: bool,
+    pub retry_after_seconds: Option<i64>,
     pub warning: Option<QuotaRefreshWarning>,
     pub warnings: Vec<String>,
 }
@@ -46,6 +47,7 @@ pub struct QuotaRefreshOutcome {
 #[derive(Debug, Clone)]
 pub struct AccountRefreshOutcome {
     pub succeeded: bool,
+    pub retry_after_seconds: Option<i64>,
     pub warnings: Vec<String>,
 }
 
@@ -83,6 +85,7 @@ impl RefreshService {
         &self,
         account_id: &str,
     ) -> AppResult<SubscriptionRefreshResult> {
+        let _refreshing = crate::auto_refresh::AccountRefreshGuard::new(&self.state, account_id);
         let snapshot = self
             .snapshot_account(account_id)?
             .ok_or_else(|| AppError::msg("Account not found"))?;
@@ -147,6 +150,7 @@ impl RefreshService {
     }
 
     pub async fn refresh_account_quota(&self, account_id: &str) -> AppResult<QuotaRefreshOutcome> {
+        let _refreshing = crate::auto_refresh::AccountRefreshGuard::new(&self.state, account_id);
         let snapshot = self
             .snapshot_account(account_id)?
             .ok_or_else(|| AppError::msg("Account not found"))?;
@@ -162,6 +166,7 @@ impl RefreshService {
                 log::info!("Skipping ChatGPT quota refresh for account {account_id}: {msg}");
                 return Ok(QuotaRefreshOutcome {
                     succeeded: false,
+                    retry_after_seconds: None,
                     warning: None,
                     warnings: vec![format!("Quota refresh skipped: {msg}")],
                 });
@@ -189,6 +194,11 @@ impl RefreshService {
             }
         }
 
+        let retry_after_seconds = update
+            .quota_result
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds);
         let quota_succeeded = update.quota_result.is_ok();
         let ownership = snapshot.ownership;
         let mut data = lock_data(&self.state)?;
@@ -221,6 +231,7 @@ impl RefreshService {
 
         Ok(QuotaRefreshOutcome {
             succeeded: quota_succeeded,
+            retry_after_seconds,
             warning: (!has_explicit_skip_warning)
                 .then(|| quota_warning_for_cas(skipped_tokens, quota_succeeded))
                 .flatten(),
@@ -232,9 +243,11 @@ impl RefreshService {
         &self,
         account_id: &str,
     ) -> AppResult<AccountRefreshOutcome> {
+        let _refreshing = crate::auto_refresh::AccountRefreshGuard::new(&self.state, account_id);
         let Some(snapshot) = self.snapshot_account(account_id)? else {
             return Ok(AccountRefreshOutcome {
                 succeeded: true,
+                retry_after_seconds: None,
                 warnings: Vec::new(),
             });
         };
@@ -250,6 +263,7 @@ impl RefreshService {
                 log::info!("Skipping ChatGPT refresh for account {account_id}: {msg}");
                 return Ok(AccountRefreshOutcome {
                     succeeded: false,
+                    retry_after_seconds: None,
                     warnings: vec![format!("Refresh skipped: {msg}")],
                 });
             }
@@ -275,6 +289,11 @@ impl RefreshService {
             }
         }
 
+        let retry_after_seconds = update
+            .quota_result
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds);
         let refresh_succeeded = update.quota_result.is_ok();
         let subscription_result =
             if refresh_succeeded && subscription_refresh_due(&snapshot.account, now_ts()) {
@@ -296,6 +315,9 @@ impl RefreshService {
                 None
             };
 
+        if let Some(result) = &subscription_result {
+            crate::auto_refresh::invalidate_reachability_on_error(&self.state, result);
+        }
         let ownership = snapshot.ownership;
         let mut data = lock_data(&self.state)?;
         let decision = self.allow_token_update(&data, account_id, &source_snapshot, ownership);
@@ -327,12 +349,24 @@ impl RefreshService {
             subscription_result,
             allow_token_update,
         )?;
-        if let Some(warning) = commit_update(&mut data, next, active_auth)? {
+        let warning =
+            if active_auth.is_none() && crate::storage::refresh_metadata_can_wait(&data, &next) {
+                crate::storage::commit_refresh_metadata(&self.state, &mut data, next)?;
+                None
+            } else {
+                let warning = commit_update(&mut data, next, active_auth)?;
+                self.state
+                    .metadata_dirty
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                warning
+            };
+        if let Some(warning) = warning {
             warnings.push(warning);
         }
 
         Ok(AccountRefreshOutcome {
             succeeded: refresh_succeeded,
+            retry_after_seconds,
             warnings,
         })
     }
@@ -352,7 +386,9 @@ impl RefreshService {
                 (None, false)
             }
         };
-        if let Err(error) = reconcile_codex_auth_with_snapshot(&mut data, codex_auth.as_ref()) {
+        if codex_auth_readable
+            && let Err(error) = reconcile_codex_auth_with_snapshot(&mut data, codex_auth.as_ref())
+        {
             let message = format!(
                 "auth.json reconciliation was skipped: {}",
                 error.user_message()
@@ -428,11 +464,13 @@ impl RefreshService {
         account: &Account,
         ownership: CredentialOwnership,
     ) -> QuotaRefreshUpdate {
-        if ownership.is_external() {
+        let update = if ownership.is_external() {
             refresh_quota_without_token_refresh(&self.state.http_client, base_url, account).await
         } else {
             refresh_quota_with_token_refresh(&self.state.http_client, base_url, account).await
-        }
+        };
+        crate::auto_refresh::invalidate_reachability_on_error(&self.state, &update.quota_result);
+        update
     }
 
     async fn refresh_subscription_for_owner(
@@ -441,13 +479,18 @@ impl RefreshService {
         account: &Account,
         ownership: CredentialOwnership,
     ) -> SubscriptionRefreshUpdate {
-        if ownership.is_external() {
+        let update = if ownership.is_external() {
             refresh_subscription_without_token_refresh(&self.state.http_client, base_url, account)
                 .await
         } else {
             refresh_subscription_with_token_refresh(&self.state.http_client, base_url, account)
                 .await
-        }
+        };
+        crate::auto_refresh::invalidate_reachability_on_error(
+            &self.state,
+            &update.subscription_result,
+        );
+        update
     }
 
     fn commit_subscription_update(
@@ -655,7 +698,10 @@ fn apply_quota_update(
         match update.quota_result {
             Ok(quota) => {
                 if let Some(plan_type) = quota.plan_type.as_ref() {
-                    account.subscription_plan = Some(plan_type.clone());
+                    account.subscription_plan = Some(crate::subscription::quota_plan_label(
+                        plan_type,
+                        account.subscription_plan.as_deref(),
+                    ));
                     account.subscription_detected_at = Some(checked_at);
                 }
                 account.quota = Some(quota);
@@ -1686,6 +1732,37 @@ mod tests {
         assert!(next.accounts[0].quota.is_some());
         assert!(next.accounts[0].last_error.is_none());
         assert_eq!(next.accounts[0].subscription_plan.as_deref(), Some("Plus"));
+    }
+
+    #[test]
+    fn quota_refresh_preserves_subscription_pro_multiplier() {
+        for plan in ["Pro x5", "Pro x20"] {
+            let mut data = AppData {
+                accounts: vec![account("source")],
+                ..AppData::default()
+            };
+            data.accounts[0].subscription_plan = Some(plan.to_string());
+            let source = data.accounts[0].clone();
+            let quota = QuotaInfo {
+                plan_type: Some("pro".to_string()),
+                primary: QuotaWindow::default(),
+                secondary: QuotaWindow::default(),
+                fetched_at: 1_950_000_000,
+            };
+            let mut next = data.clone();
+            apply_quota_update(
+                &data,
+                &mut next,
+                "source",
+                &source,
+                &source.tokens.refresh_token,
+                quota_update(Ok(quota), None),
+                None,
+                true,
+            )
+            .expect("apply quota update");
+            assert_eq!(next.accounts[0].subscription_plan.as_deref(), Some(plan));
+        }
     }
 
     #[test]

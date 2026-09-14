@@ -6,9 +6,7 @@ use std::time::Duration;
 use rand::RngExt;
 use tauri::{Emitter, Manager};
 
-use crate::app_state::{
-    SharedState, account_update_gate, lock_auto_refresh, lock_data, lock_last_refresh_result,
-};
+use crate::app_state::{SharedState, account_update_gate, lock_auto_refresh, lock_data};
 use crate::codex::reconcile_codex_auth_transactionally;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
@@ -55,6 +53,7 @@ pub struct RefreshAllResult {
 
 struct RefreshWorkItem {
     account_id: String,
+    provider: AccountProvider,
     gate: RefreshGate,
 }
 
@@ -64,6 +63,50 @@ struct RefreshRunOutcome {
     failed: u32,
     failed_account_ids: Vec<String>,
     warnings: Vec<String>,
+}
+
+fn provider_key(provider: AccountProvider) -> &'static str {
+    match provider {
+        AccountProvider::Codex => "codex",
+        AccountProvider::Gemini => "gemini",
+    }
+}
+
+// Tracks actual account work, independently of provider-wide queues.
+pub(crate) struct AccountRefreshGuard {
+    state: Arc<SharedState>,
+    account_id: String,
+}
+
+impl AccountRefreshGuard {
+    pub(crate) fn new(state: &Arc<SharedState>, account_id: &str) -> Self {
+        if let Ok(mut runtime) = lock_auto_refresh(state) {
+            runtime
+                .status
+                .refreshing_account_ids
+                .push(account_id.to_string());
+        }
+        emit_status_changed(state);
+        Self {
+            state: Arc::clone(state),
+            account_id: account_id.to_string(),
+        }
+    }
+}
+
+impl Drop for AccountRefreshGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runtime) = lock_auto_refresh(&self.state)
+            && let Some(index) = runtime
+                .status
+                .refreshing_account_ids
+                .iter()
+                .position(|id| id == &self.account_id)
+        {
+            runtime.status.refreshing_account_ids.swap_remove(index);
+        }
+        emit_status_changed(&self.state);
+    }
 }
 
 pub(crate) fn is_account_active(
@@ -92,20 +135,51 @@ pub(crate) fn is_account_active_in_data(account: &Account, data: &AppData) -> bo
 
 pub async fn get_chatgpt_reachability(
     state: &SharedState,
-    force_fresh: bool,
+    retry_unavailable: bool,
 ) -> crate::geo::ChatGptReachability {
-    if !force_fresh
-        && let Ok(runtime) = state.auto_refresh.lock()
-        && let Some(cached) = runtime.reachability_cache.get_cached(60)
-    {
-        return cached;
+    let requested_at = std::time::Instant::now();
+    let cached = || {
+        state.auto_refresh.lock().ok().and_then(|runtime| {
+            runtime
+                .reachability_cache
+                .get_cached(retry_unavailable, requested_at)
+        })
+    };
+    if let Some(result) = cached() {
+        return result;
     }
-
+    let _guard = state.reachability_gate.lock().await;
+    if let Some(result) = cached() {
+        return result;
+    }
+    let generation = state
+        .auto_refresh
+        .lock()
+        .ok()
+        .map(|runtime| runtime.reachability_cache.generation());
     let reachability = crate::geo::probe_chatgpt_reachability(&state.http_client).await;
-    if let Ok(mut runtime) = state.auto_refresh.lock() {
+    if let Ok(mut runtime) = state.auto_refresh.lock()
+        && Some(runtime.reachability_cache.generation()) == generation
+    {
         runtime.reachability_cache.set(reachability.clone());
     }
     reachability
+}
+
+pub(crate) fn invalidate_reachability_on_error<T>(state: &SharedState, result: &AppResult<T>) {
+    if let Err(error) = result
+        && (matches!(error, AppError::Http { source, .. } if source.is_connect() || source.is_timeout())
+            || matches!(
+                error,
+                AppError::RemoteHttp {
+                    status: 403 | 451,
+                    ..
+                }
+            ))
+        && let Ok(mut runtime) = state.auto_refresh.lock()
+    {
+        runtime.reachability_cache.invalidate();
+    }
 }
 
 pub(crate) fn account_gate_for_id(
@@ -323,11 +397,22 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
             }
 
             let outcome = refresh_single_account(&shared, &account_id).await?;
-            update_account_schedule(&shared, &account_id, outcome.succeeded)?;
+            update_account_schedule_with_retry(
+                &shared,
+                &account_id,
+                outcome.succeeded,
+                outcome.retry_after_seconds,
+            )?;
+            crate::storage::flush_refresh_metadata(&shared)?;
             for warning in outcome.warnings {
                 log::warn!("Refresh for {account_id} completed with warning: {warning}");
             }
-            crate::tray_dashboard::emit_state_changed(&shared, "account", vec![account_id.clone()]);
+            // Reconciliation can also change the active account selection.
+            crate::tray_dashboard::emit_state_changed(
+                &shared,
+                "accounts",
+                vec![account_id.clone()],
+            );
             crate::tray_dashboard::refresh_dashboard_and_alerts(&shared);
             Ok::<(), AppError>(())
         }
@@ -353,37 +438,45 @@ async fn refresh_accounts_for_provider_with_notification(
     provider: Option<AccountProvider>,
     notify_ui: bool,
 ) -> AppResult<RefreshAllResult> {
-    match state.refresh_all_gate.try_lock() {
-        Ok(_guard) => run_refresh_accounts_for_provider(state, provider, true, notify_ui).await,
-        Err(_) => wait_for_active_refresh(state).await,
-    }
-}
-
-async fn wait_for_active_refresh(state: &Arc<SharedState>) -> AppResult<RefreshAllResult> {
-    let shared = Arc::clone(state);
-    tauri::async_runtime::spawn(async move {
-        let _guard = shared.refresh_all_gate.lock().await;
-        let result = shared
-            .last_refresh_result
-            .lock()
-            .map_err(|_| AppError::msg("State lock poisoned (last refresh result)"))?;
-        result
-            .clone()
-            .ok_or_else(|| AppError::msg("Refresh did not complete"))
-    })
-    .await
-    .map_err(|error| AppError::msg(format!("Refresh wait task failed: {error}")))?
-}
-
-async fn refresh_all_accounts_if_idle(
-    state: &Arc<SharedState>,
-) -> AppResult<Option<RefreshAllResult>> {
-    let Ok(_guard) = state.refresh_all_gate.try_lock() else {
-        return Ok(None);
+    // A queued manual request must perform its own work for its requested provider.
+    // Acquire in a fixed order when both providers are requested.
+    let _codex = if provider != Some(AccountProvider::Gemini) {
+        Some(state.refresh_codex_gate.lock().await)
+    } else {
+        None
     };
-    run_refresh_accounts_for_provider(state, None, false, true)
-        .await
-        .map(Some)
+    let _gemini = if provider != Some(AccountProvider::Codex) {
+        Some(state.refresh_gemini_gate.lock().await)
+    } else {
+        None
+    };
+    run_refresh_accounts_for_provider(state, provider, true, notify_ui).await
+}
+
+async fn refresh_all_accounts_if_idle(state: &Arc<SharedState>) -> AppResult<()> {
+    async fn refresh_provider(
+        state: &Arc<SharedState>,
+        provider: AccountProvider,
+    ) -> AppResult<()> {
+        let gate = match provider {
+            AccountProvider::Codex => &state.refresh_codex_gate,
+            AccountProvider::Gemini => &state.refresh_gemini_gate,
+        };
+        let Ok(_guard) = gate.try_lock() else {
+            return Ok(());
+        };
+        run_refresh_accounts_for_provider(state, Some(provider), false, true).await?;
+        Ok(())
+    }
+    let codex_state = Arc::clone(state);
+    let codex = tauri::async_runtime::spawn(async move {
+        refresh_provider(&codex_state, AccountProvider::Codex).await
+    });
+    let gemini = refresh_provider(state, AccountProvider::Gemini).await;
+    codex.await.map_err(|error| {
+        AppError::msg(format!("Codex background refresh worker failed: {error}"))
+    })??;
+    gemini
 }
 
 async fn run_refresh_accounts_for_provider(
@@ -475,12 +568,17 @@ async fn run_refresh_accounts_for_provider(
             warnings: reconcile_warnings.clone(),
             ..RefreshRunOutcome::default()
         };
-        mark_refresh_finished(state, None, Some(outcome))?;
-        *lock_last_refresh_result(state)? = Some(RefreshAllResult {
-            state: lock_data(state)?.clone(),
-            warnings: reconcile_warnings.clone(),
-            failed_account_ids: Vec::new(),
-        });
+        let persistence = crate::storage::flush_refresh_metadata(state);
+        mark_refresh_finished(
+            state,
+            persistence.as_ref().err().map(AppError::user_message),
+            Some(outcome),
+        )?;
+        if notify_ui {
+            crate::tray_dashboard::emit_state_changed(state, "accounts", Vec::new());
+        }
+        crate::tray_dashboard::refresh_dashboard_and_alerts(state);
+        persistence?;
         return Ok(RefreshAllResult {
             state: lock_data(state)?.clone(),
             warnings: reconcile_warnings,
@@ -491,21 +589,50 @@ async fn run_refresh_accounts_for_provider(
         .iter()
         .map(|item| item.account_id.clone())
         .collect::<Vec<_>>();
+    {
+        let mut runtime = lock_auto_refresh(state)?;
+        for target in [AccountProvider::Codex, AccountProvider::Gemini] {
+            let total = work_items
+                .iter()
+                .filter(|item| item.provider == target)
+                .count() as u32;
+            if total > 0 {
+                runtime
+                    .status
+                    .progress
+                    .retain(|p| p.provider != provider_key(target));
+                runtime
+                    .status
+                    .progress
+                    .push(crate::models::RefreshProgress {
+                        provider: provider_key(target).to_string(),
+                        total,
+                        completed: 0,
+                        failed: 0,
+                    });
+            }
+        }
+    }
     mark_refresh_started(state);
     let mut outcome = refresh_all_accounts_inner(state, work_items).await;
     outcome.warnings.extend(reconcile_warnings);
     let warnings = outcome.warnings.clone();
     let failed_account_ids = outcome.failed_account_ids.clone();
-    mark_refresh_finished(state, None, Some(outcome))?;
-    *lock_last_refresh_result(state)? = Some(RefreshAllResult {
-        state: lock_data(state)?.clone(),
-        warnings: warnings.clone(),
-        failed_account_ids: failed_account_ids.clone(),
-    });
+    lock_auto_refresh(state)?
+        .status
+        .progress
+        .retain(|p| provider.is_some_and(|target| p.provider != provider_key(target)));
+    let persistence = crate::storage::flush_refresh_metadata(state);
+    mark_refresh_finished(
+        state,
+        persistence.as_ref().err().map(AppError::user_message),
+        Some(outcome),
+    )?;
     if notify_ui {
         crate::tray_dashboard::emit_state_changed(state, "accounts", changed_account_ids);
     }
     crate::tray_dashboard::refresh_dashboard_and_alerts(state);
+    persistence?;
     Ok(RefreshAllResult {
         state: lock_data(state)?.clone(),
         warnings,
@@ -526,6 +653,7 @@ async fn refresh_all_accounts_inner(
     for work_item in work_items {
         let shared = Arc::clone(state);
         let account_id = work_item.account_id.clone();
+        let provider = work_item.provider;
         let gate = Arc::clone(&work_item.gate);
         let permit_sem = Arc::clone(&semaphore);
 
@@ -536,6 +664,7 @@ async fn refresh_all_accounts_inner(
                 if quota_was_refreshed_since(&shared, &account_id, requested_at)? {
                     return Ok(crate::refresh_service::AccountRefreshOutcome {
                         succeeded: true,
+                        retry_after_seconds: None,
                         warnings: Vec::new(),
                     });
                 }
@@ -543,12 +672,16 @@ async fn refresh_all_accounts_inner(
                 // Persist failures before releasing the same gate used by individual refreshes.
                 // Success already commits its adaptive deadline with the quota snapshot.
                 let (succeeded, retry_after) = match &result {
-                    Ok(refresh) => (refresh.succeeded, None),
+                    Ok(refresh) => (refresh.succeeded, refresh.retry_after_seconds),
                     Err(error) => (false, error.retry_after_seconds()),
                 };
-                if let Err(error) =
-                    update_account_schedule_with_retry(&shared, &account_id, succeeded, retry_after)
-                {
+                if let Err(error) = update_account_schedule_inner(
+                    &shared,
+                    &account_id,
+                    succeeded,
+                    retry_after,
+                    true,
+                ) {
                     log::warn!(
                         "Failed to persist refresh schedule for {account_id}: {}",
                         error.user_message()
@@ -568,8 +701,13 @@ async fn refresh_all_accounts_inner(
                                 })
                                 .unwrap_or(false);
                             if should_emit {
-                                let _ =
-                                    app.emit("account-updated", crate::dto::AccountDto::from(acc));
+                                let _ = app.emit(
+                                    "account-updated",
+                                    crate::dto::AccountSnapshotDto {
+                                        revision: data.revision,
+                                        account: crate::dto::AccountDto::from(acc),
+                                    },
+                                );
                             }
                         }
                         Ok(refresh)
@@ -578,6 +716,19 @@ async fn refresh_all_accounts_inner(
                 }
             }
             .await;
+            if let Ok(mut runtime) = lock_auto_refresh(&shared)
+                && let Some(progress) = runtime
+                    .status
+                    .progress
+                    .iter_mut()
+                    .find(|p| p.provider == provider_key(provider))
+            {
+                progress.completed += 1;
+                if !result.as_ref().is_ok_and(|outcome| outcome.succeeded) {
+                    progress.failed += 1;
+                }
+            }
+            emit_status_changed(&shared);
             (account_id, result)
         }));
     }
@@ -618,18 +769,30 @@ fn refresh_work_items(
     provider: Option<AccountProvider>,
 ) -> AppResult<(Vec<RefreshWorkItem>, Vec<String>)> {
     let mut data = lock_data(state)?;
-    let warnings = reconcile_codex_auth_transactionally(&mut data)
-        .err()
-        .map(|error| {
-            let message = format!(
-                "auth.json reconciliation was skipped before refresh-all: {}",
-                error.user_message()
-            );
-            log::warn!("{message}");
-            message
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut warnings = if provider != Some(AccountProvider::Gemini) {
+        reconcile_codex_auth_transactionally(&mut data)
+    } else {
+        Ok(false)
+    }
+    .err()
+    .map(|error| {
+        let message = format!(
+            "auth.json reconciliation was skipped before refresh-all: {}",
+            error.user_message()
+        );
+        log::warn!("{message}");
+        message
+    })
+    .into_iter()
+    .collect::<Vec<_>>();
+    if provider != Some(AccountProvider::Codex)
+        && let Err(error) = crate::gemini::reconcile_antigravity_auth_at_startup(&mut data)
+    {
+        warnings.push(format!(
+            "Antigravity session reconciliation was skipped: {}",
+            error.user_message()
+        ));
+    }
     let active_account = data.active_account_id.as_ref().and_then(|active_id| {
         data.accounts
             .iter()
@@ -669,6 +832,7 @@ fn refresh_work_items(
         .map(|account| {
             let key = refresh_gate_key(account, active_account.as_ref());
             account_update_gate(state, key).map(|gate| RefreshWorkItem {
+                provider: account.provider,
                 account_id: account.id.clone(),
                 gate,
             })
@@ -703,7 +867,8 @@ async fn refresh_single_account(
         .ok_or_else(|| AppError::msg("Account not found"))?;
     match provider {
         AccountProvider::Gemini => {
-            crate::gemini_quota::refresh_gemini_account(state, account_id).await
+            crate::gemini_quota::refresh_gemini_account_with_options(state, account_id, false, true)
+                .await
         }
         AccountProvider::Codex => {
             RefreshService::new(Arc::clone(state))
@@ -792,6 +957,12 @@ fn effective_next_attempt_at(
     is_active: bool,
     now: i64,
 ) -> i64 {
+    // A passed reset must not bypass a failed request's backoff / Retry-After.
+    if account.quota_refresh_failures > 0
+        && let Some(retry_at) = account.quota_next_refresh_at.filter(|value| *value > 0)
+    {
+        return retry_at;
+    }
     // If ANY quota reset window has already passed and the quota hasn't been fetched since that reset,
     // trigger immediate refresh!
     if let Some(quota) = &account.quota {
@@ -847,19 +1018,21 @@ pub(crate) fn sync_schedule_runtime_status(state: &Arc<SharedState>) -> AppResul
     Ok(())
 }
 
-pub(crate) fn update_account_schedule(
-    state: &Arc<SharedState>,
-    account_id: &str,
-    success: bool,
-) -> AppResult<()> {
-    update_account_schedule_with_retry(state, account_id, success, None)
-}
-
 pub(crate) fn update_account_schedule_with_retry(
     state: &Arc<SharedState>,
     account_id: &str,
     success: bool,
     retry_after_seconds: Option<i64>,
+) -> AppResult<()> {
+    update_account_schedule_inner(state, account_id, success, retry_after_seconds, false)
+}
+
+fn update_account_schedule_inner(
+    state: &Arc<SharedState>,
+    account_id: &str,
+    success: bool,
+    retry_after_seconds: Option<i64>,
+    batch_metadata: bool,
 ) -> AppResult<()> {
     if success {
         return sync_schedule_runtime_status(state);
@@ -909,7 +1082,14 @@ pub(crate) fn update_account_schedule_with_retry(
         (data, backed_off_accounts, next_run_at, next)
     };
 
-    commit_state_data(state, data, next)?;
+    if batch_metadata {
+        let mut data = data;
+        crate::storage::commit_refresh_metadata(state, &mut data, next)?;
+        drop(data);
+        crate::tray_dashboard::refresh_dashboard_and_alerts(state);
+    } else {
+        commit_state_data(state, data, next)?;
+    }
 
     let mut runtime = lock_auto_refresh(state)?;
     runtime.status.backed_off_accounts = backed_off_accounts;
@@ -1130,6 +1310,57 @@ mod tests {
             last_error: None,
             subscription_error: None,
         }
+    }
+
+    #[test]
+    fn provider_queues_are_independent_and_account_busy_scope_is_local() {
+        let shared =
+            Arc::new(SharedState::new_with_startup_error(AppData::default(), None).unwrap());
+        let codex = shared.refresh_codex_gate.try_lock().unwrap();
+        assert!(shared.refresh_codex_gate.try_lock().is_err());
+        assert!(shared.refresh_gemini_gate.try_lock().is_ok());
+        drop(codex);
+        assert!(shared.refresh_codex_gate.try_lock().is_ok());
+        {
+            let _busy = super::AccountRefreshGuard::new(&shared, "one");
+            {
+                let _overlapping = super::AccountRefreshGuard::new(&shared, "one");
+            }
+            assert_eq!(
+                lock_auto_refresh(&shared)
+                    .unwrap()
+                    .status
+                    .refreshing_account_ids,
+                vec!["one"]
+            );
+        }
+        assert!(
+            lock_auto_refresh(&shared)
+                .unwrap()
+                .status
+                .refreshing_account_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn passed_reset_cannot_bypass_retry_after_or_failure_backoff() {
+        let now = 1_000_000;
+        let mut acc = account(100.0, now - 1000, Some(now - 100));
+        let settings = AppSettings::default();
+        acc.quota_next_refresh_at = Some(now + 600);
+        // A reset still accelerates a normal successful schedule.
+        assert_eq!(effective_next_attempt_at(&acc, &settings, true, now), now);
+        acc.quota_refresh_failures = 1;
+        assert_eq!(
+            effective_next_attempt_at(&acc, &settings, true, now),
+            now + 600
+        );
+        assert_eq!(
+            effective_next_attempt_at(&acc, &settings, false, now),
+            now + 600
+        );
+        assert_eq!(scheduler_wait_seconds(Some(now + 600), now), 600);
     }
 
     #[test]

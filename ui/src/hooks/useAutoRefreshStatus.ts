@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api } from '../api'
 import type { AutoRefreshStatus } from '../types'
+import { sameValue } from '../utils/stateMerge'
+
+function mergeStatus(previous: AutoRefreshStatus | null, next: AutoRefreshStatus) {
+  if (sameValue(previous, next)) return previous
+  return { ...next, refreshingAccountIds: sameValue(previous?.refreshingAccountIds, next.refreshingAccountIds)
+    ? previous!.refreshingAccountIds : next.refreshingAccountIds }
+}
 
 export function useAutoRefreshStatus() {
   const [status, setStatus] = useState<AutoRefreshStatus | null>(null)
@@ -18,7 +25,7 @@ export function useAutoRefreshStatus() {
     const request = (async () => {
       try {
         const next = await api.getAutoRefreshStatus()
-        setStatus(next)
+        setStatus((previous) => mergeStatus(previous, next))
         setError(null)
 
         return next
@@ -48,7 +55,7 @@ export function useAutoRefreshStatus() {
 
     void load()
     void listen<AutoRefreshStatus>('auto-refresh-status-changed', ({ payload }) => {
-      setStatus(payload)
+      setStatus((previous) => mergeStatus(previous, payload))
       setError(null)
     }).then((dispose) => {
       if (disposed) dispose()

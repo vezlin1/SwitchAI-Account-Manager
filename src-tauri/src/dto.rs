@@ -133,6 +133,8 @@ pub struct AntigravitySurfaceDto {
 pub struct AutoRefreshStatusDto {
     pub enabled: bool,
     pub in_flight: bool,
+    pub refreshing_account_ids: Vec<String>,
+    pub progress: Vec<crate::models::RefreshProgress>,
     pub last_started_at: Option<i64>,
     pub last_finished_at: Option<i64>,
     pub last_error: Option<String>,
@@ -320,6 +322,8 @@ impl From<&AutoRefreshStatus> for AutoRefreshStatusDto {
         Self {
             enabled: status.enabled,
             in_flight: status.in_flight,
+            refreshing_account_ids: status.refreshing_account_ids.clone(),
+            progress: status.progress.clone(),
             last_started_at: status.last_started_at,
             last_finished_at: status.last_finished_at,
             last_error: status.last_error.clone(),

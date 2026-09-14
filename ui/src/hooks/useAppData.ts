@@ -1,9 +1,10 @@
+import { createRefreshQueue } from '../utils/refreshQueue'
 import { settingsPatch, type SettingsPatch } from '../utils/settingsPatch'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api, describeIpcError } from '../api'
 import type {
-  Account,
+  AccountSnapshot,
   AppData,
   AppSettings,
   AppStateChangedEvent,
@@ -50,8 +51,9 @@ export function useAppData() {
     loading: true
   })
   const dataRef = useRef<AppData | null>(null)
-  const reloadInFlightRef = useRef<Promise<void> | null>(null)
-  const accountReloadsRef = useRef<Map<string, Promise<void>>>(new Map())
+  const localAuthRequestedRef = useRef(false)
+  const reloadQueueRef = useRef<ReturnType<typeof createRefreshQueue> | null>(null)
+  const accountReloadsRef = useRef<Map<string, ReturnType<typeof createRefreshQueue>>>(new Map())
   const settingsQueueRef = useRef<Promise<AppData | null>>(Promise.resolve(null))
   const settingsVersionRef = useRef(0)
   const settingsPendingRef = useRef(0)
@@ -224,32 +226,28 @@ export function useAppData() {
 
   const clearError = useCallback(() => setError(null), [])
 
-  const reload = useCallback(async () => {
-    if (reloadInFlightRef.current) {
-      return reloadInFlightRef.current
-    }
-
+  const runReload = useCallback(async () => {
+    if (disposeRef.current) return
     const initialLoad = dataRef.current == null
-    const request = (async () => {
-      if (initialLoad) setLoading(true)
-      setError(null)
-      try {
-        const state = await api.getState()
-        if (!disposeRef.current) {
-          setData(state)
-          setLoading(false)
-        }
-      } catch (err) {
-        if (!disposeRef.current) setError(describeIpcError(err))
-      } finally {
-        if (initialLoad) setLoading(false)
-        reloadInFlightRef.current = null
-      }
-    })()
-
-    reloadInFlightRef.current = request
-    return request
+    const reconcileLocalAuth = localAuthRequestedRef.current
+    localAuthRequestedRef.current = false
+    if (initialLoad) setLoading(true)
+    setError(null)
+    try {
+      const state = await api.getState(reconcileLocalAuth)
+      if (!disposeRef.current) setData(state)
+    } catch (err) {
+      if (!disposeRef.current) setError(describeIpcError(err))
+    } finally {
+      if (!disposeRef.current) setLoading(false)
+    }
   }, [setData])
+
+  const reload = useCallback((reconcileLocalAuth = true) => {
+    localAuthRequestedRef.current ||= reconcileLocalAuth
+    reloadQueueRef.current ??= createRefreshQueue(runReload)
+    return reloadQueueRef.current()
+  }, [runReload])
 
   const reloadAccountOrder = useCallback(async (shouldApply: () => boolean) => {
     try {
@@ -274,9 +272,9 @@ export function useAppData() {
 
   const reloadAccount = useCallback((accountId: string) => {
     const existing = accountReloadsRef.current.get(accountId)
-    if (existing) return existing
+    if (existing) return existing()
 
-    const request = (async () => {
+    const refresh = createRefreshQueue(async () => {
       try {
         const snapshot = await api.getAccount(accountId)
         if (disposeRef.current) return
@@ -287,26 +285,26 @@ export function useAppData() {
           if (isStaleRevision(snapshot.revision, latest.revision)) {
             return latest
           }
-          return {
-            ...latest,
-            accounts: latest.accounts.map((candidate) =>
-              candidate.id === snapshot.account.id
-                ? mergeAccountSnapshot(candidate, snapshot.account)
-                : candidate
-            )
-          }
+          let changed = false
+          const accounts = latest.accounts.map((candidate) => {
+            if (candidate.id !== snapshot.account.id) return candidate
+            const merged = mergeAccountSnapshot(candidate, snapshot.account)
+            changed ||= merged !== candidate
+            return merged
+          })
+          return changed ? { ...latest, accounts } : latest
         })
         if (!resolved || !resolved.accounts.some((candidate) => candidate.id === snapshot.account.id)) {
-          await reload()
+          await reload(false)
         }
       } catch {
-        if (!disposeRef.current) await reload()
-      } finally {
-        accountReloadsRef.current.delete(accountId)
+        if (!disposeRef.current) await reload(false)
       }
-    })()
-    accountReloadsRef.current.set(accountId, request)
-    return request
+    })
+    accountReloadsRef.current.set(accountId, refresh)
+    return refresh().finally(() => {
+      if (accountReloadsRef.current.get(accountId) === refresh) accountReloadsRef.current.delete(accountId)
+    })
   }, [reload, setData])
 
   useEffect(() => {
@@ -322,34 +320,58 @@ export function useAppData() {
     let unlistenAccount: UnlistenFn | undefined
     let fallbackTimer: number | undefined
 
-    void listen<Account>('account-updated', ({ payload }) => {
-      if (disposeRef.current) return
-      setData((latest) => {
-        if (!latest) return latest
-        const index = latest.accounts.findIndex((a) => a.id === payload.id)
-        if (index === -1) return latest
-        const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], payload)
-        return { ...latest, accounts }
-      })
+    let batchTimer: ReturnType<typeof setTimeout> | undefined
+    let fullReload = false
+    const accountIds = new Set<string>()
+    const snapshots = new Map<string, AccountSnapshot>()
+    const flush = () => {
+      batchTimer = undefined
+      if (disposed || disposeRef.current) return
+      if (snapshots.size > 0) {
+        setData((latest) => {
+          let changed = false
+          const accounts = latest.accounts.map((account) => {
+            const snapshot = snapshots.get(account.id)
+            if (!snapshot || isStaleRevision(snapshot.revision, latest.revision)) return account
+            const merged = mergeAccountSnapshot(account, snapshot.account)
+            changed ||= merged !== account
+            return merged
+          })
+          return changed ? { ...latest, accounts } : latest
+        })
+        snapshots.clear()
+      }
+      if (fullReload) void reload(false)
+      else for (const id of accountIds) void reloadAccount(id)
+      fullReload = false
+      accountIds.clear()
+    }
+    const scheduleFlush = () => {
+      batchTimer ??= setTimeout(flush, 80)
+    }
+
+    void listen<AccountSnapshot>('account-updated', ({ payload }) => {
+      if (disposed || disposeRef.current) return
+      const previous = snapshots.get(payload.account.id)
+      if (!previous || payload.revision >= previous.revision) snapshots.set(payload.account.id, payload)
+      scheduleFlush()
     }).then((dispose) => {
       if (disposed) dispose()
       else unlistenAccount = dispose
     })
 
     void listen<AppStateChangedEvent>('app-state-changed', ({ payload }) => {
-      if (payload.scope === 'account' && payload.accountIds.length === 1) {
-        void reloadAccount(payload.accountIds[0])
-        return
-      }
-      void reload()
+      if (disposed || disposeRef.current) return
+      if (payload.scope === 'account' && payload.accountIds.length === 1) accountIds.add(payload.accountIds[0])
+      else fullReload = true
+      scheduleFlush()
     }).then((dispose) => {
       if (disposed) dispose()
       else unlisten = dispose
     }).catch(() => {
       if (!disposed) {
         fallbackTimer = window.setInterval(() => {
-          void reload()
+          void reload(false)
         }, 30000)
       }
     })
@@ -358,6 +380,7 @@ export function useAppData() {
       disposed = true
       unlisten?.()
       unlistenAccount?.()
+      if (batchTimer !== undefined) clearTimeout(batchTimer)
       if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer)
     }
   }, [reload, reloadAccount, setData])

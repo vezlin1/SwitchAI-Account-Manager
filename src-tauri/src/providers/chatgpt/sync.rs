@@ -138,11 +138,8 @@ fn tokens_differ(left: &Tokens, right: &Tokens) -> bool {
 }
 
 pub fn reconcile_codex_auth(data: &mut AppData) -> AppResult<bool> {
-    let Some(snapshot) = read_codex_auth()? else {
-        return Ok(false);
-    };
-
-    Ok(reconcile_codex_auth_from_snapshot(data, Some(&snapshot)))
+    let snapshot = read_codex_auth()?;
+    Ok(reconcile_codex_auth_from_snapshot(data, snapshot.as_ref()))
 }
 
 pub fn reconcile_codex_auth_transactionally(data: &mut AppData) -> AppResult<bool> {
@@ -164,14 +161,16 @@ pub fn reconcile_codex_auth_with_snapshot(
     Ok(true)
 }
 
-/// Startup-only reconciliation. Applies an already-read auth snapshot to `data`
+/// Applies an already-read auth snapshot to `data`
 /// and reports whether `data` changed. Never reads or writes auth.json itself.
 pub fn reconcile_codex_auth_from_snapshot(
     data: &mut AppData,
     snapshot: Option<&CodexAuthSnapshot>,
 ) -> bool {
     let Some(snapshot) = snapshot else {
-        return false;
+        // A successfully read, absent session means the user has signed out.
+        // Read errors must be handled by the caller without reconciling.
+        return data.active_account_id.take().is_some();
     };
 
     let snapshot_account_id = snapshot
@@ -244,18 +243,7 @@ pub fn reconcile_codex_auth_from_snapshot(
 /// Reads auth.json once at startup, reconciles the saved accounts, and persists
 /// only when the snapshot changed anything. auth.json is never written here.
 pub fn reconcile_codex_auth_at_startup(data: &mut AppData) -> AppResult<bool> {
-    let snapshot = read_codex_auth()?;
-
-    let Some(snapshot) = snapshot else {
-        return Ok(false);
-    };
-
-    let mut next = data.clone();
-    if !reconcile_codex_auth_from_snapshot(&mut next, Some(&snapshot)) {
-        return Ok(false);
-    }
-    commit_app_data(data, next)?;
-    Ok(true)
+    reconcile_codex_auth_transactionally(data)
 }
 
 fn existing_auth_document(path: &Path) -> AppResult<Value> {
@@ -558,13 +546,13 @@ mod tests {
     }
 
     #[test]
-    fn startup_reconcile_selects_known_account_by_exact_account_id() {
+    fn reconcile_detects_manual_switch_by_exact_account_id() {
         let mut data = AppData {
             accounts: vec![
                 account("one", Some("id-one"), Some("one@example.com"), 100),
                 account("two", Some("id-two"), Some("two@example.com"), 100),
             ],
-            active_account_id: None,
+            active_account_id: Some("one".to_string()),
             ..AppData::default()
         };
 
@@ -666,6 +654,26 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_detects_manual_switch_even_when_local_tokens_are_older() {
+        let mut data = AppData {
+            accounts: vec![
+                account("one", Some("id-one"), None, 300),
+                account("two", Some("id-two"), None, 300),
+            ],
+            active_account_id: Some("one".to_string()),
+            ..AppData::default()
+        };
+
+        assert!(reconcile_codex_auth_from_snapshot(
+            &mut data,
+            Some(&snapshot(Some("id-two"), None, 200)),
+        ));
+        assert_eq!(data.active_account_id.as_deref(), Some("two"));
+        assert_eq!(data.accounts[1].tokens.access_token, "access-two");
+        assert_eq!(data.accounts[1].tokens_updated_at, Some(300));
+    }
+
+    #[test]
     fn startup_reconcile_updates_tokens_when_snapshot_is_not_older() {
         let mut data = AppData {
             accounts: vec![account("one", Some("id-one"), None, 200)],
@@ -725,16 +733,17 @@ mod tests {
     }
 
     #[test]
-    fn startup_reconcile_missing_snapshot_leaves_state_unchanged() {
+    fn reconcile_missing_snapshot_clears_active_selection_and_preserves_tokens() {
         let mut data = AppData {
             accounts: vec![account("one", Some("id-one"), None, 100)],
             active_account_id: Some("one".to_string()),
             ..AppData::default()
         };
 
-        assert!(!reconcile_codex_auth_from_snapshot(&mut data, None));
-        assert_eq!(data.active_account_id.as_deref(), Some("one"));
+        assert!(reconcile_codex_auth_from_snapshot(&mut data, None));
+        assert_eq!(data.active_account_id, None);
         assert_eq!(data.accounts[0].tokens.access_token, "access-one");
+        assert!(!reconcile_codex_auth_from_snapshot(&mut data, None));
     }
 
     #[test]

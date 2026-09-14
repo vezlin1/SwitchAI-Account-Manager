@@ -335,6 +335,12 @@ pub fn run() {
             move |_app_handle, event| {
                 if let tauri::RunEvent::ExitRequested { .. } = event {
                     run_state.is_quitting.store(true, Ordering::SeqCst);
+                    if let Err(error) = storage::flush_refresh_metadata(&run_state) {
+                        log::error!(
+                            "Could not save quota metadata before exit: {}",
+                            error.user_message()
+                        );
+                    }
                 }
             }
         });

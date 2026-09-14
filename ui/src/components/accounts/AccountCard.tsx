@@ -3,7 +3,7 @@ import { ChevronRight, Eye, EyeOff, KeyRound, Loader2, Trash2, UserCheck } from 
 import type { Account } from '../../types'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
-import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
+import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { usePrivacy } from '../../context/usePrivacy'
 
@@ -139,8 +139,7 @@ export const AccountCard = memo(function AccountCard({
 
       {quotaColumns.length > 0 && (
         <div className="account-card-quota">
-          {quotaColumns.map((column) => {
-            const window = quotaWindowForColumn(account.quota, column)
+          {quotaCellsForAccount(account.quota, quotaColumns).map(({ column, window }) => {
             return (
               <QuotaCell
                 key={column.key}

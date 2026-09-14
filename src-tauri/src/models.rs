@@ -186,7 +186,7 @@ impl Default for AppSettings {
             detected_targets
         };
         Self {
-            auto_refresh_enabled: true,
+            auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 15,
             close_to_tray: true,
             skip_unsupported_region_refresh: true,
@@ -302,6 +302,8 @@ impl AppSettings {
 pub struct AutoRefreshStatus {
     pub enabled: bool,
     pub in_flight: bool,
+    pub refreshing_account_ids: Vec<String>,
+    pub progress: Vec<RefreshProgress>,
     pub last_started_at: Option<i64>,
     pub last_finished_at: Option<i64>,
     pub last_error: Option<String>,
@@ -316,6 +318,8 @@ impl AutoRefreshStatus {
         Self {
             enabled: settings.auto_refresh_enabled,
             in_flight: false,
+            refreshing_account_ids: Vec::new(),
+            progress: Vec::new(),
             last_started_at: None,
             last_finished_at: None,
             last_error: None,
@@ -335,6 +339,15 @@ impl Default for AutoRefreshStatus {
     fn default() -> Self {
         Self::from_settings(&AppSettings::default())
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshProgress {
+    pub provider: String,
+    pub total: u32,
+    pub completed: u32,
+    pub failed: u32,
 }
 
 #[derive(Debug, Clone)]

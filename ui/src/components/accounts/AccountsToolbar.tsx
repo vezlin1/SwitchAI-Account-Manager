@@ -46,6 +46,8 @@ export function AccountsToolbar({
   const isGoogle = provider === 'gemini'
   const isImporting = importingSession ?? importingAntigravity
   const accountActionBusy = addingAccount || isImporting
+  const progress = autoRefreshStatus?.progress?.find((run) => run.provider === (provider ?? 'codex'))
+  const providerRefreshing = refreshingAll || Boolean(progress)
   const handleImport = onImportSession ?? onImportAntigravity
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -84,7 +86,7 @@ export function AccountsToolbar({
                 if (accountActionBusy) return
                 setDropdownOpen((prev) => !prev)
               }}
-              disabled={accountActionBusy || refreshingAll}
+              disabled={accountActionBusy}
               aria-haspopup="menu"
               aria-expanded={dropdownOpen}
               title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
@@ -168,7 +170,7 @@ export function AccountsToolbar({
             type="button"
             className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 active:bg-blue-700 active:scale-[0.98] inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-sm cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
             onClick={onAddAccount}
-            disabled={accountActionBusy || refreshingAll}
+            disabled={accountActionBusy}
             title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
           >
             {addingAccount ? (
@@ -180,7 +182,7 @@ export function AccountsToolbar({
           </button>
         )}
 
-        {accountActionBusy && (
+        {addingAccount && (
           <button
             className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface hover:border-white/20 active:scale-95 active:bg-ag-surface/80 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary"
             onClick={onCancelAddAccount}
@@ -196,13 +198,19 @@ export function AccountsToolbar({
           type="button"
           className="h-9 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface hover:border-white/20 hover:text-white active:scale-[0.98] active:bg-ag-surface/80 inline-flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-ag-border disabled:hover:bg-transparent disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary select-none"
           onClick={onRefreshAll}
-          disabled={refreshingAll || autoRefreshStatus?.inFlight || accountCount === 0}
+          disabled={providerRefreshing || accountCount === 0}
         >
-          {refreshingAll
+          {providerRefreshing
             ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
             : <RefreshCw size={14} aria-hidden="true" />}
           Refresh
         </button>
+        {progress && (
+          <span className="text-xs text-ag-muted" role="status">
+            Processed {progress.completed} of {progress.total}
+            {progress.failed > 0 ? ` · ${progress.failed} failed` : ''}
+          </span>
+        )}
 
         {onSearchChange && (
           <div className="account-search-wrapper">

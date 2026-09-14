@@ -403,66 +403,86 @@ pub fn restore_antigravity_auth(snapshot: Option<&AntigravityAuthSnapshot>) -> A
     }
 }
 
-pub fn reconcile_antigravity_auth_at_startup(data: &mut AppData) -> AppResult<Option<String>> {
-    let Some(snapshot) = read_antigravity_auth()? else {
-        return Ok(None);
-    };
-    let snapshot_email = crate::token_utils::extract_email(&snapshot.tokens.id_token);
-    let matching_id = data
-        .accounts
-        .iter()
-        .find(|account| {
-            account.provider == AccountProvider::Gemini
-                && (((!snapshot.tokens.refresh_token.is_empty()
-                    && account.tokens.refresh_token == snapshot.tokens.refresh_token)
-                    || (!snapshot.tokens.access_token.is_empty()
-                        && account.tokens.access_token == snapshot.tokens.access_token))
-                    || (snapshot_email.is_some()
-                        && account
-                            .email
-                            .as_deref()
-                            .zip(snapshot_email.as_deref())
-                            .is_some_and(|(l, r)| l.trim().eq_ignore_ascii_case(r.trim()))))
-        })
-        .map(|account| account.id.clone());
+pub(crate) fn antigravity_auth_matches_account(
+    snapshot: &AntigravityAuthSnapshot,
+    account: &Account,
+) -> bool {
+    if account.provider != AccountProvider::Gemini {
+        return false;
+    }
+    let email = crate::token_utils::extract_email(&snapshot.tokens.id_token);
+    if let Some((external, saved)) = email.as_deref().zip(account.email.as_deref()) {
+        return external.trim().eq_ignore_ascii_case(saved.trim());
+    }
+    (!snapshot.tokens.refresh_token.is_empty()
+        && account.tokens.refresh_token == snapshot.tokens.refresh_token)
+        || (!snapshot.tokens.access_token.is_empty()
+            && account.tokens.access_token == snapshot.tokens.access_token)
+}
 
-    let Some(matching_id) = matching_id else {
-        if data.active_gemini_account_id.is_some() {
-            let mut next = data.clone();
-            next.active_gemini_account_id = None;
-            crate::storage::commit_app_data(data, next)?;
-        }
-        return Ok(Some(
-            "Antigravity is signed in with an account not yet managed here. Open the Gemini tab and choose Import current session."
-                .to_string(),
-        ));
-    };
+fn matching_antigravity_account_id(
+    data: &AppData,
+    snapshot: Option<&AntigravityAuthSnapshot>,
+) -> Option<String> {
+    snapshot.and_then(|auth| {
+        data.accounts
+            .iter()
+            .find(|account| antigravity_auth_matches_account(auth, account))
+            .map(|account| account.id.clone())
+    })
+}
 
+pub(crate) fn antigravity_auth_unchanged(
+    before: Option<&AntigravityAuthSnapshot>,
+    current: Option<&AntigravityAuthSnapshot>,
+    account: &Account,
+) -> bool {
+    before.is_some_and(|auth| antigravity_auth_matches_account(auth, account)) && before == current
+}
+
+pub(crate) fn reconcile_antigravity_auth_with_snapshot(
+    data: &mut AppData,
+    snapshot: Option<&AntigravityAuthSnapshot>,
+) -> AppResult<bool> {
+    let matching_id = matching_antigravity_account_id(data, snapshot);
     let mut next = data.clone();
-    let mut changed = next.active_gemini_account_id.as_deref() != Some(matching_id.as_str());
-    let account = next
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == matching_id)
-        .ok_or_else(|| AppError::msg("Matched Antigravity account disappeared"))?;
-    let mut reconciled_tokens = snapshot.tokens;
-    if reconciled_tokens.id_token.is_empty() {
-        reconciled_tokens.id_token = account.tokens.id_token.clone();
+    let mut changed = next.active_gemini_account_id != matching_id;
+    next.active_gemini_account_id = matching_id.clone();
+    if let Some((auth, id)) = snapshot.zip(matching_id) {
+        let account = next
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .ok_or_else(|| AppError::msg("Matched Antigravity account disappeared"))?;
+        // Select the externally active account even when our saved credentials are newer.
+        let not_older = auth.expires_at.unwrap_or(0) >= account.token_expires_at.unwrap_or(0);
+        if not_older {
+            let mut tokens = auth.tokens.clone();
+            if tokens.id_token.is_empty() {
+                tokens.id_token = account.tokens.id_token.clone();
+            }
+            if account.tokens != tokens {
+                account.tokens = tokens;
+                account.tokens_updated_at = Some(crate::models::now_ts());
+                changed = true;
+            }
+            if auth.expires_at.is_some() && account.token_expires_at != auth.expires_at {
+                account.token_expires_at = auth.expires_at;
+                changed = true;
+            }
+        }
     }
-    if account.tokens != reconciled_tokens {
-        account.tokens = reconciled_tokens;
-        account.tokens_updated_at = Some(crate::models::now_ts());
-        changed = true;
-    }
-    if snapshot.expires_at.is_some() && account.token_expires_at != snapshot.expires_at {
-        account.token_expires_at = snapshot.expires_at;
-        changed = true;
-    }
-    next.active_gemini_account_id = Some(matching_id);
     if changed {
         crate::storage::commit_app_data(data, next)?;
     }
-    Ok(None)
+    Ok(changed)
+}
+
+pub fn reconcile_antigravity_auth_at_startup(data: &mut AppData) -> AppResult<Option<String>> {
+    let snapshot = read_antigravity_auth()?;
+    reconcile_antigravity_auth_with_snapshot(data, snapshot.as_ref())?;
+    Ok((snapshot.is_some() && data.active_gemini_account_id.is_none()).then(||
+        "Antigravity is signed in with an account not yet managed here. Open the Gemini tab and choose Import current session.".to_string()))
 }
 
 #[cfg(target_os = "windows")]
@@ -960,6 +980,79 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account_for_auth(id: &str, auth: &AntigravityAuthSnapshot) -> Account {
+        Account {
+            id: id.to_string(),
+            provider: AccountProvider::Gemini,
+            email: None,
+            account_id: None,
+            provider_project_id: None,
+            subscription_expires_at: None,
+            subscription_plan: None,
+            subscription_detected_at: None,
+            subscription_checked_at: None,
+            subscription_next_check_at: None,
+            subscription_endpoint_hint: None,
+            tokens: auth.tokens.clone(),
+            token_expires_at: auth.expires_at,
+            tokens_updated_at: None,
+            token_health: crate::models::TokenHealth::healthy(),
+            quota: None,
+            quota_next_refresh_at: None,
+            quota_refresh_failures: 0,
+            created_at: 1,
+            last_login_at: 1,
+            last_error: None,
+            subscription_error: None,
+        }
+    }
+
+    #[test]
+    fn external_switch_and_logout_are_detected_without_writing_credentials() {
+        let first =
+            parse_antigravity_payload(r#"{"token":{"access_token":"a","refresh_token":"ra"}}"#)
+                .unwrap();
+        let second =
+            parse_antigravity_payload(r#"{"token":{"access_token":"b","refresh_token":"rb"}}"#)
+                .unwrap();
+        let data = AppData {
+            accounts: vec![
+                account_for_auth("one", &first),
+                account_for_auth("two", &second),
+            ],
+            active_gemini_account_id: Some("one".to_string()),
+            ..AppData::default()
+        };
+        assert_eq!(
+            matching_antigravity_account_id(&data, Some(&second)).as_deref(),
+            Some("two")
+        );
+        assert_eq!(matching_antigravity_account_id(&data, None), None);
+        assert!(antigravity_auth_unchanged(
+            Some(&first),
+            Some(&first),
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            Some(&second),
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            None,
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(None, None, &data.accounts[0]));
+        let mut rotated = first.clone();
+        rotated.tokens.access_token = "new-access".to_string();
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            Some(&rotated),
+            &data.accounts[0]
+        ));
+    }
 
     #[test]
     fn antigravity_payload_uses_consumer_auth_and_real_expiry() {

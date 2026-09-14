@@ -94,57 +94,20 @@ pub async fn fetch_subscription_info(
         return Err(AppError::msg("No subscription endpoints available"));
     }
 
-    // If a preferred endpoint was provided, try it first
-    if preferred_endpoint.is_some() {
-        match fetch_subscription_endpoint(client, &endpoints[0], tokens, account_id).await {
+    // Try the remembered endpoint first, then each fallback once. Authentication,
+    // rate limits and network failures stop the chain instead of multiplying requests.
+    for endpoint in &endpoints {
+        match fetch_subscription_endpoint(client, endpoint, tokens, account_id).await {
             Ok(info) => return Ok(info),
             Err(SubscriptionEndpointError::Fatal(error)) => return Err(error),
-            Err(SubscriptionEndpointError::Unsupported(_)) => {}
+            Err(SubscriptionEndpointError::Unsupported(message)) => {
+                log::debug!("Skipping subscription endpoint: {message}");
+            }
         }
     }
-
-    // Probe candidates concurrently for fast auto-detection
-    let mut tasks = Vec::with_capacity(endpoints.len());
-    for endpoint in endpoints {
-        let client = client.clone();
-        let tokens = tokens.clone();
-        let account_id = account_id.map(ToOwned::to_owned);
-        tasks.push(tauri::async_runtime::spawn(async move {
-            let res =
-                fetch_subscription_endpoint(&client, &endpoint, &tokens, account_id.as_deref())
-                    .await;
-            (endpoint.hint, res)
-        }));
-    }
-
-    let mut errors = Vec::new();
-    let mut fatal_error = None;
-    for task in tasks {
-        match task.await {
-            Ok((_hint, Ok(info))) => return Ok(info),
-            Ok((_hint, Err(SubscriptionEndpointError::Fatal(error)))) => {
-                if fatal_error.is_none() {
-                    fatal_error = Some(error);
-                }
-            }
-            Ok((_hint, Err(SubscriptionEndpointError::Unsupported(error)))) => {
-                errors.push(error);
-            }
-            Err(e) => errors.push(e.to_string()),
-        }
-    }
-
-    if let Some(error) = fatal_error {
-        return Err(error);
-    }
-
-    if !errors.is_empty() {
-        return Err(AppError::msg(
-            "Subscription auto-detect is unavailable for this account. Manual date was kept.",
-        ));
-    }
-
-    Err(AppError::msg("Subscription details not found"))
+    Err(AppError::msg(
+        "Subscription auto-detect is unavailable for this account. Manual date was kept.",
+    ))
 }
 
 pub fn next_subscription_check(
@@ -506,6 +469,18 @@ fn normalize_timestamp(value: i64) -> Option<i64> {
     })
 }
 
+pub(crate) fn quota_plan_label(raw: &str, current: Option<&str>) -> String {
+    let compact = raw.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    let generic_pro = matches!(compact.as_str(), "pro" | "chatgptproplan");
+    if generic_pro && let Some(current) = current {
+        let normalized = normalize_plan_label(current.to_string());
+        if matches!(normalized.as_str(), "Pro x5" | "Pro x20") {
+            return normalized;
+        }
+    }
+    normalize_plan_label(raw.to_string())
+}
+
 fn normalize_plan_label(raw: String) -> String {
     let lower = raw.to_ascii_lowercase();
     let compact = lower.replace(['_', '-', ' '], "");
@@ -526,7 +501,7 @@ fn normalize_plan_label(raw: String) -> String {
         if compact.contains("x20") || compact.contains("20x") {
             return "Pro x20".to_string();
         }
-        return "Pro x20".to_string();
+        return "Pro".to_string();
     }
     if lower.contains("plus") {
         return "Plus".to_string();
@@ -551,6 +526,104 @@ fn normalize_plan_label(raw: String) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn subscription_stops_after_success_and_does_not_repeat_failed_preferred_endpoint() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::time::{Duration, Instant};
+        for first_status in [200, 404, 429] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_server = Arc::clone(&stop);
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut requests = Vec::new();
+                while !stop_server.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            // Accepted sockets can inherit nonblocking mode on Windows.
+                            stream.set_nonblocking(false).unwrap();
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(1)))
+                                .unwrap();
+                            let mut buffer = [0; 4096];
+                            let size = stream.read(&mut buffer).unwrap();
+                            let request = String::from_utf8_lossy(&buffer[..size]);
+                            requests.push(request.lines().next().unwrap().to_string());
+                            let status = if requests.len() == 1 {
+                                first_status
+                            } else {
+                                200
+                            };
+                            let body = if status == 200 {
+                                r#"{"plan_type":"pro"}"#
+                            } else {
+                                "{}"
+                            };
+                            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nRetry-After: 300\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(error) => panic!("mock listener: {error}"),
+                    }
+                }
+                requests
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap();
+            let tokens = crate::models::Tokens {
+                access_token: "test".into(),
+                refresh_token: String::new(),
+                id_token: String::new(),
+            };
+            let result = tauri::async_runtime::block_on(super::fetch_subscription_info(
+                &client,
+                &format!("http://{address}"),
+                &tokens,
+                Some("test-account"),
+                Some("account-payments"),
+            ));
+            stop.store(true, Ordering::SeqCst);
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), if first_status == 404 { 2 } else { 1 });
+            assert_eq!(
+                requests
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                requests.len()
+            );
+            if first_status == 429 {
+                assert_eq!(result.unwrap_err().retry_after_seconds(), Some(300));
+            } else {
+                assert_eq!(result.unwrap().plan.as_deref(), Some("Pro"));
+            }
+        }
+    }
+
+    #[test]
+    fn quota_plan_labels_match_subscription_labels_without_losing_known_tiers() {
+        assert_eq!(super::quota_plan_label("pro", None), "Pro");
+        assert_eq!(super::quota_plan_label("pro", Some("Pro x20")), "Pro x20");
+        assert_eq!(super::quota_plan_label("pro", Some("Pro x5")), "Pro x5");
+        assert_eq!(
+            super::quota_plan_label("pro_20x", Some("Pro x5")),
+            "Pro x20"
+        );
+        assert_eq!(super::quota_plan_label("plus", Some("Pro x20")), "Plus");
+        assert_eq!(super::quota_plan_label("free", Some("Plus")), "Free");
+    }
 
     use crate::errors::AppError;
 
@@ -593,7 +666,7 @@ mod tests {
             normalize_plan_label("chatgpt_pro_x20_plan".into()),
             "Pro x20"
         );
-        assert_eq!(normalize_plan_label("pro".into()), "Pro x20");
+        assert_eq!(normalize_plan_label("pro".into()), "Pro");
     }
 
     #[test]

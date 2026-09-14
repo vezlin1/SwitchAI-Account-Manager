@@ -42,13 +42,36 @@ fn startup_status(state: &Arc<SharedState>) -> AppResult<StartupStatusDto> {
 }
 
 #[tauri::command]
-pub fn get_app_state(state: State<'_, Arc<SharedState>>) -> Result<AppDataDto, IpcErrorDto> {
+pub fn get_app_state(
+    state: State<'_, Arc<SharedState>>,
+    reconcile_local_auth: Option<bool>,
+) -> Result<AppDataDto, IpcErrorDto> {
     command_result((|| {
         if let Some(error) = lock_startup_error(state.inner())?.as_ref() {
             return Err(AppError::msg(error.clone()));
         }
-        let data = lock_data(state.inner())?;
-        Ok(AppDataDto::from(&*data))
+        let mut data = lock_data(state.inner())?;
+        if reconcile_local_auth.unwrap_or(false) {
+            if let Err(error) = crate::codex::reconcile_codex_auth_transactionally(&mut data) {
+                log::warn!(
+                    "Local Codex session could not be reconciled: {}",
+                    error.user_message()
+                );
+            }
+            if let Err(error) = crate::gemini::reconcile_antigravity_auth_at_startup(&mut data) {
+                log::warn!(
+                    "Local Antigravity session could not be reconciled: {}",
+                    error.user_message()
+                );
+            }
+        }
+        let result = AppDataDto::from(&*data);
+        drop(data);
+        if reconcile_local_auth.unwrap_or(false) {
+            auto_refresh::sync_schedule_runtime_status(state.inner())?;
+            crate::tray_dashboard::refresh_dashboard(state.inner());
+        }
+        Ok(result)
     })())
 }
 

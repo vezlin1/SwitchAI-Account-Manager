@@ -1,4 +1,4 @@
-export const SUBSCRIPTION_LOCALE = new Intl.DateTimeFormat().resolvedOptions().locale
+export const SUBSCRIPTION_LOCALE = 'en-US'
 
 const SUBSCRIPTION_DATE_FORMAT = new Intl.DateTimeFormat(SUBSCRIPTION_LOCALE, {
   day: 'numeric',
@@ -6,94 +6,14 @@ const SUBSCRIPTION_DATE_FORMAT = new Intl.DateTimeFormat(SUBSCRIPTION_LOCALE, {
   year: 'numeric'
 })
 
-const UNTIL_LABELS: Record<string, string> = {
-  ar: 'حتى',
-  be: 'Да',
-  bg: 'До',
-  cs: 'Do',
-  da: 'Indtil',
-  de: 'Bis',
-  el: 'Έως',
-  en: 'Until',
-  es: 'Hasta el',
-  fi: 'Voimassa asti',
-  fr: 'Jusqu’au',
-  he: 'עד',
-  hr: 'Do',
-  hu: 'Lejárat:',
-  id: 'Hingga',
-  it: 'Fino al',
-  ja: '期限:',
-  ko: '만료:',
-  nl: 'Tot',
-  no: 'Til',
-  pl: 'Do',
-  pt: 'Até',
-  ro: 'Până la',
-  ru: 'До',
-  sk: 'Do',
-  sr: 'Do',
-  sv: 'Till',
-  th: 'ถึง',
-  tr: 'Bitiş:',
-  uk: 'До',
-  vi: 'Đến',
-  zh: '截至'
-}
-
-const EXPIRED_LABELS: Record<string, string> = {
-  ar: 'منتهي',
-  be: 'Скончылася',
-  bg: 'Изтекла',
-  cs: 'Vypršelo',
-  da: 'Udløbet',
-  de: 'Abgelaufen',
-  el: 'Έληξε',
-  en: 'Expired',
-  es: 'Expirado',
-  fi: 'Vanhentunut',
-  fr: 'Expiré',
-  he: 'פג תוקף',
-  hr: 'Isteklo',
-  hu: 'Lejárt',
-  id: 'Kedaluwarsa',
-  it: 'Scaduto',
-  ja: '期限切れ:',
-  ko: '만료됨:',
-  nl: 'Verlopen',
-  no: 'Utløpt',
-  pl: 'Wygasła',
-  pt: 'Expirado',
-  ro: 'Expirat',
-  ru: 'Истекла',
-  sk: 'Vypršala',
-  sr: 'Isteklo',
-  sv: 'Utgått',
-  th: 'หมดอายุ',
-  tr: 'Süresi doldu',
-  uk: 'Закінчилась',
-  vi: 'Đã hết hạn',
-  zh: '已过期'
-}
-
-function subscriptionUntilLabel(locale: string): string {
-  const language = locale.split('-')[0]?.toLowerCase() ?? 'en'
-  return UNTIL_LABELS[language] ?? UNTIL_LABELS.en
-}
-
-function subscriptionExpiredLabel(locale: string): string {
-  const language = locale.split('-')[0]?.toLowerCase() ?? 'en'
-  return EXPIRED_LABELS[language] ?? EXPIRED_LABELS.en
-}
-
 export function formatSubscriptionDate(unixTsSeconds: number | null | undefined): string {
   if (!unixTsSeconds) return '—'
 
   const date = new Date(unixTsSeconds * 1000)
   const isExpired = date.getTime() < Date.now()
   const label = isExpired
-    ? subscriptionExpiredLabel(SUBSCRIPTION_LOCALE)
-    : subscriptionUntilLabel(SUBSCRIPTION_LOCALE)
+    ? 'Expired'
+    : 'Until'
   return `${label}\u00A0${SUBSCRIPTION_DATE_FORMAT.format(date)}`
 }
 

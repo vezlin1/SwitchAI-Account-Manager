@@ -35,12 +35,12 @@ export function useAccountsActions({
   confirmSwitch
 }: UseAccountsActionsArgs) {
   const [busyCounters, setBusyCounters] = useState<BusyCounters>({})
-  const [refreshingAll, setRefreshingAll] = useState(false)
+  const [refreshingProviders, setRefreshingProviders] = useState<ReadonlySet<AccountProvider>>(new Set())
   const [errors, setErrors] = useState<Record<AccountProvider, string | null>>({
     codex: null,
     gemini: null
   })
-  const refreshAllInFlightRef = useRef(false)
+  const refreshAllInFlightRef = useRef(new Set<AccountProvider>())
   const orderQueueRef = useRef<Promise<void>>(Promise.resolve())
   const orderVersionRef = useRef(0)
   const onErrorRef = useRef(onError)
@@ -119,8 +119,10 @@ export function useAccountsActions({
       clearError(provider)
       const next = await api.removeAccount(accountId)
       setData(next)
+      return true
     } catch (err) {
       setProviderError(provider, describeIpcError(err))
+      return false
     } finally {
       endOp(key)
     }
@@ -142,6 +144,7 @@ export function useAccountsActions({
         ? await api.switchActiveAccountAndRestartAntigravity(account.id)
         : await api.switchActiveAccountAndRestartCodex(account.id)
       setData(response.state)
+      if (isGemini) window.dispatchEvent(new Event('antigravity-surfaces-changed'))
       if (response.restartWarning) {
         const appName = isGemini ? 'Antigravity' : 'ChatGPT'
         setProviderError(provider, `Account switched, but ${appName} restart failed: ${response.restartWarning}`)
@@ -198,8 +201,10 @@ export function useAccountsActions({
         if (!latest) return latest
         const index = latest.accounts.findIndex((a) => a.id === response.account.id)
         if (index === -1) return latest
+        const merged = mergeAccountSnapshot(latest.accounts[index], response.account)
+        if (merged === latest.accounts[index]) return latest
         const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
+        accounts[index] = merged
         return { ...latest, accounts }
       })
       reportWarnings(response.warnings, provider)
@@ -221,8 +226,10 @@ export function useAccountsActions({
         if (!latest) return latest
         const index = latest.accounts.findIndex((a) => a.id === response.account.id)
         if (index === -1) return latest
+        const merged = mergeAccountSnapshot(latest.accounts[index], response.account)
+        if (merged === latest.accounts[index]) return latest
         const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
+        accounts[index] = merged
         return { ...latest, accounts }
       })
       reportWarnings(response.warnings, provider)
@@ -247,12 +254,12 @@ export function useAccountsActions({
   }, [beginOp, endOp, persistAppSettings, clearError, setProviderError])
 
   const refreshAll = useCallback(async (provider?: AccountProvider) => {
-    if (refreshAllInFlightRef.current) return
-    refreshAllInFlightRef.current = true
+    const targets: AccountProvider[] = provider ? [provider] : ['codex', 'gemini']
+    if (targets.some((target) => refreshAllInFlightRef.current.has(target))) return
+    targets.forEach((target) => refreshAllInFlightRef.current.add(target))
+    setRefreshingProviders(new Set(refreshAllInFlightRef.current))
     const currentProv: AccountProvider = provider ?? 'codex'
-    beginOp('refresh-all')
     try {
-      setRefreshingAll(true)
       setProviderError(currentProv, null)
       const response = await api.refreshAllQuotas(provider)
       setData(response.state)
@@ -260,11 +267,10 @@ export function useAccountsActions({
     } catch (err) {
       setProviderError(currentProv, describeIpcError(err))
     } finally {
-      setRefreshingAll(false)
-      refreshAllInFlightRef.current = false
-      endOp('refresh-all')
+      targets.forEach((target) => refreshAllInFlightRef.current.delete(target))
+      setRefreshingProviders(new Set(refreshAllInFlightRef.current))
     }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError])
+  }, [reportWarnings, setData, setProviderError])
 
   const importAntigravity = useCallback(async () => {
     const key: BusyKey = 'import:antigravity'
@@ -298,7 +304,7 @@ export function useAccountsActions({
 
   return {
     busyKeys,
-    refreshingAll,
+    refreshingProviders,
     errors,
     error: errors.codex ?? errors.gemini,
     getError,

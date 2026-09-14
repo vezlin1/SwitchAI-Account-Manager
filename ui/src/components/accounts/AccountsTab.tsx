@@ -15,6 +15,7 @@ import {
   type SubscriptionFilterId
 } from '../../utils'
 import { usePrivacy } from '../../context/usePrivacy'
+import { useTimeValue } from '../../hooks/useSharedTicker'
 
 const ConfirmDialog = lazy(() =>
   import('../common/ConfirmDialog').then((m) => ({ default: m.ConfirmDialog }))
@@ -73,6 +74,12 @@ export function AccountsTab({
       })
     }
   })
+  const clearAccountError = actions.clearError
+  const accountBusyKeys = useMemo(() => {
+    const keys = new Set(actions.busyKeys)
+    for (const id of autoRefreshStatus?.refreshingAccountIds ?? []) keys.add(`account:${id}:quota`)
+    return keys
+  }, [actions.busyKeys, autoRefreshStatus?.refreshingAccountIds])
   const oauth = useOAuthLogin({ onCompleted: reload })
   const { privacyMode, maskEmail } = usePrivacy()
   const currentProvider = activeProvider ?? 'codex'
@@ -119,10 +126,8 @@ export function AccountsTab({
   const detailsAccount = detailsAccountId
     ? accounts.find((account) => account.id === detailsAccountId) ?? null
     : null
-  const recommendation = useMemo(
-    () => recommendedAccount(accounts, hiddenAccountIds),
-    [accounts, hiddenAccountIds]
-  )
+  const recommendedId = useTimeValue(() => recommendedAccount(accounts, hiddenAccountIds)?.id ?? null, accounts.length > 0)
+  const recommendation = accounts.find((account) => account.id === recommendedId)
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
        (autoRefreshError.toLowerCase().includes('chatgpt') && currentProvider === 'codex') ||
@@ -179,9 +184,10 @@ export function AccountsTab({
 
   const handleRemove = useCallback(
     (account: Account) => {
+      clearAccountError(account.provider ?? currentProvider)
       setPendingDelete(account)
     },
-    []
+    [clearAccountError, currentProvider]
   )
 
   const closeDetails = () => {
@@ -230,10 +236,10 @@ export function AccountsTab({
             confirmLabel="Delete"
             variant="danger"
             busy={actions.busyKeys.has(`delete:${pendingDelete.id}`)}
+            error={actions.getError(pendingDelete.provider ?? 'codex')}
             onCancel={() => setPendingDelete(null)}
             onConfirm={async () => {
-              await actions.removeAccount(pendingDelete.id)
-              setPendingDelete(null)
+              if (await actions.removeAccount(pendingDelete.id)) setPendingDelete(null)
             }}
           />
         </Suspense>
@@ -283,9 +289,7 @@ export function AccountsTab({
               account={detailsAccount}
               isActive={activeAccountId === detailsAccount.id}
               isRecommended={recommendation?.id === detailsAccount.id}
-              busyKeys={actions.busyKeys}
-              refreshingAll={actions.refreshingAll}
-              autoRefreshing={Boolean(autoRefreshStatus?.inFlight)}
+              busyKeys={accountBusyKeys}
               onBack={closeDetails}
               onSwitch={handleSwitch}
               onRelogin={handleRelogin}
@@ -299,7 +303,7 @@ export function AccountsTab({
           <AccountsToolbar
             accountCount={accounts.length}
             provider={currentProvider}
-            refreshingAll={actions.refreshingAll}
+            refreshingAll={actions.refreshingProviders.has(currentProvider)}
             addingAccount={oauth.isProviderBusy(currentProvider)}
             importingSession={
               currentProvider === 'gemini'
@@ -371,9 +375,9 @@ export function AccountsTab({
                 : actions.busyKeys.has('import:codex')
             }
             activeAccountId={activeAccountId}
-            busyKeys={actions.busyKeys}
-            refreshingAll={actions.refreshingAll}
-            autoRefreshing={Boolean(autoRefreshStatus?.inFlight)}
+            busyKeys={accountBusyKeys}
+            refreshingAll={actions.refreshingProviders.has(currentProvider)}
+            autoRefreshing={Boolean(autoRefreshStatus?.progress?.some((run) => run.provider === currentProvider))}
             hiddenAccountIds={hiddenAccountIds}
             onReorder={(activeId, overId) => void reorderAccounts(activeId, overId)}
             onOpenDetails={openDetails}

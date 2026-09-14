@@ -1,5 +1,20 @@
 import type { Account, AppData, AppSettings } from '../types'
 
+// DTOs contain only JSON values. Reuse equal subtrees after IPC deserialization.
+export function sameValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false
+  if (Array.isArray(left) !== Array.isArray(right)) return false
+  const keys = Object.keys(left)
+  return keys.length === Object.keys(right).length && keys.every((key) =>
+    Object.hasOwn(right, key) && sameValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key])
+  )
+}
+
+function reuseEqual<T>(current: T, incoming: T): T {
+  return sameValue(current, incoming) ? current : incoming
+}
+
 const NEVER = Number.MIN_SAFE_INTEGER
 
 export function isStaleRevision(
@@ -46,8 +61,8 @@ export function mergeAccountSnapshot(
   const newSubscriptionPlan = subscriptionNewest ? incoming.subscriptionPlan : current.subscriptionPlan
   const newSubscriptionDetectedAt = subscriptionNewest ? incoming.subscriptionDetectedAt : current.subscriptionDetectedAt
   const newSubscriptionCheckedAt = subscriptionNewest ? incoming.subscriptionCheckedAt : current.subscriptionCheckedAt
-  const newTokenHealth = tokenNewest ? incoming.tokenHealth : current.tokenHealth
-  const newQuota = quotaNewest ? incoming.quota : current.quota
+  const newTokenHealth = tokenNewest ? reuseEqual(current.tokenHealth, incoming.tokenHealth) : current.tokenHealth
+  const newQuota = quotaNewest ? reuseEqual(current.quota, incoming.quota) : current.quota
   const newLastLoginAt = Math.max(current.lastLoginAt, incoming.lastLoginAt)
 
   const quotaIssue = quotaNewest
@@ -134,12 +149,10 @@ export function mergeIncomingState(
     return settingsOverlay ? { ...current, appSettings: settingsOverlay } : current
   }
 
-  return {
-    ...incoming,
-    accounts: mergeServerAccountsPreservingOrder(
-      current.accounts,
-      incoming.accounts
-    ),
-    appSettings: settingsOverlay ?? incoming.appSettings
-  }
+  const accounts = mergeServerAccountsPreservingOrder(current.accounts, incoming.accounts)
+  const appSettings = reuseEqual(current.appSettings, settingsOverlay ?? incoming.appSettings)
+  if (accounts === current.accounts && appSettings === current.appSettings
+    && incoming.revision === current.revision && incoming.activeAccountId === current.activeAccountId
+    && incoming.activeGeminiAccountId === current.activeGeminiAccountId) return current
+  return { ...incoming, accounts, appSettings }
 }

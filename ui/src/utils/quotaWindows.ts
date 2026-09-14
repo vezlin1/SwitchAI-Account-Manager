@@ -141,3 +141,23 @@ export function quotaWindowForColumn(
 
   return null
 }
+
+export function quotaCellsForAccount(quota: QuotaInfo | null | undefined, columns: QuotaColumn[]) {
+  const cells = columns.map((column) => ({
+    column,
+    window: quotaWindowForColumn(quota, column),
+    colSpan: 1
+  }))
+  const available = cells.filter((cell) => cell.window?.usedPercent != null)
+  if (available.length === 0) return cells
+
+  // Give gaps to the preceding available quota, including leading gaps in the first cell.
+  let start = 0
+  return available.map((cell, index) => {
+    const next = available[index + 1]
+    const end = next ? cells.indexOf(next) : cells.length
+    const colSpan = end - start
+    start = end
+    return { ...cell, colSpan }
+  })
+}

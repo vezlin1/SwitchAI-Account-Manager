@@ -133,11 +133,7 @@ async fn parse_google_token_response(
     previous: Option<&Tokens>,
 ) -> AppResult<GoogleTokenSet> {
     let status = response.status();
-    let retry_after_seconds = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<i64>().ok());
+    let retry_after_seconds = crate::quota::parse_retry_after(response.headers());
     if !status.is_success() {
         let body = read_bounded_response(response, context, MAX_GOOGLE_ERROR_BYTES).await?;
         let details = sanitized_error(&body);

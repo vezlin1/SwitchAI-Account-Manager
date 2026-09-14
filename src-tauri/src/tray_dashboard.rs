@@ -164,6 +164,7 @@ pub fn remaining_percent(account: &Account) -> Option<f64> {
     [&quota.primary, &quota.secondary]
         .into_iter()
         .filter_map(|window| window.used_percent)
+        .filter(|used| used.is_finite() && (0.0..=100.0).contains(used))
         .map(|used| (100.0 - used).clamp(0.0, 100.0))
         .min_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
 }
@@ -249,6 +250,23 @@ pub fn sort_accounts_for_provider<'a>(
     sorted
 }
 
+fn quota_is_fresh(account: &Account, now: i64) -> bool {
+    let Some(quota) = account.quota.as_ref() else {
+        return false;
+    };
+    let age = now.saturating_sub(quota.fetched_at);
+    (-60..3600).contains(&age)
+        && [&quota.primary, &quota.secondary].iter().all(|window| {
+            window
+                .used_percent
+                .is_none_or(|used| used.is_finite() && (0.0..=100.0).contains(&used))
+                && !(window.used_percent.is_some()
+                    && window.reset_at.is_some_and(|reset| {
+                        reset <= now && reset > window.fetched_at.unwrap_or(quota.fetched_at)
+                    }))
+        })
+}
+
 pub fn recommended_account_for_provider(
     data: &AppData,
     provider: AccountProvider,
@@ -257,7 +275,15 @@ pub fn recommended_account_for_provider(
         .iter()
         .filter(|account| account.provider == provider)
         .filter(|account| !data.app_settings.hidden_account_ids.contains(&account.id))
-        .filter(|account| account.token_health.status != TokenHealthStatus::NeedsRelogin)
+        .filter(|account| {
+            matches!(
+                account.token_health.status,
+                TokenHealthStatus::Healthy | TokenHealthStatus::Refreshed
+            )
+        })
+        .filter(|account| {
+            account.last_error.is_none() && quota_is_fresh(account, crate::models::now_ts())
+        })
         .filter_map(|account| remaining_percent(account).map(|remaining| (account, remaining)))
         .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap_or(Ordering::Equal))
         .map(|(account, _)| account)
@@ -565,35 +591,46 @@ pub fn tray_tooltip(data: &AppData) -> String {
     }
 }
 
-fn refresh_dashboard_with_app_and_data(app: &tauri::AppHandle, data: &AppData) {
-    let dispatch_app = app.clone();
-    let data_clone = data.clone();
-    let _ = app.run_on_main_thread(move || match build_menu(&dispatch_app, &data_clone) {
-        Ok(menu) => {
-            if let Some(tray) = dispatch_app.tray_by_id(TRAY_ID) {
-                if let Err(error) = tray.set_menu(Some(menu)) {
-                    log::warn!("Could not update tray menu: {error}");
-                }
-                let tooltip = tray_tooltip(&data_clone);
-                let _ = tray.set_tooltip(Some(tooltip));
-            }
-        }
-        Err(error) => log::warn!("Could not rebuild tray dashboard: {}", error.user_message()),
-    });
-}
-
 pub fn refresh_dashboard(state: &Arc<SharedState>) {
+    use std::sync::atomic::Ordering;
     let Some(app) = state.app_handle.get() else {
         return;
     };
-    let data = match lock_data(state) {
-        Ok(data) => data,
-        Err(error) => {
-            log::warn!("Could not refresh tray dashboard: {}", error.user_message());
-            return;
+    if state.tray_refresh_pending.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    let shared = Arc::clone(state);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let dispatch_state = Arc::clone(&shared);
+        let dispatch_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            dispatch_state
+                .tray_refresh_pending
+                .store(false, Ordering::SeqCst);
+            let data = match lock_data(&dispatch_state) {
+                Ok(data) => data.clone(),
+                Err(_) => return,
+            };
+            match build_menu(&dispatch_app, &data) {
+                Ok(menu) => {
+                    if let Some(tray) = dispatch_app.tray_by_id(TRAY_ID) {
+                        if let Err(error) = tray.set_menu(Some(menu)) {
+                            log::warn!("Could not update tray menu: {error}");
+                        }
+                        let _ = tray.set_tooltip(Some(tray_tooltip(&data)));
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Could not rebuild tray dashboard: {}", error.user_message())
+                }
+            }
+        }) {
+            shared.tray_refresh_pending.store(false, Ordering::SeqCst);
+            log::warn!("Could not schedule tray dashboard: {error}");
         }
-    };
-    refresh_dashboard_with_app_and_data(app, &data);
+    });
 }
 
 fn alert_level(remaining: f64) -> u8 {
@@ -630,6 +667,7 @@ fn alert_body(account: &Account, level: u8, remaining: f64, privacy_mode: bool) 
 }
 
 pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
+    refresh_dashboard(state);
     let Some(app) = state.app_handle.get() else {
         return;
     };
@@ -637,7 +675,6 @@ pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
         Ok(data) => data,
         Err(_) => return,
     };
-    refresh_dashboard_with_app_and_data(app, &data);
     let mut levels = match state.quota_alert_levels.lock() {
         Ok(levels) => levels,
         Err(_) => return,
@@ -747,7 +784,7 @@ mod tests {
                     fetched_at: None,
                 },
                 secondary: QuotaWindow::default(),
-                fetched_at: 1000,
+                fetched_at: crate::models::now_ts(),
             }),
             quota_next_refresh_at: None,
             quota_refresh_failures: 0,

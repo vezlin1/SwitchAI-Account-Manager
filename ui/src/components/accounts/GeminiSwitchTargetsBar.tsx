@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppWindow, Code2, Info, Terminal } from 'lucide-react'
 import { api } from '../../api'
+import { createRefreshQueue } from '../../utils/refreshQueue'
 import type { AntigravitySurface, AntigravitySurfaceId, AppSettings } from '../../types'
 import {
   ANTIGRAVITY_SURFACES_CACHE_KEY,
@@ -32,15 +33,19 @@ export function GeminiSwitchTargetsBar({
 
   useEffect(() => {
     let cancelled = false
+    let previous = ''
 
-    const fetchSurfaces = async () => {
+    const fetchSurfaces = createRefreshQueue(async () => {
       try {
         const data = await api.getAntigravitySurfaces()
         if (cancelled || !data || data.length === 0) return
+        const serialized = JSON.stringify(data)
+        if (serialized === previous) return
+        previous = serialized
 
         setCachedSurfaces(data)
         try {
-          localStorage.setItem(ANTIGRAVITY_SURFACES_CACHE_KEY, JSON.stringify(data))
+          localStorage.setItem(ANTIGRAVITY_SURFACES_CACHE_KEY, serialized)
         } catch {
           // ignore storage error
         }
@@ -63,7 +68,7 @@ export function GeminiSwitchTargetsBar({
       } catch {
         // preserve existing cache on error
       }
-    }
+    }, false)
 
     let interval: ReturnType<typeof setInterval> | null = null
 
@@ -71,7 +76,7 @@ export function GeminiSwitchTargetsBar({
       if (!interval && !cancelled) {
         interval = setInterval(() => {
           void fetchSurfaces()
-        }, 5000)
+        }, 30000)
       }
     }
 
@@ -101,12 +106,14 @@ export function GeminiSwitchTargetsBar({
       }
     }
     window.addEventListener('focus', handleFocus)
+    window.addEventListener('antigravity-surfaces-changed', handleFocus)
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
       cancelled = true
       stopPolling()
       window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('antigravity-surfaces-changed', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [])

@@ -17,6 +17,8 @@ import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUti
 import { QuotaCell } from './QuotaCell'
 import { quotaColumnsForAccounts, quotaWindowForColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
+import { EventTime } from './EventTime'
+import { QuotaFreshness } from './QuotaFreshness'
 import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountDetailsProps = {
@@ -24,22 +26,11 @@ type AccountDetailsProps = {
   isActive: boolean
   isRecommended: boolean
   busyKeys: ReadonlySet<string>
-  refreshingAll: boolean
-  autoRefreshing: boolean
   onBack: () => void
   onSwitch: (account: Account) => void
   onRelogin: (account: Account) => void
   onRefreshQuota: (accountId: string) => Promise<void>
   onDetectSubscription: (accountId: string) => Promise<void>
-}
-
-const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short'
-})
-
-function formatDateTime(timestamp: number | null | undefined): string {
-  return timestamp ? dateTimeFormatter.format(new Date(timestamp * 1000)) : 'Not reported'
 }
 
 function statusDetails(account: Account, isRefreshing = false): { label: string; tone: string; message: string } {
@@ -50,12 +41,15 @@ function statusDetails(account: Account, isRefreshing = false): { label: string;
       message: readableStatusError(account.tokenHealth.lastError) ?? 'The saved session can no longer be refreshed.'
     }
   }
-  if (isRefreshing || account.tokenHealth?.status === 'unknown' || (!account.tokenHealth?.lastCheckedAt && !account.quota)) {
+  if (isRefreshing) {
     return {
       label: 'Checking status…',
       tone: 'loading',
       message: 'Checking authentication health and latest quota limits…'
     }
+  }
+  if (account.tokenHealth?.status === 'unknown' || (!account.tokenHealth?.lastCheckedAt && !account.quota)) {
+    return { label: 'Not checked', tone: 'warning', message: 'Refresh this account to check its current status and limits.' }
   }
   const quotaIssue = readableStatusError(account.issues?.quota)
   if (quotaIssue) {
@@ -90,8 +84,6 @@ export function AccountDetails({
   isActive,
   isRecommended,
   busyKeys,
-  refreshingAll,
-  autoRefreshing,
   onBack,
   onSwitch,
   onRelogin,
@@ -107,12 +99,8 @@ export function AccountDetails({
   const refreshingQuota = busyKeys.has(`quota:${account.id}`)
   const detectingSubscription = busyKeys.has(`subscription-detect:${account.id}`)
   const isRefreshingAccount =
-    refreshingAll ||
-    autoRefreshing ||
     refreshingQuota ||
     detectingSubscription ||
-    busyKeys.has('refresh') ||
-    busyKeys.has('refresh-all') ||
     busyKeys.has(`relogin:${account.id}`) ||
     busyKeys.has(`account:${account.id}:quota`) ||
     busyKeys.has(`account:${account.id}:subscription`)
@@ -133,6 +121,7 @@ export function AccountDetails({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return
         e.preventDefault()
         onBack()
       }
@@ -322,29 +311,33 @@ export function AccountDetails({
           <section className="account-detail-sidebar-section">
             <h2>Account information</h2>
             <dl className="account-detail-metadata">
-              <div>
+              <div className="account-detail-id-row">
                 <dt>Account ID</dt>
-                <dd className="allow-select flex items-center justify-between gap-1.5">
-                  <span className={`truncate ${privacyMode ? 'privacy-masked' : ''}`}>
-                    {privacyMode ? maskAccountId(account.accountId) : (account.accountId ?? 'Not reported')}
-                  </span>
-                  {account.accountId && (
+                <dd className="account-detail-id-value">
+                  {account.accountId ? (
                     <button
                       type="button"
                       onClick={() => void copyAccountId()}
-                      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-ag-muted hover:text-white hover:bg-white/[0.08] active:scale-90 transition-all cursor-pointer select-none"
-                      title={copiedId ? 'Copied!' : 'Copy Account ID'}
-                      aria-label="Copy Account ID"
+                      className={`account-detail-copy-field${copiedId ? ' account-detail-copy-field-copied' : ''}`}
+                      title={privacyMode ? 'Copy account ID' : account.accountId}
+                      aria-label={copiedId ? 'Account ID copied' : 'Copy account ID'}
                     >
-                      {copiedId ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+                      <span className={`account-detail-id-text ${privacyMode && !copiedId ? 'privacy-masked' : ''}`}>
+                        {copiedId ? 'Copied to clipboard' : privacyMode ? maskAccountId(account.accountId) : account.accountId}
+                      </span>
+                      <span className="account-detail-copy-icon" aria-hidden="true">
+                        {copiedId ? <Check size={14} /> : <Copy size={14} />}
+                      </span>
                     </button>
+                  ) : (
+                    <span className="text-ag-muted">Not reported</span>
                   )}
+                  <span className="visually-hidden" role="status">{copiedId ? 'Account ID copied to clipboard' : ''}</span>
                 </dd>
               </div>
-              <div><dt>First login</dt><dd>{formatDateTime(account.createdAt)}</dd></div>
-              <div><dt>Last login</dt><dd>{formatDateTime(account.lastLoginAt)}</dd></div>
-              <div><dt>Quota updated</dt><dd>{formatDateTime(account.quota?.fetchedAt)}</dd></div>
-              <div><dt>Token checked</dt><dd>{formatDateTime(account.tokenHealth.lastCheckedAt)}</dd></div>
+              <div><dt>First login</dt><dd><EventTime timestamp={account.createdAt} /></dd></div>
+              <div><dt>Last login</dt><dd><EventTime timestamp={account.lastLoginAt} /></dd></div>
+              <div><dt>Quota updated</dt><dd><QuotaFreshness account={account} prefix={false} /></dd></div>
             </dl>
           </section>
 

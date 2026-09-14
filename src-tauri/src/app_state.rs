@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 
-use crate::auto_refresh::{AutoRefreshRuntime, RefreshAllResult};
+use crate::auto_refresh::AutoRefreshRuntime;
 use crate::errors::{AppError, AppResult};
 use crate::models::AppData;
 use crate::oauth::OauthFlow;
@@ -16,10 +16,14 @@ pub struct SharedState {
     pub startup_warnings: Mutex<Vec<String>>,
     pub flows: Mutex<HashMap<String, OauthFlow>>,
     pub auto_refresh: Mutex<AutoRefreshRuntime>,
-    pub last_refresh_result: Mutex<Option<RefreshAllResult>>,
     pub callback_server_started: AtomicBool,
     pub account_update_gates: Mutex<HashMap<String, Weak<tauri::async_runtime::Mutex<()>>>>,
-    pub refresh_all_gate: tauri::async_runtime::Mutex<()>,
+    pub refresh_codex_gate: tauri::async_runtime::Mutex<()>,
+    pub refresh_gemini_gate: tauri::async_runtime::Mutex<()>,
+    pub reachability_gate: tauri::async_runtime::Mutex<()>,
+    pub metadata_dirty: AtomicBool,
+    pub metadata_writer_running: AtomicBool,
+    pub tray_refresh_pending: AtomicBool,
     pub app_handle: OnceLock<tauri::AppHandle>,
     pub quota_alert_levels: Mutex<HashMap<String, u8>>,
     pub is_quitting: AtomicBool,
@@ -42,14 +46,18 @@ impl SharedState {
 
         Ok(Self {
             auto_refresh: Mutex::new(AutoRefreshRuntime::new(&initial.app_settings)),
-            last_refresh_result: Mutex::new(None),
             data: Mutex::new(initial),
             startup_error: Mutex::new(startup_error),
             startup_warnings: Mutex::new(Vec::new()),
             flows: Mutex::new(HashMap::new()),
             callback_server_started: AtomicBool::new(false),
             account_update_gates: Mutex::new(HashMap::new()),
-            refresh_all_gate: tauri::async_runtime::Mutex::new(()),
+            refresh_codex_gate: tauri::async_runtime::Mutex::new(()),
+            refresh_gemini_gate: tauri::async_runtime::Mutex::new(()),
+            reachability_gate: tauri::async_runtime::Mutex::new(()),
+            metadata_dirty: AtomicBool::new(false),
+            metadata_writer_running: AtomicBool::new(false),
+            tray_refresh_pending: AtomicBool::new(false),
             app_handle: OnceLock::new(),
             quota_alert_levels: Mutex::new(HashMap::new()),
             is_quitting: AtomicBool::new(false),
@@ -85,15 +93,6 @@ pub fn lock_auto_refresh(
         .auto_refresh
         .lock()
         .map_err(|_| AppError::msg("State lock poisoned (auto refresh)"))
-}
-
-pub fn lock_last_refresh_result(
-    state: &Arc<SharedState>,
-) -> AppResult<MutexGuard<'_, Option<RefreshAllResult>>> {
-    state
-        .last_refresh_result
-        .lock()
-        .map_err(|_| AppError::msg("State lock poisoned (last refresh result)"))
 }
 
 pub fn lock_data(state: &Arc<SharedState>) -> AppResult<MutexGuard<'_, AppData>> {

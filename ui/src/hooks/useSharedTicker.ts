@@ -1,63 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
+import { createTimeStore } from '../utils/timeStore'
 
-const listeners = new Set<() => void>()
-let intervalId: ReturnType<typeof setInterval> | null = null
-
-function notifyListeners() {
-  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-    return
-  }
-  listeners.forEach((listener) => listener())
-}
-
-function startTimer() {
-  if (!intervalId && typeof window !== 'undefined') {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-      return
-    }
-    intervalId = setInterval(notifyListeners, 10000)
-  }
-}
-
-function stopTimer() {
-  if (intervalId && listeners.size === 0) {
-    clearInterval(intervalId)
-    intervalId = null
-  }
-}
-
+const clock = createTimeStore({
+  now: Date.now,
+  visible: () => typeof document !== 'undefined' && document.visibilityState === 'visible',
+  schedule: (callback, delay) => window.setTimeout(callback, delay),
+  cancel: (timer) => window.clearTimeout(timer)
+})
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      if (listeners.size > 0) {
-        startTimer()
-        notifyListeners()
-      }
-    } else if (intervalId) {
-      clearInterval(intervalId)
-      intervalId = null
-    }
-  })
+  document.addEventListener('visibilitychange', clock.visibilityChanged)
+}
+const noSubscription = () => () => {}
+
+export function useTimeValue<T extends string | number | boolean | null | undefined>(
+  select: () => T, enabled = true
+): T {
+  return useSyncExternalStore(enabled ? clock.subscribe : noSubscription, select, select)
 }
 
-export function useSharedTicker(enabled: boolean = true): number {
-  const [tick, setTick] = useState(0)
-
-  useEffect(() => {
-    if (!enabled) return
-
-    const listener = () => {
-      setTick((t) => (t + 1) % 10000)
-    }
-
-    listeners.add(listener)
-    startTimer()
-
-    return () => {
-      listeners.delete(listener)
-      stopTimer()
-    }
-  }, [enabled])
-
-  return tick
+export function useSharedTicker(enabled = true): number {
+  return useTimeValue(() => Math.floor(Date.now() / 60_000), enabled)
 }
