@@ -20,7 +20,7 @@ type UpdateModalProps = {
   onClose: () => void
   updateInfo: UpdateCheckResult | null
   onDismissVersion?: (version: string) => Promise<void>
-  onStageReady?: () => void
+  onStageReady?: (version: string) => void
 }
 
 function SimpleMarkdown({ content }: { content: string }) {
@@ -173,8 +173,8 @@ export function UpdateModal({
       setStage('downloading')
       setErrorMsg(null)
       setBusy(true)
-      await api.downloadAndStageUpdate()
-      onStageReady?.()
+      await api.downloadAndStageUpdate(updateInfo.version)
+      onStageReady?.(updateInfo.version)
       setStage('ready')
     } catch (err: unknown) {
       setStage('error')
@@ -187,7 +187,7 @@ export function UpdateModal({
   const handleRestartNow = async () => {
     try {
       setBusy(true)
-      await api.installUpdateAndRestart()
+      await api.installUpdateAndRestart(updateInfo.version)
     } catch (err: unknown) {
       setStage('error')
       setErrorMsg(describeIpcError(err))

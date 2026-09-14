@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef } from 'react'
+import { Suspense, lazy, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api } from '../../api'
 import type { UpdateCheckResult } from '../../types'
@@ -11,7 +11,7 @@ export type UpdateCoordinatorProps = {
   updateModalOpen: boolean
   setUpdateModalOpen: (open: boolean) => void
   updateInfo: UpdateCheckResult | null
-  setUpdateInfo: (info: UpdateCheckResult | null) => void
+  setUpdateInfo: Dispatch<SetStateAction<UpdateCheckResult | null>>
 }
 
 export function UpdateCoordinator({
@@ -68,10 +68,15 @@ export function UpdateCoordinator({
   return (
     <Suspense fallback={null}>
       <UpdateModal
+        key={updateInfo.version}
         isOpen={updateModalOpen}
         onClose={() => setUpdateModalOpen(false)}
         updateInfo={updateInfo}
-        onStageReady={() => setUpdateInfo({ ...updateInfo, stagedReady: true })}
+        onStageReady={(version) => {
+          setUpdateInfo((current) => current?.updateAvailable && current.version === version
+            ? { ...current, stagedReady: true }
+            : current)
+        }}
         onDismissVersion={async (ver) => {
           await api.dismissUpdateVersion(ver)
           setUpdateInfo(null)

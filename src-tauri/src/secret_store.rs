@@ -246,8 +246,31 @@ impl<B: KeyringBackend> SecretStore<B> {
     }
 
     fn read_vault(&self) -> AppResult<TokenVault> {
-        if !self.vault_path.exists() {
-            return Ok(TokenVault::new());
+        // Do not treat inaccessible files (or dangling symlinks) as a fresh vault.
+        // A missing primary can still have a recoverable encrypted backup.
+        match fs::symlink_metadata(&self.vault_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let backup = backup_path(&self.vault_path)?;
+                match fs::symlink_metadata(&backup) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(TokenVault::new());
+                    }
+                    Err(source) => {
+                        return Err(AppError::Io {
+                            context: "Failed to inspect protected vault backup",
+                            source,
+                        });
+                    }
+                    Ok(_) => {}
+                }
+            }
+            Err(source) => {
+                return Err(AppError::Io {
+                    context: "Failed to inspect protected token vault",
+                    source,
+                });
+            }
+            Ok(_) => {}
         }
         let key = self.load_master_key(false)?.ok_or_else(|| {
             AppError::msg("Protected token vault exists, but its operating-system key is missing")
@@ -379,6 +402,202 @@ mod tests {
         let vault_file = dir.join("secrets.vault.json");
         let store = SecretStore::new(InMemoryKeyring::new(), vault_file);
         (store, dir)
+    }
+
+    fn test_tokens(id: &str) -> Tokens {
+        Tokens {
+            id_token: format!("test-id-{id}"),
+            access_token: format!("test-access-{id}"),
+            refresh_token: format!("test-refresh-{id}"),
+        }
+    }
+
+    fn assert_tokens(tokens: &Tokens, id: &str) {
+        let expected = test_tokens(id);
+        assert_eq!(tokens.id_token, expected.id_token);
+        assert_eq!(tokens.access_token, expected.access_token);
+        assert_eq!(tokens.refresh_token, expected.refresh_token);
+    }
+
+    fn leave_only_backup(store: &SecretStore<InMemoryKeyring>) -> (PathBuf, Vec<u8>) {
+        store.store_tokens("acc-1", &test_tokens("1")).unwrap();
+        store.store_tokens("acc-2", &test_tokens("2")).unwrap();
+        let backup = backup_path(&store.vault_path).unwrap();
+        fs::copy(&store.vault_path, &backup).unwrap();
+        let bytes = fs::read(&backup).unwrap();
+        fs::remove_file(&store.vault_path).unwrap();
+        (backup, bytes)
+    }
+
+    #[test]
+    fn missing_primary_recovers_backup_without_changing_encrypted_bytes() {
+        let (store, dir) = test_store();
+        let (backup, bytes) = leave_only_backup(&store);
+
+        let loaded = store.load_all_tokens().expect("recover missing primary");
+        assert_eq!(loaded.len(), 2);
+        assert_tokens(&loaded["acc-1"], "1");
+        assert_tokens(&loaded["acc-2"], "2");
+        assert_eq!(fs::read(&store.vault_path).unwrap(), bytes);
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_with_missing_primary_preserves_other_accounts_and_recovered_backup() {
+        let (store, dir) = test_store();
+        let (backup, bytes) = leave_only_backup(&store);
+
+        // The write itself must recover before merging the updated account.
+        store
+            .store_tokens("acc-1", &test_tokens("updated"))
+            .unwrap();
+        let loaded = store.load_all_tokens().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_tokens(&loaded["acc-1"], "updated");
+        assert_tokens(&loaded["acc-2"], "2");
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+
+        store.store_tokens("acc-3", &test_tokens("3")).unwrap();
+        let loaded = store.load_all_tokens().unwrap();
+        assert_eq!(loaded.len(), 3);
+        assert_tokens(&loaded["acc-1"], "updated");
+        assert_tokens(&loaded["acc-2"], "2");
+        assert_tokens(&loaded["acc-3"], "3");
+        let key = store.load_master_key(false).unwrap().unwrap();
+        let previous = store.decrypt_vault(&backup, &key).unwrap();
+        assert_eq!(previous.len(), 2);
+        assert_tokens(&Tokens::from(previous["acc-1"].clone()), "updated");
+        assert_tokens(&Tokens::from(previous["acc-2"].clone()), "2");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_backup_with_missing_primary_blocks_reads_and_writes() {
+        let (store, dir) = test_store();
+        let (backup, bytes) = leave_only_backup(&store);
+        let original_key = store.load_master_key(false).unwrap();
+        let mut tampered: VaultEnvelope = serde_json::from_slice(&bytes).unwrap();
+        let mut ciphertext = STANDARD.decode(&tampered.ciphertext).unwrap();
+        ciphertext[0] ^= 1;
+        tampered.ciphertext = STANDARD.encode(ciphertext);
+
+        for invalid in [
+            b"invalid JSON".to_vec(),
+            serde_json::to_vec(&tampered).unwrap(),
+        ] {
+            fs::write(&backup, &invalid).unwrap();
+            assert!(store.load_all_tokens().is_err());
+            assert!(store.store_tokens("new", &test_tokens("new")).is_err());
+            assert!(store.delete_tokens("acc-1").is_err());
+            assert!(!store.vault_path.try_exists().unwrap());
+            assert_eq!(fs::read(&backup).unwrap(), invalid);
+            assert_eq!(store.load_master_key(false).unwrap(), original_key);
+        }
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backup_without_key_cannot_create_a_fresh_vault_or_key() {
+        let (store, dir) = test_store();
+        let (backup, bytes) = leave_only_backup(&store);
+        store
+            .backend
+            .delete_password(CREDENTIAL_SERVICE, MASTER_KEY_USERNAME)
+            .unwrap();
+
+        assert!(
+            store
+                .load_all_tokens()
+                .unwrap_err()
+                .user_message()
+                .contains("key is missing")
+        );
+        assert!(store.store_tokens("new", &test_tokens("new")).is_err());
+        assert!(store.delete_tokens("acc-1").is_err());
+        assert_eq!(store.load_master_key(false).unwrap(), None);
+        assert!(!store.vault_path.try_exists().unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_backup_path_cannot_create_a_fresh_vault_or_key() {
+        let (store, dir) = test_store();
+        let backup = backup_path(&store.vault_path).unwrap();
+        // A directory is deterministically unreadable as a vault on every platform.
+        fs::create_dir(&backup).unwrap();
+        let preserved = backup.join("preserved");
+        fs::write(&preserved, b"test data").unwrap();
+
+        assert!(store.load_all_tokens().is_err());
+        assert!(store.store_tokens("new", &test_tokens("new")).is_err());
+        assert_eq!(store.load_master_key(false).unwrap(), None);
+        // Also exercise the read failure with an existing key.
+        let key = store.load_master_key(true).unwrap();
+        assert!(store.load_all_tokens().is_err());
+        assert!(store.store_tokens("new", &test_tokens("new")).is_err());
+        assert_eq!(store.load_master_key(false).unwrap(), key);
+        assert!(!store.vault_path.try_exists().unwrap());
+        assert_eq!(fs::read(&preserved).unwrap(), b"test data");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_backup_with_missing_primary_fails_closed_until_readable() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (store, dir) = test_store();
+        let (backup, bytes) = leave_only_backup(&store);
+        let key = store.load_master_key(false).unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&backup)
+            .unwrap();
+
+        assert!(store.load_all_tokens().is_err());
+        assert!(store.store_tokens("new", &test_tokens("new")).is_err());
+        assert!(!store.vault_path.try_exists().unwrap());
+        assert_eq!(store.load_master_key(false).unwrap(), key);
+        drop(locked);
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+        let loaded = store.load_all_tokens().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_tokens(&loaded["acc-1"], "1");
+        assert_tokens(&loaded["acc-2"], "2");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn healthy_primary_takes_precedence_over_stale_or_invalid_backup() {
+        let (store, dir) = test_store();
+        store.store_tokens("acc-1", &test_tokens("1")).unwrap();
+        store
+            .store_tokens("acc-1", &test_tokens("updated"))
+            .unwrap();
+        let primary = fs::read(&store.vault_path).unwrap();
+        let backup = backup_path(&store.vault_path).unwrap();
+        let stale = fs::read(&backup).unwrap();
+
+        for backup_bytes in [stale, b"invalid backup".to_vec()] {
+            fs::write(&backup, &backup_bytes).unwrap();
+            let loaded = store.load_all_tokens().unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_tokens(&loaded["acc-1"], "updated");
+            assert_eq!(fs::read(&store.vault_path).unwrap(), primary);
+            assert_eq!(fs::read(&backup).unwrap(), backup_bytes);
+        }
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

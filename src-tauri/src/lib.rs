@@ -30,7 +30,7 @@ use std::sync::atomic::Ordering;
 
 use app_state::SharedState;
 use models::AppData;
-use storage::load_app_data;
+use storage::load_app_data_with_warnings;
 use tauri::{
     Manager, WindowEvent,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -43,17 +43,17 @@ pub fn run() {
     }
     crate::portable_updater::handle_after_update_wait();
     crate::portable_updater::cleanup_stale_update_files();
-    let (mut initial_data, startup_error) = match load_app_data() {
-        Ok(data) => (data, None),
+    let loaded = load_app_data_with_warnings();
+    let (mut initial_data, mut startup_warnings, startup_error) = match loaded {
+        Ok((data, warnings)) => (data, warnings, None),
         Err(err) => {
             let message = format!(
                 "Failed to load saved accounts: {err}. The existing state files were preserved for recovery."
             );
             log::error!("{message}");
-            (AppData::default(), Some(message))
+            (AppData::default(), Vec::new(), Some(message))
         }
     };
-    let mut startup_warnings = Vec::new();
     if startup_error.is_none() {
         if let Err(error) = codex::reconcile_codex_auth_at_startup(&mut initial_data) {
             startup_warnings.push(format!(

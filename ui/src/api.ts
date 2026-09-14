@@ -112,10 +112,10 @@ export const api = {
 
   checkForUpdates: (force = false) =>
     invoke<UpdateCheckResult>('check_for_updates', { force }),
-  downloadAndStageUpdate: () =>
-    invoke<boolean>('download_and_stage_update'),
-  installUpdateAndRestart: () =>
-    invoke<void>('install_update_and_restart'),
+  downloadAndStageUpdate: (expectedVersion: string) =>
+    invoke<boolean>('download_and_stage_update', { expectedVersion }),
+  installUpdateAndRestart: (expectedVersion: string) =>
+    invoke<void>('install_update_and_restart', { expectedVersion }),
   dismissUpdateVersion: (version: string) =>
     invoke<AppData>('dismiss_update_version', { version }),
 }

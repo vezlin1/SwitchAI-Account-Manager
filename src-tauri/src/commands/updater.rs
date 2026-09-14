@@ -47,7 +47,7 @@ pub async fn check_for_updates_internal(
                 release_date: manifest.release_date,
                 release_notes: manifest.notes,
                 download_size: manifest.platforms.get(platform_key).and_then(|p| p.size),
-                staged_ready: crate::portable_updater::read_staged_update_metadata()?.is_some(),
+                staged_ready: false,
             });
         }
 
@@ -55,6 +55,16 @@ pub async fn check_for_updates_internal(
         let version = manifest.version.clone();
         let release_date = manifest.release_date.clone();
         let release_notes = manifest.notes.clone();
+        // Never inspect/clean a partially written stage while a download or
+        // installation owns it. The download reports readiness when finished.
+        let staged_ready = if let Ok(_update_gate) = state.update_install_gate.try_lock() {
+            crate::portable_updater::staged_update_matches_manifest(
+                crate::portable_updater::read_staged_update_metadata()?.as_ref(),
+                &manifest,
+            )
+        } else {
+            false
+        };
 
         *crate::app_state::lock_available_update(state)? = Some(manifest);
         crate::tray_dashboard::refresh_dashboard(state);
@@ -66,7 +76,7 @@ pub async fn check_for_updates_internal(
             release_date,
             release_notes,
             download_size,
-            staged_ready: crate::portable_updater::read_staged_update_metadata()?.is_some(),
+            staged_ready,
         })
     } else {
         *crate::app_state::lock_available_update(state)? = None;
@@ -96,10 +106,11 @@ pub async fn check_for_updates(
 pub async fn download_and_stage_update(
     app: tauri::AppHandle,
     state: State<'_, Arc<SharedState>>,
+    expected_version: String,
 ) -> Result<bool, IpcErrorDto> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (app, state);
+        let _ = (app, state, expected_version);
         return Err(IpcErrorDto::from(crate::errors::AppError::msg(
             "Automatic in-place updates are not supported on macOS to prevent code signature invalidation. Please download the latest DMG from GitHub Releases.",
         )));
@@ -107,6 +118,12 @@ pub async fn download_and_stage_update(
     #[cfg(not(target_os = "macos"))]
     command_result(
         async {
+            let _update_gate = state.update_install_gate.lock().await;
+            if state.is_quitting.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::errors::AppError::msg(
+                    "SwitchAI is already restarting.",
+                ));
+            }
             let manifest = {
                 let update_opt = crate::app_state::lock_available_update(state.inner())?.clone();
                 match update_opt {
@@ -129,6 +146,8 @@ pub async fn download_and_stage_update(
                 }
             };
 
+            crate::portable_updater::validate_update_version(&manifest, &expected_version)?;
+
             let platform_key = crate::portable_updater::current_platform_key();
             let platform = manifest.platforms.get(platform_key).ok_or_else(|| {
                 crate::errors::AppError::msg(format!(
@@ -149,6 +168,22 @@ pub async fn download_and_stage_update(
             crate::portable_updater::download_and_stage_update(&app, &state.http_client, &request)
                 .await?;
 
+            let available = crate::app_state::lock_available_update(state.inner())?;
+            let current = available.as_ref().ok_or_else(|| {
+                crate::errors::AppError::msg(
+                    "The update selection changed during download. Check for updates again.",
+                )
+            })?;
+            crate::portable_updater::validate_update_version(current, &expected_version)?;
+            if !crate::portable_updater::staged_update_matches_manifest(
+                crate::portable_updater::read_staged_update_metadata()?.as_ref(),
+                current,
+            ) {
+                return Err(crate::errors::AppError::msg(
+                    "The available release changed during download. Download the update again.",
+                ));
+            }
+
             Ok(true)
         }
         .await,
@@ -159,17 +194,23 @@ pub async fn download_and_stage_update(
 pub async fn install_update_and_restart(
     app: tauri::AppHandle,
     state: State<'_, Arc<SharedState>>,
+    expected_version: String,
 ) -> Result<(), IpcErrorDto> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (app, state);
+        let _ = (app, state, expected_version);
         return Err(IpcErrorDto::from(crate::errors::AppError::msg(
             "Automatic in-place updates are not supported on macOS to prevent code signature invalidation. Please download the latest DMG from GitHub Releases.",
         )));
     }
     #[cfg(not(target_os = "macos"))]
     command_result(
-        crate::portable_updater::perform_atomic_swap_and_restart(&app, state.inner()).await,
+        crate::portable_updater::perform_atomic_swap_and_restart(
+            &app,
+            state.inner(),
+            &expected_version,
+        )
+        .await,
     )
 }
 

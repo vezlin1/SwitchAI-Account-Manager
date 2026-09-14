@@ -286,10 +286,24 @@ fn write_serialized_state(path: &Path, data: &AppData, with_backup: bool) -> App
 }
 
 pub fn load_app_data() -> AppResult<AppData> {
+    // Recovery callers run after logger initialization, so their cleanup warnings
+    // are recorded by the load path even though they only need the recovered data.
+    load_app_data_with_warnings().map(|(data, _)| data)
+}
+
+pub fn load_app_data_with_warnings() -> AppResult<(AppData, Vec<String>)> {
     let path = app_storage_file()?;
     let base = base_data_dir()?;
-    let mut data = load_app_data_from(&path)?;
-    let schema_needs_upgrade = fs::read_to_string(&path)
+    load_app_data_with(&path, &base, hydrate_protected_tokens)
+}
+
+fn load_app_data_with(
+    path: &Path,
+    base: &Path,
+    hydrate: impl FnOnce(&mut AppData) -> AppResult<bool>,
+) -> AppResult<(AppData, Vec<String>)> {
+    let mut data = load_app_data_from(path)?;
+    let schema_needs_upgrade = fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|value| {
@@ -298,11 +312,11 @@ pub fn load_app_data() -> AppResult<AppData> {
                 .and_then(serde_json::Value::as_u64)
         })
         .is_some_and(|version| version < u64::from(crate::models::APP_SCHEMA_VERSION));
-    let had_legacy_quota_history = contains_legacy_quota_history(&path);
-    let backup = backup_path(&path)?;
+    let had_legacy_quota_history = contains_legacy_quota_history(path);
+    let backup = backup_path(path)?;
     let backup_had_plaintext_tokens = contains_legacy_plaintext_tokens(&backup);
     let recovered_backup_tokens = recover_legacy_tokens_from_backup(&backup, &mut data)?;
-    let migrated_tokens = hydrate_protected_tokens(&mut data)? || recovered_backup_tokens;
+    let migrated_tokens = hydrate(&mut data)? || recovered_backup_tokens;
     // Reaching this point means the authoritative state parsed and its protected
     // credentials hydrated successfully. A leftover legacy source can therefore
     // be retired even when a prior run already wrote a token-free v9 state.
@@ -313,7 +327,7 @@ pub fn load_app_data() -> AppResult<AppData> {
     {
         // A plaintext backup is removed only after the protected vault was
         // hydrated and the new token-free primary state was durably written.
-        write_serialized_state(&path, &data, false)?;
+        write_serialized_state(path, &data, false)?;
         if (migrated_tokens || backup_had_plaintext_tokens || had_legacy_quota_history)
             && backup.exists()
         {
@@ -337,8 +351,16 @@ pub fn load_app_data() -> AppResult<AppData> {
     }
     // Retry cleanup even if a prior run retired the source but not its backup.
     // Vault hydration and any required durable state migration have completed.
-    finalize_legacy_migration(&path, &base, true)?;
-    Ok(data)
+    let mut warnings = Vec::new();
+    if let Err(error) = finalize_legacy_migration(path, base, true) {
+        let warning = format!(
+            "Legacy migration cleanup failed; loaded application state remains usable. Will retry on next load: {}",
+            error.user_message()
+        );
+        log::warn!("{warning}");
+        warnings.push(warning);
+    }
+    Ok((data, warnings))
 }
 
 fn sanitize_legacy_file(path: &Path) -> AppResult<()> {
@@ -833,6 +855,187 @@ mod tests {
             fs::read_to_string(legacy.join("state.json")).unwrap(),
             "broken-json"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn cleanup_fixture() -> (std::path::PathBuf, std::path::PathBuf, AppData) {
+        let dir = test_dir();
+        let path = app_storage_file_at(&dir).unwrap();
+        let data = AppData {
+            active_account_id: Some("account-1".into()),
+            accounts: vec![account_with_tokens()],
+            ..AppData::default()
+        };
+        write_serialized_state(&path, &data, false).unwrap();
+        fs::create_dir_all(dir.join(LEGACY_STORAGE_DIR_NAME)).unwrap();
+        (dir, path, data)
+    }
+
+    fn hydrate_fixture(data: &mut AppData) -> AppResult<bool> {
+        let account = account_with_tokens();
+        super::hydrate_protected_tokens_with(
+            data,
+            || {
+                Ok(std::collections::HashMap::from([(
+                    account.id,
+                    account.tokens,
+                )]))
+            },
+            |_, _| panic!("existing vault tokens must not be overwritten"),
+        )
+    }
+
+    fn assert_cleanup_load(
+        path: &std::path::Path,
+        dir: &std::path::Path,
+        expected: &AppData,
+    ) -> Vec<String> {
+        let before = fs::read(path).unwrap();
+        let (loaded, warnings) = super::load_app_data_with(path, dir, hydrate_fixture)
+            .expect("legacy cleanup must not block healthy state and vault");
+        assert_eq!(loaded.active_account_id, expected.active_account_id);
+        assert_eq!(loaded.accounts.len(), expected.accounts.len());
+        assert_eq!(loaded.accounts[0].id, expected.accounts[0].id);
+        assert_eq!(loaded.accounts[0].tokens, expected.accounts[0].tokens);
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert!(!contains_legacy_plaintext_tokens(path));
+        warnings
+    }
+
+    #[test]
+    fn load_defers_malformed_archive_cleanup_with_warning_and_retries() {
+        for name in [
+            "state.json.legacy-previous",
+            "state.json.bak.legacy-previous",
+        ] {
+            let (dir, path, data) = cleanup_fixture();
+            let archive = dir.join(LEGACY_STORAGE_DIR_NAME).join(name);
+            let malformed = r#"{"accounts":[{"tokens":{"refreshToken":"legacy-secret"}}]"#;
+            fs::write(&archive, malformed).unwrap();
+
+            // Repeated failures keep the warning and the original recovery source.
+            for _ in 0..2 {
+                let warnings = assert_cleanup_load(&path, &dir, &data);
+                assert_eq!(warnings.len(), 1);
+                assert!(warnings[0].contains("Parse legacy archive"));
+                assert!(warnings[0].contains("Will retry on next load"));
+                assert!(!warnings[0].contains("legacy-secret"));
+                assert_eq!(fs::read_to_string(&archive).unwrap(), malformed);
+            }
+
+            fs::write(&archive, format!("{malformed}}}")).unwrap();
+            assert!(contains_legacy_plaintext_tokens(&archive));
+            assert!(assert_cleanup_load(&path, &dir, &data).is_empty());
+            assert!(!contains_legacy_plaintext_tokens(&archive));
+            assert!(archive.is_file());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn load_defers_inaccessible_archive_cleanup_and_retries_after_unlock() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (dir, path, data) = cleanup_fixture();
+        let archive = dir
+            .join(LEGACY_STORAGE_DIR_NAME)
+            .join("state.json.bak.legacy-previous");
+        let payload = r#"{"accounts":[{"tokens":{"refreshToken":"legacy-secret"}}]}"#;
+        fs::write(&archive, payload).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&archive)
+            .unwrap();
+        assert!(
+            fs::read(&archive).is_err(),
+            "fixture must actually be inaccessible"
+        );
+
+        let warnings = assert_cleanup_load(&path, &dir, &data);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Read legacy archive"));
+        assert!(warnings[0].contains("Will retry on next load"));
+        drop(lock);
+        assert_eq!(fs::read_to_string(&archive).unwrap(), payload);
+
+        assert!(assert_cleanup_load(&path, &dir, &data).is_empty());
+        assert!(!contains_legacy_plaintext_tokens(&archive));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_keeps_vault_failures_fatal_and_preserves_plaintext_sources() {
+        for fail_read in [true, false] {
+            let (dir, path, data) = cleanup_fixture();
+            let mut legacy = serde_json::to_value(PersistedAppData::from(&data)).unwrap();
+            legacy["accounts"][0]["tokens"] = json!({
+                "idToken": "secret-id", "accessToken": "secret-access", "refreshToken": "secret-refresh"
+            });
+            let payload = serde_json::to_vec(&legacy).unwrap();
+            let source = dir.join(LEGACY_STORAGE_DIR_NAME).join(STATE_FILE_NAME);
+            let backup = backup_path(&path).unwrap();
+            for file in [&path, &backup, &source] {
+                fs::write(file, &payload).unwrap();
+            }
+
+            let error = super::load_app_data_with(&path, &dir, |data| {
+                super::hydrate_protected_tokens_with(
+                    data,
+                    || {
+                        if fail_read {
+                            Err(crate::errors::AppError::msg("vault read failed"))
+                        } else {
+                            Ok(Default::default())
+                        }
+                    },
+                    |_, _| Err(crate::errors::AppError::msg("vault write failed")),
+                )
+            })
+            .expect_err("vault failure must still block loading");
+            assert!(error.user_message().contains(if fail_read {
+                "vault read failed"
+            } else {
+                "vault write failed"
+            }));
+            for file in [&path, &backup, &source] {
+                assert_eq!(fs::read(file).unwrap(), payload);
+            }
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn load_keeps_state_migration_write_failure_fatal_and_skips_cleanup() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (dir, path, _) = cleanup_fixture();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["schemaVersion"] = json!(8);
+        let payload = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &payload).unwrap();
+        let source = dir.join(LEGACY_STORAGE_DIR_NAME).join(STATE_FILE_NAME);
+        let source_payload = r#"{"accounts":[{"tokens":{"refreshToken":"legacy-secret"}}]}"#;
+        fs::write(&source, source_payload).unwrap();
+        // Allow reads for loading, but deny replacement of the authoritative state.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let error = super::load_app_data_with(&path, &dir, hydrate_fixture)
+            .expect_err("required state writes must remain fatal");
+        assert!(
+            error
+                .user_message()
+                .contains("Failed to atomically replace file")
+        );
+        assert_eq!(fs::read(&path).unwrap(), payload);
+        assert_eq!(fs::read_to_string(&source).unwrap(), source_payload);
+        drop(lock);
         fs::remove_dir_all(dir).unwrap();
     }
 

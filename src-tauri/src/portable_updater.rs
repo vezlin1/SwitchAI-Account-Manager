@@ -11,7 +11,7 @@ use crate::app_state::SharedState;
 use crate::atomic_file::write_atomic;
 use crate::errors::{AppError, AppResult};
 
-pub const DEFAULT_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwNTU1MDVDNDhENEI2QTQKUldTa3R0UklYRkJWTUxVb2d6dUUwUVAzdTZINU4rY0RGNFFUeEJIeWhuK2QyWXFSYkFJMkg4V3kK";
+pub const DEFAULT_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4NUNBQzZCQTA0MzM2OTIKUldTU05rT2dhNnhjNk1CNklVeXNuMkk1RFZJeGN4MUxaZE9KUXAzZ2l0WlExd05SZkx5WFRlKzcK";
 
 pub fn get_update_public_key() -> &'static str {
     option_env!("SWITCHAI_UPDATE_PUBLIC_KEY").unwrap_or(DEFAULT_UPDATE_PUBLIC_KEY)
@@ -59,6 +59,66 @@ pub struct UpdateDownloadRequest<'a> {
     pub expected_sha256: Option<&'a str>,
     pub public_key: &'a str,
     pub version: &'a str,
+}
+
+pub fn staged_update_matches_manifest(
+    staged: Option<&StagedUpdateMetadata>,
+    manifest: &UpdateManifest,
+) -> bool {
+    let Some(staged) = staged else {
+        return false;
+    };
+    let Some(platform) = manifest.platforms.get(current_platform_key()) else {
+        return false;
+    };
+    staged.version == manifest.version
+        && staged.url == platform.url
+        && staged.signature.trim() == platform.signature.trim()
+        && platform.size.is_none_or(|size| staged.size == Some(size))
+        && platform.sha256.as_ref().is_none_or(|hash| {
+            staged
+                .sha256
+                .as_ref()
+                .is_some_and(|staged_hash| staged_hash.trim().eq_ignore_ascii_case(hash.trim()))
+        })
+}
+
+pub fn validate_update_version(manifest: &UpdateManifest, expected_version: &str) -> AppResult<()> {
+    if expected_version.is_empty() || manifest.version != expected_version {
+        return Err(AppError::msg(
+            "The available update has changed. Check for updates again before downloading or installing.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_staged_update_for_install(
+    staged: Option<&StagedUpdateMetadata>,
+    manifest: Option<&UpdateManifest>,
+    expected_version: &str,
+) -> AppResult<()> {
+    let manifest = manifest.ok_or_else(|| {
+        AppError::msg("No update is currently selected. Check for updates again before installing.")
+    })?;
+    validate_update_version(manifest, expected_version)?;
+    if !staged_update_matches_manifest(staged, manifest) {
+        return Err(AppError::msg(
+            "The downloaded update does not match the available release. Download the update again before installing.",
+        ));
+    }
+    Ok(())
+}
+
+// Pin the helper to the exact metadata approved by the parent, including version
+// and artifact identity, even if the sidecar changes after the parent exits.
+fn staged_update_identity(metadata: &StagedUpdateMetadata) -> AppResult<String> {
+    let bytes = serde_json::to_vec(metadata).map_err(|error| {
+        AppError::msg(format!("Failed to encode staged update identity: {error}"))
+    })?;
+    Ok(Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 pub fn current_platform_key() -> &'static str {
@@ -811,6 +871,14 @@ fn run_update_helper_inner(parent_pid: u32, executable: &Path) -> AppResult<()> 
             return Err(error);
         }
     };
+    if command_arg("--update-stage-id").as_deref()
+        != Some(staged_update_identity(&metadata)?.as_str())
+    {
+        relaunch_original(executable);
+        return Err(AppError::msg(
+            "The staged update changed after installation was requested; update was cancelled safely.",
+        ));
+    }
     let ack_token = metadata
         .ack_token
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -929,7 +997,12 @@ pub fn run_update_helper() -> bool {
 pub async fn perform_atomic_swap_and_restart(
     app: &tauri::AppHandle,
     state: &Arc<SharedState>,
+    expected_version: &str,
 ) -> AppResult<()> {
+    let _update_gate = state.update_install_gate.lock().await;
+    if state.is_quitting.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::msg("SwitchAI is already restarting."));
+    }
     ensure_no_active_oauth(state)?;
 
     // Lifecycle safety 2: stop background auto refresh
@@ -939,14 +1012,16 @@ pub async fn perform_atomic_swap_and_restart(
     let _codex_gate = state.refresh_codex_gate.lock().await;
     let _gemini_gate = state.refresh_gemini_gate.lock().await;
 
-    let (exe_path, _old_path, tmp_path) = get_exe_paths()?;
-    if !tmp_path.exists() || read_staged_update_metadata()?.is_none() {
-        return Err(AppError::msg(
-            "No verified staged update is available. Please download the update first.",
-        ));
-    }
-
+    let (exe_path, _old_path, _tmp_path) = get_exe_paths()?;
+    let staged = read_staged_update_metadata()?;
     crate::storage::flush_refresh_metadata(state)?;
+    // Keep the selected manifest stable through the helper launch. No await or
+    // further state locks occur while this guard is held.
+    let available = crate::app_state::lock_available_update(state)?;
+    validate_staged_update_for_install(staged.as_ref(), available.as_ref(), expected_version)?;
+    let stage_id = staged_update_identity(staged.as_ref().ok_or_else(|| {
+        AppError::msg("No verified staged update is available. Download the update first.")
+    })?)?;
     let current_pid = std::process::id();
     let helper_path = get_update_helper_path_for(&exe_path)?;
     std::fs::copy(&exe_path, &helper_path).map_err(|error| {
@@ -958,7 +1033,9 @@ pub async fn perform_atomic_swap_and_restart(
     helper_command
         .arg("--update-helper")
         .arg(current_pid.to_string())
-        .arg(&exe_path);
+        .arg(&exe_path)
+        .arg("--update-stage-id")
+        .arg(stage_id);
     configure_background_command(&mut helper_command);
     if let Err(e) = helper_command.spawn() {
         let _ = std::fs::remove_file(&helper_path);
@@ -971,6 +1048,7 @@ pub async fn perform_atomic_swap_and_restart(
         .is_quitting
         .store(true, std::sync::atomic::Ordering::SeqCst);
     paused_refresh.resume_on_drop = false;
+    drop(available);
     app.exit(0);
     Ok(())
 }
@@ -1033,6 +1111,141 @@ pub fn handle_after_update_wait() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTU05rT2dhNnhjNkJ6VFZuOXdFdWNEWllUK3JiUHhWcWdKYUZZcmZVS2NzcXlzZlNqaG1uTCtOQk1Oa0paV0VWQTJTT3JNN05idUUrU3M5eWdlQ0p3U3BhM3hHRG1Hb3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5Mzk5OTMxCWZpbGU6dGVzdF9wYXlsb2FkLmJpbgppVVJiUVk1TEZhcTEzQVdBcmY3Wk5SdlM4cVJlZUNTWHFuYm9JczFnTE1qZXMvQk5LYnp1RENFaXRBaEFIYStjdkZKL2xoZThkdmtiNFI0OUpuRENBZz09Cg==";
+
+    fn signed_stage_fixture() -> (PathBuf, UpdateManifest) {
+        let dir =
+            std::env::temp_dir().join(format!("switchai-stage-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let executable = dir.join("app.exe");
+        let payload = b"hello world 123";
+        let platform = UpdateManifestPlatform {
+            signature: TEST_SIGNATURE.into(),
+            url: "https://example.invalid/releases/9.0.0/app.exe".into(),
+            sha256: Some(
+                Sha256::digest(payload)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            ),
+            size: Some(payload.len() as u64),
+        };
+        let staged = StagedUpdateMetadata {
+            version: "9.0.0".into(),
+            url: platform.url.clone(),
+            signature: platform.signature.clone(),
+            sha256: platform.sha256.clone(),
+            size: platform.size,
+            public_key: DEFAULT_UPDATE_PUBLIC_KEY.into(),
+            ack_token: Some("test-ack-token-for-staged-update".into()),
+        };
+        std::fs::write(get_exe_paths_for(&executable).unwrap().2, payload).unwrap();
+        std::fs::write(
+            get_stage_metadata_path_for(&executable).unwrap(),
+            serde_json::to_vec(&staged).unwrap(),
+        )
+        .unwrap();
+        (
+            executable,
+            UpdateManifest {
+                version: staged.version,
+                notes: None,
+                release_date: None,
+                platforms: HashMap::from([(current_platform_key().into(), platform)]),
+            },
+        )
+    }
+
+    #[test]
+    fn verified_stage_must_match_the_advertised_release_and_requested_version() {
+        let (executable, downloaded) = signed_stage_fixture();
+        let staged = read_staged_update_metadata_for(&executable)
+            .unwrap()
+            .unwrap();
+        assert!(staged_update_matches_manifest(Some(&staged), &downloaded));
+        validate_staged_update_for_install(Some(&staged), Some(&downloaded), "9.0.0").unwrap();
+
+        // B is downloaded; a later check announces C. Neither readiness nor
+        // installation may reuse B, including an old UI still showing B.
+        let mut advertised = downloaded.clone();
+        advertised.version = "9.1.0".into();
+        assert!(!staged_update_matches_manifest(Some(&staged), &advertised));
+        for requested in ["9.0.0", "9.1.0", ""] {
+            assert!(
+                validate_staged_update_for_install(Some(&staged), Some(&advertised), requested)
+                    .is_err()
+            );
+        }
+        assert!(validate_staged_update_for_install(Some(&staged), None, "9.0.0").is_err());
+        assert!(validate_staged_update_for_install(None, Some(&downloaded), "9.0.0").is_err());
+
+        // A replaced artifact under the same version also needs a fresh download.
+        for field in ["url", "signature", "sha256", "size", "platform"] {
+            let mut replaced = downloaded.clone();
+            let platform = replaced.platforms.get_mut(current_platform_key()).unwrap();
+            match field {
+                "url" => platform.url.push_str(".replacement"),
+                "signature" => platform.signature = "different signature".into(),
+                "sha256" => platform.sha256 = Some("00".repeat(32)),
+                "size" => platform.size = Some(999),
+                "platform" => replaced.platforms.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !staged_update_matches_manifest(Some(&staged), &replaced),
+                "{field}"
+            );
+            assert!(
+                validate_staged_update_for_install(Some(&staged), Some(&replaced), "9.0.0")
+                    .is_err(),
+                "{field}"
+            );
+        }
+        // Rejecting a different release must not destroy a valid signed download.
+        assert!(
+            read_staged_update_metadata_for(&executable)
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(executable.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn matching_metadata_does_not_make_a_tampered_payload_installable() {
+        let (executable, manifest) = signed_stage_fixture();
+        std::fs::write(
+            get_exe_paths_for(&executable).unwrap().2,
+            b"hello world 124",
+        )
+        .unwrap();
+        let staged = read_staged_update_metadata_for(&executable).unwrap();
+        assert!(staged.is_none());
+        assert!(!staged_update_matches_manifest(staged.as_ref(), &manifest));
+        assert!(
+            validate_staged_update_for_install(staged.as_ref(), Some(&manifest), "9.0.0").is_err()
+        );
+        std::fs::remove_dir_all(executable.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn helper_identity_pins_the_approved_stage_across_parent_exit() {
+        let (executable, _) = signed_stage_fixture();
+        let staged = read_staged_update_metadata_for(&executable)
+            .unwrap()
+            .unwrap();
+        let approved = staged_update_identity(&staged).unwrap();
+        let roundtrip: StagedUpdateMetadata =
+            serde_json::from_slice(&serde_json::to_vec(&staged).unwrap()).unwrap();
+        assert_eq!(staged_update_identity(&roundtrip).unwrap(), approved);
+        let mut replaced = staged.clone();
+        replaced.version = "9.1.0".into();
+        assert_ne!(staged_update_identity(&replaced).unwrap(), approved);
+        replaced = staged.clone();
+        replaced.signature.push_str("changed");
+        assert_ne!(staged_update_identity(&replaced).unwrap(), approved);
+        std::fs::remove_dir_all(executable.parent().unwrap()).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
