@@ -12,8 +12,5 @@
 
 ---
 
-### Upgrading from v1.2.0 or earlier:
-The update signing key has changed. Download and replace **SwitchAI.exe** manually for this release; older versions cannot verify the new update signature. Version 1.3.0 includes the new public key for future signed Windows updates. On macOS, install the new DMG as usual.
-
 ### ℹ️ If Windows SmartScreen shows a warning:
 The Windows executable is not Authenticode-signed. Verify the download against **SHA256SUMS-win.txt** before running it. Minisign protects in-app updates and does not remove SmartScreen warnings.
