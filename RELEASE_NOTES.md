@@ -1,18 +1,16 @@
-## SwitchAI v1.2.0
+## SwitchAI v1.3.0
 
 ### What's New:
-* **Manual app updates:** download new versions from [GitHub Releases](https://github.com/vezlin1/SwitchAI-Account-Manager/releases/latest).
-* **Redesigned System Tray Menu:** structured sectioned menu (`── Codex ──` and `── Antigravity ──`), 1-click quick switch to recommended accounts, and clean bullet-aligned layout.
-* **Persistent Privacy Mode:** privacy masking settings now persist cleanly across sessions and synchronize between the UI, tray dashboard, and notifications.
-* **Modular Backend Architecture:** refactored command layer into dedicated modules with stricter concurrency gates and CAS state invariants.
-* **Enhanced Secret Vault Resilience:** in-memory token caching with corrupted storage recovery and fallback protection.
-* General performance optimizations, UI polish, and stability improvements.
+* **Independent Account Refresh:** Codex and Gemini now refresh in separate queues, with per-account activity indicators and progress.
+* **Smarter Account Recommendations:** suggestions now take quota freshness and account health into account, excluding stale quotas and accounts with quota errors.
+* **Clearer Quota Information:** quota age indicators, consistent event timestamps, and more accurate quota window labels.
+* **More Reliable Session Sync:** improved synchronization with external Codex and Antigravity sessions, with retries that respect service cooldowns.
+* **Safer Windows Updates:** downloaded updates must match the selected release before installation, with corrected rollback when an older executable backup is locked.
+* **Improved Credential Recovery:** restore a missing token vault from its encrypted backup and preserve recovered credentials during later saves.
+* **More Resilient Startup:** failed cleanup of legacy account files no longer blocks healthy accounts from loading; the app shows a warning and retries cleanup on the next load.
+* Reduced redundant background requests, UI updates, and metadata writes, plus general stability improvements.
 
 ---
 
 ### ℹ️ If Windows SmartScreen shows a warning:
-As this is an open-source application without an expensive Microsoft enterprise signing certificate, Windows Defender SmartScreen may display a blue warning on first launch:
-1. Click **"More info"**.
-2. Click **"Run anyway"**.
-
-🛡️ **VirusTotal Report:** [View Scan Analysis](https://www.virustotal.com/gui/file-analysis/ZDE4ZGJkYzEwNzM4OWQ4Y2ZjODU4ZDkwYjMzNDNmNTk6MTc4ODUzMTYzNg==)
+The Windows executable is not Authenticode-signed. Verify the download against the SHA-256 digest displayed next to the file in GitHub Assets before running it. Minisign protects in-app updates and does not remove SmartScreen warnings.

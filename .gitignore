@@ -22,6 +22,9 @@ dist/
 *.rpm
 *.msi
 *.exe
+*.exe.sig
+*.dmg.sig
+*.msi.sig
 
 # Logs
 npm-debug.log*
@@ -35,14 +38,20 @@ pnpm-debug.log*
 .env.*
 !.env.example
 auth.json
+auth.json.*
 vault.json
+vault.json.*
 secrets.vault.json*
 *.vault.json*
 credentials.json
+credentials.json.*
 state.json
+state.json.*
 *.p12
 *.pfx
 *.key
+*.key.*
+*.p8
 *.pem
 *.cer
 *.crt
@@ -53,6 +62,7 @@ GEMINI.md
 
 # Sensitive local data
 data/
+/.codex/
 
 # IDE & Editor files
 .vscode/
@@ -81,6 +91,7 @@ $RECYCLE.BIN/
 *.old
 *.orig
 *.tmp
+*.tmp-*
 *.temp
 *~
 *.swp
@@ -96,3 +107,5 @@ IMPLEMENTATION_PLAN.md
 graft/
 .codegraph/
 refs/
+.empryo/
+.superpowers/

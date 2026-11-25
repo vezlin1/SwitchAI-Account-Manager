@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import { Check, CircleAlert, CircleCheck, Copy, Loader2 } from 'lucide-react'
 import type { Account } from '../../types'
 import { readableStatusError, STATUS_PREVIEW_LIMIT } from '../../utils/dateUtils'
+import { QuotaFreshness } from './QuotaFreshness'
 
 type AccountStatusProps = {
   account: Account
@@ -9,6 +10,17 @@ type AccountStatusProps = {
 }
 
 export const AccountStatus = memo(function AccountStatus({
+  account, isRefreshing = false
+}: AccountStatusProps) {
+  return (
+    <div className="flex flex-col items-start gap-1 min-w-0">
+      <AccountHealthStatus account={account} isRefreshing={isRefreshing} />
+      <QuotaFreshness account={account} />
+    </div>
+  )
+})
+
+const AccountHealthStatus = memo(function AccountHealthStatus({
   account,
   isRefreshing = false
 }: AccountStatusProps) {
@@ -16,7 +28,7 @@ export const AccountStatus = memo(function AccountStatus({
   const tokenHealth = account.tokenHealth
   const isUnknown = tokenHealth?.status === 'unknown'
   const notCheckedYet = !tokenHealth?.lastCheckedAt && !account.quota
-  const isChecking = isRefreshing || isUnknown || notCheckedYet
+  const isChecking = isRefreshing
 
   const needsRelogin = tokenHealth?.status === 'needs_relogin'
   const tokenWarning = tokenHealth?.status === 'network_error' || tokenHealth?.status === 'server_error'
@@ -100,6 +112,10 @@ export const AccountStatus = memo(function AccountStatus({
         )}
       </span>
     )
+  }
+
+  if (isUnknown || notCheckedYet) {
+    return <span className="account-status text-ag-muted">Not checked</span>
   }
 
   return (

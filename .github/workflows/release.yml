@@ -24,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -41,7 +41,9 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           npm --prefix ui ci
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
 
       - name: Verify
         shell: pwsh
@@ -50,6 +52,7 @@ jobs:
           RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
           npm run verify:versions
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           if ($env:RELEASE_REF_TYPE -eq "tag") {
             $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
             if ($env:RELEASE_REF_NAME -ne "v$version") {
@@ -57,14 +60,23 @@ jobs:
             }
           }
           npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           npm --prefix ui run lint
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           npm --prefix ui run build
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           npm --prefix ui run test:quota
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           npm --prefix ui audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           cargo check --locked --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
           cargo test --locked --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
 
       - name: Install cargo-audit
         shell: pwsh
@@ -124,6 +136,39 @@ jobs:
             Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Check Minisign updater signing configuration
+        id: minisign-config
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $hasKey = ![string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
+          "configured=$($hasKey.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Require updater signing for tagged releases
+        if: github.ref_type == 'tag' && steps.minisign-config.outputs.configured != 'true'
+        shell: pwsh
+        run: |
+          throw "Tagged releases require TAURI_SIGNING_PRIVATE_KEY so latest.json can include a valid update signature."
+
+      - name: Sign Windows executable with Minisign (Tauri Signer)
+        if: steps.minisign-config.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $password = if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD } else { "" }
+          npx @tauri-apps/cli signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$password" "dist/release/SwitchAI.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
+
+      - name: Generate portable update manifest
+        if: steps.minisign-config.outputs.configured == 'true'
+        shell: pwsh
+        run: |
+          node scripts/generate-update-manifest.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
+
       - name: Generate Windows checksum
         shell: pwsh
         run: |
@@ -133,11 +178,13 @@ jobs:
 
       - name: Upload Windows artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: |
             dist/release/SwitchAI.exe
+            dist/release/SwitchAI.exe.sig
+            dist/release/latest.json
             dist/release/SHA256SUMS-win.txt
           if-no-files-found: warn
 
@@ -146,10 +193,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -272,7 +319,7 @@ jobs:
 
       - name: Upload macOS artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-release
           path: |
@@ -289,28 +336,30 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows-release
           path: dist/release
 
       - name: Download macOS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-release
           path: dist/release
 
       - name: Publish versioned GitHub Release (tags)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: SwitchAI Account Manager ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           files: |
             dist/release/SwitchAI.exe
+            dist/release/latest.json
             dist/release/*.dmg
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
         env:

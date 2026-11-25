@@ -43,7 +43,7 @@ export function GeminiSwitchTargetsBar({
       }
     }
 
-    const poller = createCompletionPoller({ run: fetchSurfaces, intervalMs: 5000 })
+    const poller = createCompletionPoller({ run: fetchSurfaces, intervalMs: 30000 })
     poller.setActive(document.visibilityState === 'visible')
 
     // Immediate refresh on window focus / tab visibility
@@ -54,12 +54,14 @@ export function GeminiSwitchTargetsBar({
       poller.setActive(document.visibilityState === 'visible')
     }
     window.addEventListener('focus', handleFocus)
+    window.addEventListener('antigravity-surfaces-changed', handleFocus)
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
       cancelled = true
       poller.dispose()
       window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('antigravity-surfaces-changed', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [])

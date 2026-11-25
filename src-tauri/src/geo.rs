@@ -1,8 +1,6 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Client;
-
-use crate::models::now_ts;
 
 pub const UNSUPPORTED_OPENAI_COUNTRIES: &[&str] = &["RU", "BY", "CN", "IR", "KP", "CU", "SY", "VE"];
 
@@ -65,9 +63,12 @@ pub async fn probe_chatgpt_reachability(client: &Client) -> ChatGptReachability 
             && response.status().is_success()
             && let Ok(body) = response.text().await
             && let Some(loc) = parse_cloudflare_trace_loc(&body)
-            && UNSUPPORTED_OPENAI_COUNTRIES.contains(&loc.as_str())
         {
-            return ChatGptReachability::UnsupportedRegion { country_code: loc };
+            if UNSUPPORTED_OPENAI_COUNTRIES.contains(&loc.as_str()) {
+                return ChatGptReachability::UnsupportedRegion { country_code: loc };
+            }
+            // The second trace is only a fallback for a failed first trace.
+            break;
         }
     }
 
@@ -112,14 +113,20 @@ pub async fn probe_chatgpt_reachability(client: &Client) -> ChatGptReachability 
 
 #[derive(Default, Debug, Clone)]
 pub struct ReachabilityCache {
-    cached: Option<(i64, ChatGptReachability)>,
+    cached: Option<(Instant, ChatGptReachability)>,
+    generation: u64,
 }
 
 impl ReachabilityCache {
-    pub fn get_cached(&self, max_age_seconds: i64) -> Option<ChatGptReachability> {
-        let now = now_ts();
-        if let Some((ts, ref reachability)) = self.cached
-            && now.saturating_sub(ts) <= max_age_seconds
+    pub fn get_cached(
+        &self,
+        retry_unavailable: bool,
+        requested_at: Instant,
+    ) -> Option<ChatGptReachability> {
+        if let Some((checked_at, ref reachability)) = self.cached
+            && checked_at.elapsed()
+                < Duration::from_secs(if reachability.is_available() { 600 } else { 30 })
+            && (reachability.is_available() || !retry_unavailable || checked_at >= requested_at)
         {
             Some(reachability.clone())
         } else {
@@ -128,13 +135,51 @@ impl ReachabilityCache {
     }
 
     pub fn set(&mut self, reachability: ChatGptReachability) {
-        self.cached = Some((now_ts(), reachability));
+        self.cached = Some((Instant::now(), reachability));
+    }
+
+    pub fn invalidate(&mut self) {
+        self.cached = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_reuses_success_and_coalesces_failed_probes_but_allows_manual_retry() {
+        let requested = Instant::now();
+        let mut cache = ReachabilityCache::default();
+        cache.set(ChatGptReachability::Available);
+        assert!(
+            cache
+                .get_cached(true, Instant::now())
+                .unwrap()
+                .is_available()
+        );
+        cache.cached.as_mut().unwrap().0 = Instant::now() - Duration::from_secs(601);
+        assert!(cache.get_cached(false, requested).is_none());
+        cache.set(ChatGptReachability::BlockedOrUnreachable {
+            reason: "offline".into(),
+        });
+        assert!(cache.get_cached(true, requested).is_some()); // Same in-flight probe.
+        let after = cache.cached.as_ref().unwrap().0 + Duration::from_nanos(1);
+        assert!(cache.get_cached(true, after).is_none()); // New explicit retry.
+        assert!(cache.get_cached(false, after).is_some());
+        cache.cached.as_mut().unwrap().0 = Instant::now() - Duration::from_secs(31);
+        assert!(cache.get_cached(false, requested).is_none());
+        cache.set(ChatGptReachability::Available);
+        let generation = cache.generation();
+        cache.invalidate();
+        assert_ne!(cache.generation(), generation);
+        assert!(cache.get_cached(false, requested).is_none());
+    }
 
     #[test]
     fn parses_loc_from_trace() {

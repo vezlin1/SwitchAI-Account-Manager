@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-18a8e8?style=flat-square">
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/vezlin1/SwitchAI-Account-Manager?label=version&color=18a8e8&style=flat-square">
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=flat-square&logo=windows">
   <img alt="macOS 11 or newer" src="https://img.shields.io/badge/macOS-11%2B-111111?style=flat-square&logo=apple">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square">
@@ -154,6 +154,12 @@ Read the full [Privacy](docs/PRIVACY.md) and
 - Node.js 24
 - Rust stable
 - Platform build tools for Tauri
+
+Tagged Windows releases require the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions
+secret (and its optional password). The corresponding public key is compiled
+into the application; keep it paired with the private key so `SwitchAI.exe.sig`
+and `latest.json` are generated and published together. Tagged builds fail when
+the key is missing instead of publishing an updater-incomplete release.
 
 ### Run locally
 

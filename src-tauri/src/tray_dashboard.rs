@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
@@ -24,8 +23,6 @@ pub struct AppStateChangedEvent {
     pub scope: String,
     pub account_ids: Vec<String>,
     pub revision: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<crate::dto::AppDataDto>,
 }
 
 pub fn emit_state_changed(
@@ -48,7 +45,6 @@ pub fn emit_state_changed(
             scope: scope.into(),
             account_ids,
             revision,
-            state: None,
         },
     );
 }
@@ -68,27 +64,6 @@ pub fn emit_state_changed_forced(
             scope: scope.into(),
             account_ids,
             revision,
-            state: None,
-        },
-    );
-}
-
-pub(crate) fn emit_refresh_snapshot(state: &Arc<SharedState>, snapshot: &AppData) {
-    let Some(app) = state.app_handle.get() else {
-        return;
-    };
-    if let Some(window) = app.get_webview_window("main")
-        && (!window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false))
-    {
-        return;
-    }
-    let _ = app.emit(
-        "app-state-changed",
-        AppStateChangedEvent {
-            scope: "accounts".into(),
-            account_ids: Vec::new(),
-            revision: snapshot.revision,
-            state: Some(crate::dto::AppDataDto::from(snapshot)),
         },
     );
 }
@@ -189,6 +164,7 @@ pub fn remaining_percent(account: &Account) -> Option<f64> {
     [&quota.primary, &quota.secondary]
         .into_iter()
         .filter_map(|window| window.used_percent)
+        .filter(|used| used.is_finite() && (0.0..=100.0).contains(used))
         .map(|used| (100.0 - used).clamp(0.0, 100.0))
         .min_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
 }
@@ -274,6 +250,23 @@ pub fn sort_accounts_for_provider<'a>(
     sorted
 }
 
+fn quota_is_fresh(account: &Account, now: i64) -> bool {
+    let Some(quota) = account.quota.as_ref() else {
+        return false;
+    };
+    let age = now.saturating_sub(quota.fetched_at);
+    (-60..3600).contains(&age)
+        && [&quota.primary, &quota.secondary].iter().all(|window| {
+            window
+                .used_percent
+                .is_none_or(|used| used.is_finite() && (0.0..=100.0).contains(&used))
+                && !(window.used_percent.is_some()
+                    && window.reset_at.is_some_and(|reset| {
+                        reset <= now && reset > window.fetched_at.unwrap_or(quota.fetched_at)
+                    }))
+        })
+}
+
 pub fn recommended_account_for_provider(
     data: &AppData,
     provider: AccountProvider,
@@ -282,239 +275,277 @@ pub fn recommended_account_for_provider(
         .iter()
         .filter(|account| account.provider == provider)
         .filter(|account| !data.app_settings.hidden_account_ids.contains(&account.id))
-        .filter(|account| account.token_health.status != TokenHealthStatus::NeedsRelogin)
+        .filter(|account| {
+            matches!(
+                account.token_health.status,
+                TokenHealthStatus::Healthy | TokenHealthStatus::Refreshed
+            )
+        })
+        .filter(|account| {
+            account.last_error.is_none() && quota_is_fresh(account, crate::models::now_ts())
+        })
         .filter_map(|account| remaining_percent(account).map(|remaining| (account, remaining)))
         .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap_or(Ordering::Equal))
         .map(|(account, _)| account)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DashboardEntry {
-    Item {
-        id: String,
-        label: String,
-        enabled: bool,
-    },
-    Separator,
-}
+pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppResult<Menu<R>> {
+    use tauri::Manager;
+    let available_update_version = app.try_state::<Arc<SharedState>>().and_then(|state| {
+        state
+            .available_update
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|manifest| manifest.version.clone()))
+    });
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DashboardView {
-    entries: Vec<DashboardEntry>,
-    tooltip: String,
-}
+    let mut builder = MenuBuilder::new(app);
+    if let Some(version) = available_update_version {
+        let update_item = MenuItemBuilder::with_id(
+            "open_update",
+            format!("★ SwitchAI Update Available (v{version})"),
+        )
+        .build(app)
+        .map_err(|error| AppError::msg(format!("Failed to build tray update item: {error}")))?;
+        builder = builder.item(&update_item);
+        builder = builder.separator();
+    }
 
-// Only rendered contents are sent to the main thread; no credentials are copied.
-fn dashboard_view(data: &AppData) -> DashboardView {
-    let mut entries = Vec::new();
-    let item = |id: String, label: String, enabled| DashboardEntry::Item { id, label, enabled };
-    let privacy = data.app_settings.privacy_mode;
-    let providers = [
-        (
-            AccountProvider::Codex,
-            "codex",
-            "Codex",
-            "codex",
-            SWITCH_CODEX_ACCOUNT_PREFIX,
-            QUICK_SWITCH_CODEX_PREFIX,
-            data.active_account_id.as_deref(),
-        ),
-        (
-            AccountProvider::Gemini,
-            "gemini",
-            "Antigravity",
-            "gemini",
-            SWITCH_GEMINI_ACCOUNT_PREFIX,
-            QUICK_SWITCH_GEMINI_PREFIX,
-            data.active_gemini_account_id.as_deref(),
-        ),
-    ];
-    let visible_accounts = |provider| {
+    let codex_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "codex");
+    let gemini_enabled = data
+        .app_settings
+        .enabled_providers
+        .iter()
+        .any(|p| p == "gemini");
+    let privacy_mode = data.app_settings.privacy_mode;
+
+    let codex_accounts: Vec<&Account> = if codex_enabled {
         data.accounts
             .iter()
-            .filter(|account| account.provider == provider)
-            .filter(|account| !data.app_settings.hidden_account_ids.contains(&account.id))
-            .collect::<Vec<_>>()
+            .filter(|a| a.provider == AccountProvider::Codex)
+            .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
+            .collect()
+    } else {
+        Vec::new()
     };
-    let enabled = |key: &str| {
-        data.app_settings
-            .enabled_providers
-            .iter()
-            .any(|entry| entry == key)
-    };
-    let mut any_accounts = false;
-    for &(provider, key, title, menu_key, _, quick_prefix, active_id) in &providers {
-        if !enabled(key) || visible_accounts(provider).is_empty() {
-            continue;
-        }
-        any_accounts = true;
-        if let Some(best) = recommended_account_for_provider(data, provider) {
-            let active = active_id == Some(best.id.as_str());
-            let quota = remaining_percent(best)
-                .map(|remaining| format!("{remaining:.0}% left"))
-                .unwrap_or_else(|| "available".to_string());
-            let label = account_label(best, privacy);
-            entries.push(item(
-                if active {
-                    format!("quick-{menu_key}-active")
-                } else {
-                    format!("{quick_prefix}{}", best.id)
-                },
-                if active {
-                    format!("⚡ Best {title}: {label} ({quota}) (active)")
-                } else {
-                    format!("⚡ Switch to Best {title}: {label} ({quota})")
-                },
-                !active,
-            ));
-        } else {
-            entries.push(item(
-                format!("quick-{menu_key}-none"),
-                format!("⚡ No {title} recommendation available"),
-                false,
-            ));
-        }
-    }
-    if !any_accounts {
-        entries.push(item(
-            "no-accounts".into(),
-            "No accounts added".into(),
-            false,
-        ));
-    }
-    entries.push(DashboardEntry::Separator);
-    let mut added_provider = false;
-    for &(provider, key, title, menu_key, switch_prefix, _, active_id) in &providers {
-        if !enabled(key) {
-            continue;
-        }
-        if added_provider {
-            entries.push(DashboardEntry::Separator);
-        }
-        added_provider = true;
-        let header_id = if provider == AccountProvider::Codex {
-            "header-codex"
-        } else {
-            "header-antigravity"
-        };
-        entries.push(item(header_id.into(), format!("── {title} ──"), false));
-        let accounts = visible_accounts(provider);
-        if accounts.is_empty() {
-            entries.push(item(
-                format!("empty-{menu_key}"),
-                format!("   No {title} accounts added"),
-                false,
-            ));
-            continue;
-        }
-        let recommended = recommended_account_for_provider(data, provider);
-        for account in sort_accounts_for_provider(&accounts, active_id) {
-            let active = active_id == Some(account.id.as_str());
-            let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
-            let best = !needs_relogin && recommended.is_some_and(|best| best.id == account.id);
-            entries.push(item(
-                format!("{switch_prefix}{}", account.id),
-                account_menu_label(account, active, best, privacy),
-                !active && !needs_relogin,
-            ));
-        }
-    }
-    entries.extend([
-        DashboardEntry::Separator,
-        item("show".into(), "Show account manager".into(), true),
-        item("refresh".into(), "Refresh quotas now".into(), true),
-        DashboardEntry::Separator,
-        item("quit".into(), "Quit".into(), true),
-    ]);
-    DashboardView {
-        entries,
-        tooltip: tray_tooltip(data),
-    }
-}
 
-fn build_view_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    view: &DashboardView,
-) -> AppResult<Menu<R>> {
-    let mut builder = MenuBuilder::new(app);
-    for entry in &view.entries {
-        match entry {
-            DashboardEntry::Separator => builder = builder.separator(),
-            DashboardEntry::Item { id, label, enabled } => {
-                let item = MenuItemBuilder::with_id(id, label)
-                    .enabled(*enabled)
+    let gemini_accounts: Vec<&Account> = if gemini_enabled {
+        data.accounts
+            .iter()
+            .filter(|a| a.provider == AccountProvider::Gemini)
+            .filter(|a| !data.app_settings.hidden_account_ids.contains(&a.id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let rec_codex = if codex_enabled {
+        recommended_account_for_provider(data, AccountProvider::Codex)
+    } else {
+        None
+    };
+    let rec_gemini = if gemini_enabled {
+        recommended_account_for_provider(data, AccountProvider::Gemini)
+    } else {
+        None
+    };
+
+    // 1. Actionable 1-click Quick-Switch section at the top
+    let has_any_accounts = !codex_accounts.is_empty() || !gemini_accounts.is_empty();
+    if has_any_accounts {
+        if codex_enabled && !codex_accounts.is_empty() {
+            if let Some(best) = rec_codex {
+                let is_active = data.active_account_id.as_deref() == Some(best.id.as_str());
+                let quota_str = remaining_percent(best)
+                    .map(|r| format!("{r:.0}% left"))
+                    .unwrap_or_else(|| "available".to_string());
+                let label = account_label(best, privacy_mode);
+
+                let item = if is_active {
+                    MenuItemBuilder::with_id(
+                        "quick-codex-active",
+                        format!("⚡ Best Codex: {label} ({quota_str}) (active)"),
+                    )
+                    .enabled(false)
                     .build(app)
                     .map_err(|error| {
-                        AppError::msg(format!("Failed to build tray item: {error}"))
-                    })?;
+                        AppError::msg(format!("Failed to build quick switch item: {error}"))
+                    })?
+                } else {
+                    MenuItemBuilder::with_id(
+                        format!("{QUICK_SWITCH_CODEX_PREFIX}{}", best.id),
+                        format!("⚡ Switch to Best Codex: {label} ({quota_str})"),
+                    )
+                    .enabled(true)
+                    .build(app)
+                    .map_err(|error| {
+                        AppError::msg(format!("Failed to build quick switch item: {error}"))
+                    })?
+                };
+                builder = builder.item(&item);
+            } else {
+                let item = MenuItemBuilder::with_id(
+                    "quick-codex-none",
+                    "⚡ No Codex recommendation available",
+                )
+                .enabled(false)
+                .build(app)
+                .map_err(|error| {
+                    AppError::msg(format!("Failed to build quick switch item: {error}"))
+                })?;
+                builder = builder.item(&item);
+            }
+        }
+
+        if gemini_enabled && !gemini_accounts.is_empty() {
+            if let Some(best) = rec_gemini {
+                let is_active = data.active_gemini_account_id.as_deref() == Some(best.id.as_str());
+                let quota_str = remaining_percent(best)
+                    .map(|r| format!("{r:.0}% left"))
+                    .unwrap_or_else(|| "available".to_string());
+                let label = account_label(best, privacy_mode);
+
+                let item = if is_active {
+                    MenuItemBuilder::with_id(
+                        "quick-gemini-active",
+                        format!("⚡ Best Antigravity: {label} ({quota_str}) (active)"),
+                    )
+                    .enabled(false)
+                    .build(app)
+                    .map_err(|error| {
+                        AppError::msg(format!("Failed to build quick switch item: {error}"))
+                    })?
+                } else {
+                    MenuItemBuilder::with_id(
+                        format!("{QUICK_SWITCH_GEMINI_PREFIX}{}", best.id),
+                        format!("⚡ Switch to Best Antigravity: {label} ({quota_str})"),
+                    )
+                    .enabled(true)
+                    .build(app)
+                    .map_err(|error| {
+                        AppError::msg(format!("Failed to build quick switch item: {error}"))
+                    })?
+                };
+                builder = builder.item(&item);
+            } else {
+                let item = MenuItemBuilder::with_id(
+                    "quick-gemini-none",
+                    "⚡ No Antigravity recommendation available",
+                )
+                .enabled(false)
+                .build(app)
+                .map_err(|error| {
+                    AppError::msg(format!("Failed to build quick switch item: {error}"))
+                })?;
+                builder = builder.item(&item);
+            }
+        }
+    } else {
+        let empty_item = MenuItemBuilder::with_id("no-accounts", "No accounts added")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
+        builder = builder.item(&empty_item);
+    }
+
+    builder = builder.separator();
+
+    // 2. Sectioned accounts by provider
+    if codex_enabled {
+        let header_codex = MenuItemBuilder::with_id("header-codex", "── Codex ──")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
+        builder = builder.item(&header_codex);
+
+        if codex_accounts.is_empty() {
+            let item = MenuItemBuilder::with_id("empty-codex", "   No Codex accounts added")
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
+            builder = builder.item(&item);
+        } else {
+            let sorted_codex =
+                sort_accounts_for_provider(&codex_accounts, data.active_account_id.as_deref());
+            for account in sorted_codex {
+                let is_active = data.active_account_id.as_deref() == Some(account.id.as_str());
+                let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
+                let is_recommended =
+                    !needs_relogin && rec_codex.is_some_and(|item| item.id == account.id);
+                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+
+                let item = MenuItemBuilder::with_id(
+                    format!("{SWITCH_CODEX_ACCOUNT_PREFIX}{}", account.id),
+                    label,
+                )
+                .enabled(!is_active && !needs_relogin)
+                .build(app)
+                .map_err(|error| {
+                    AppError::msg(format!("Failed to build tray account item: {error}"))
+                })?;
                 builder = builder.item(&item);
             }
         }
     }
-    builder
+
+    if codex_enabled && gemini_enabled {
+        builder = builder.separator();
+    }
+
+    if gemini_enabled {
+        let header_gemini = MenuItemBuilder::with_id("header-antigravity", "── Antigravity ──")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
+        builder = builder.item(&header_gemini);
+
+        if gemini_accounts.is_empty() {
+            let item = MenuItemBuilder::with_id("empty-gemini", "   No Antigravity accounts added")
+                .enabled(false)
+                .build(app)
+                .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
+            builder = builder.item(&item);
+        } else {
+            let sorted_gemini = sort_accounts_for_provider(
+                &gemini_accounts,
+                data.active_gemini_account_id.as_deref(),
+            );
+            for account in sorted_gemini {
+                let is_active =
+                    data.active_gemini_account_id.as_deref() == Some(account.id.as_str());
+                let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
+                let is_recommended =
+                    !needs_relogin && rec_gemini.is_some_and(|item| item.id == account.id);
+                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+
+                let item = MenuItemBuilder::with_id(
+                    format!("{SWITCH_GEMINI_ACCOUNT_PREFIX}{}", account.id),
+                    label,
+                )
+                .enabled(!is_active && !needs_relogin)
+                .build(app)
+                .map_err(|error| {
+                    AppError::msg(format!("Failed to build tray account item: {error}"))
+                })?;
+                builder = builder.item(&item);
+            }
+        }
+    }
+
+    let menu = builder
+        .separator()
+        .text("show", "Show account manager")
+        .text("refresh", "Refresh quotas now")
+        .separator()
+        .text("quit", "Quit")
         .build()
-        .map_err(|error| AppError::msg(format!("Failed to build tray menu: {error}")))
+        .map_err(|error| AppError::msg(format!("Failed to build tray menu: {error}")))?;
+    Ok(menu)
 }
-
-pub fn build_initial_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    state: &Arc<SharedState>,
-) -> AppResult<(Menu<R>, String)> {
-    let (view, revision) = {
-        let data = lock_data(state)?;
-        (dashboard_view(&data), data.revision)
-    };
-    let menu = build_view_menu(app, &view)?;
-    let tooltip = view.tooltip.clone();
-    if let Some(queue) = app.try_state::<DashboardRefreshState>()
-        && let Ok(mut queue) = queue.0.lock()
-    {
-        queue.applied = Some(view);
-        queue.latest_revision = Some(revision);
-    }
-    Ok((menu, tooltip))
-}
-
-#[derive(Default)]
-struct DashboardRefreshQueue {
-    pending: Option<DashboardView>,
-    applied: Option<DashboardView>,
-    scheduled: bool,
-    latest_revision: Option<u64>,
-}
-
-impl DashboardRefreshQueue {
-    // Only the first caller dispatches; subsequent updates replace the pending view.
-    fn enqueue(&mut self, view: DashboardView, revision: u64) -> bool {
-        if self.latest_revision.is_some_and(|latest| revision < latest) {
-            return false;
-        }
-        self.latest_revision = Some(revision);
-        if !self.scheduled && self.applied.as_ref() == Some(&view) {
-            return false;
-        }
-        self.pending = Some(view);
-        if self.scheduled {
-            return false;
-        }
-        self.scheduled = true;
-        true
-    }
-
-    fn finish(&mut self, applied: Option<DashboardView>) -> bool {
-        if let Some(applied) = applied {
-            self.applied = Some(applied);
-        }
-        if self.pending.as_ref() == self.applied.as_ref() {
-            self.pending = None;
-        }
-        self.scheduled = self.pending.is_some();
-        self.scheduled
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct DashboardRefreshState(Mutex<DashboardRefreshQueue>);
 
 pub fn tray_tooltip(data: &AppData) -> String {
     let codex_enabled = data
@@ -560,90 +591,46 @@ pub fn tray_tooltip(data: &AppData) -> String {
     }
 }
 
-fn dispatch_dashboard_refresh(app: &tauri::AppHandle) {
-    let dispatch_app = app.clone();
-    let result = app.run_on_main_thread(move || {
-        let Some(queue) = dispatch_app.try_state::<DashboardRefreshState>() else {
-            return;
-        };
-        let view = match queue.0.lock() {
-            Ok(mut queue) => queue.pending.take(),
-            Err(_) => return,
-        };
-        let mut applied = None;
-        if let Some(view) = view {
-            let already_applied = queue
-                .0
-                .lock()
-                .ok()
-                .is_some_and(|queue| queue.applied.as_ref() == Some(&view));
-            if already_applied {
-                applied = Some(view);
-            } else if let Some(tray) = dispatch_app.tray_by_id(TRAY_ID) {
-                match build_view_menu(&dispatch_app, &view) {
-                    Ok(menu) => match tray.set_menu(Some(menu)) {
-                        Ok(()) => match tray.set_tooltip(Some(&view.tooltip)) {
-                            Ok(()) => applied = Some(view),
-                            Err(error) => log::warn!("Could not update tray tooltip: {error}"),
-                        },
-                        Err(error) => log::warn!("Could not update tray menu: {error}"),
-                    },
-                    Err(error) => {
-                        log::warn!("Could not rebuild tray dashboard: {}", error.user_message())
-                    }
-                }
-            }
-        }
-        let again = queue
-            .0
-            .lock()
-            .map(|mut queue| queue.finish(applied))
-            .unwrap_or(false);
-        if again {
-            // run_on_main_thread executes inline when called on the window
-            // thread. Dispatch the continuation from the executor to yield
-            // to input/paint events and avoid recursive native menu rebuilds.
-            tauri::async_runtime::spawn(async move {
-                dispatch_dashboard_refresh(&dispatch_app);
-            });
-        }
-    });
-    if let Err(error) = result {
-        if let Some(queue) = app.try_state::<DashboardRefreshState>()
-            && let Ok(mut queue) = queue.0.lock()
-        {
-            queue.scheduled = false;
-        }
-        log::warn!("Could not schedule tray refresh: {error}");
-    }
-}
-
-fn queue_dashboard_refresh(app: &tauri::AppHandle, view: DashboardView, revision: u64) {
-    let Some(queue) = app.try_state::<DashboardRefreshState>() else {
-        return;
-    };
-    let dispatch = queue
-        .0
-        .lock()
-        .map(|mut queue| queue.enqueue(view, revision))
-        .unwrap_or(false);
-    if dispatch {
-        dispatch_dashboard_refresh(app);
-    }
-}
-
 pub fn refresh_dashboard(state: &Arc<SharedState>) {
+    use std::sync::atomic::Ordering;
     let Some(app) = state.app_handle.get() else {
         return;
     };
-    let (view, revision) = match lock_data(state) {
-        Ok(data) => (dashboard_view(&data), data.revision),
-        Err(error) => {
-            log::warn!("Could not refresh tray dashboard: {}", error.user_message());
-            return;
+    if state.tray_refresh_pending.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    let shared = Arc::clone(state);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let dispatch_state = Arc::clone(&shared);
+        let dispatch_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            dispatch_state
+                .tray_refresh_pending
+                .store(false, Ordering::SeqCst);
+            let data = match lock_data(&dispatch_state) {
+                Ok(data) => data.clone(),
+                Err(_) => return,
+            };
+            match build_menu(&dispatch_app, &data) {
+                Ok(menu) => {
+                    if let Some(tray) = dispatch_app.tray_by_id(TRAY_ID) {
+                        if let Err(error) = tray.set_menu(Some(menu)) {
+                            log::warn!("Could not update tray menu: {error}");
+                        }
+                        let _ = tray.set_tooltip(Some(tray_tooltip(&data)));
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Could not rebuild tray dashboard: {}", error.user_message())
+                }
+            }
+        }) {
+            shared.tray_refresh_pending.store(false, Ordering::SeqCst);
+            log::warn!("Could not schedule tray dashboard: {error}");
         }
-    };
-    queue_dashboard_refresh(app, view, revision);
+    });
 }
 
 fn alert_level(remaining: f64) -> u8 {
@@ -680,62 +667,56 @@ fn alert_body(account: &Account, level: u8, remaining: f64, privacy_mode: bool) 
 }
 
 pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
+    refresh_dashboard(state);
     let Some(app) = state.app_handle.get() else {
         return;
     };
-    let (view, revision, notifications) = {
-        let data = match lock_data(state) {
-            Ok(data) => data,
-            Err(_) => return,
-        };
-        let mut levels = match state.quota_alert_levels.lock() {
-            Ok(levels) => levels,
-            Err(_) => return,
-        };
-        let mut notifications = Vec::new();
-        for account in &data.accounts {
-            let Some(remaining) = remaining_percent(account) else {
-                continue;
-            };
-            let next_level = alert_level(remaining);
-            let previous = levels.insert(account.id.clone(), next_level);
-            let should_notify = match previous {
-                None => next_level > 0,
-                Some(old) => next_level > old || (old > 0 && next_level == 0),
-            };
-            if should_notify {
-                notifications.push((
-                    if next_level == 0 {
-                        "Quota recovered"
-                    } else {
-                        "Quota alert"
-                    },
-                    alert_body(
-                        account,
-                        next_level,
-                        remaining,
-                        data.app_settings.privacy_mode,
-                    ),
-                ));
-            }
-        }
-        let account_ids: HashSet<&str> = data
-            .accounts
-            .iter()
-            .map(|account| account.id.as_str())
-            .collect();
-        levels.retain(|id, _| account_ids.contains(id.as_str()));
-        (dashboard_view(&data), data.revision, notifications)
+    let data = match lock_data(state) {
+        Ok(data) => data,
+        Err(_) => return,
     };
-    queue_dashboard_refresh(app, view, revision);
-    for (title, body) in notifications {
-        if let Err(error) = show_notification(app, title, body) {
+    let mut levels = match state.quota_alert_levels.lock() {
+        Ok(levels) => levels,
+        Err(_) => return,
+    };
+
+    let privacy_mode = data.app_settings.privacy_mode;
+    for account in &data.accounts {
+        let Some(remaining) = remaining_percent(account) else {
+            continue;
+        };
+        let next_level = alert_level(remaining);
+        let previous = levels.insert(account.id.clone(), next_level);
+        let should_notify = match previous {
+            None => next_level > 0,
+            Some(old) => next_level > old || (old > 0 && next_level == 0),
+        };
+        if should_notify
+            && let Err(error) = show_notification(
+                app,
+                if next_level == 0 {
+                    "Quota recovered"
+                } else {
+                    "Quota alert"
+                },
+                alert_body(account, next_level, remaining, privacy_mode),
+            )
+        {
             log::warn!("Could not show quota notification: {error}");
         }
     }
+    levels.retain(|account_id, _| {
+        data.accounts
+            .iter()
+            .any(|account| &account.id == account_id)
+    });
 }
 
-pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
+pub fn notify_account_selected(
+    state: &Arc<SharedState>,
+    account: &Account,
+    restart_warning: Option<&str>,
+) {
     let Some(app) = state.app_handle.get() else {
         return;
     };
@@ -749,10 +730,16 @@ pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
     let _ = show_notification(
         app,
         "Account selected",
-        format!(
-            "{} will be used on the next {client} launch. The running client was not restarted.",
-            account_label(account, privacy_mode)
-        ),
+        match restart_warning {
+            Some(warning) => format!(
+                "{} selected. {client} restart warning: {warning}",
+                account_label(account, privacy_mode)
+            ),
+            None => format!(
+                "{} selected. Configured {client} restart completed.",
+                account_label(account, privacy_mode)
+            ),
+        },
     );
 }
 
@@ -760,90 +747,6 @@ pub fn notify_account_selected(state: &Arc<SharedState>, account: &Account) {
 mod tests {
     use super::*;
     use crate::models::{QuotaInfo, QuotaWindow, TokenHealth};
-
-    #[test]
-    fn dashboard_queue_coalesces_bursts_and_skips_identical_views() {
-        let mut queue = DashboardRefreshQueue::default();
-        let mut data = AppData::default();
-        let first = dashboard_view(&data);
-        data.app_settings.enabled_providers = vec!["codex".to_string()];
-        let latest = dashboard_view(&data);
-        assert!(queue.enqueue(first.clone(), 1));
-        assert!(!queue.enqueue(latest.clone(), 1));
-        assert_eq!(queue.pending.take(), Some(latest.clone()));
-        assert!(!queue.finish(Some(latest.clone())));
-        assert!(!queue.enqueue(latest, 1));
-        assert!(queue.enqueue(first, 1));
-    }
-
-    #[test]
-    fn dashboard_queue_rejects_older_revisions_without_rebuilding_equal_contents() {
-        let mut queue = DashboardRefreshQueue::default();
-        let mut data = AppData::default();
-        let initial = dashboard_view(&data);
-        data.app_settings.enabled_providers = vec!["codex".to_string()];
-        let updated = dashboard_view(&data);
-        assert!(queue.enqueue(updated.clone(), 10));
-        assert!(!queue.enqueue(initial.clone(), 9));
-        assert_eq!(queue.pending.take(), Some(updated.clone()));
-        assert!(!queue.finish(Some(updated.clone())));
-        // A token-only state change advances revision without changing the menu.
-        assert!(!queue.enqueue(updated, 11));
-        assert!(!queue.enqueue(initial.clone(), 10));
-        // A view at the newest revision may still differ from the applied view.
-        assert!(queue.enqueue(initial, 11));
-    }
-
-    #[test]
-    fn dashboard_queue_preserves_changes_arriving_during_render() {
-        let mut queue = DashboardRefreshQueue::default();
-        let mut data = AppData::default();
-        let first = dashboard_view(&data);
-        data.app_settings.enabled_providers = vec!["codex".to_string()];
-        let next = dashboard_view(&data);
-        assert!(queue.enqueue(first.clone(), 1));
-        assert_eq!(queue.pending.take(), Some(first.clone()));
-        assert!(!queue.enqueue(next.clone(), 1));
-        assert!(queue.finish(Some(first)));
-        assert_eq!(queue.pending.take(), Some(next.clone()));
-        assert!(!queue.finish(Some(next)));
-        assert!(!queue.scheduled);
-    }
-
-    #[test]
-    fn dashboard_projection_ignores_credentials_and_refresh_timestamps() {
-        let mut data = AppData::default();
-        data.accounts.push(make_account(
-            "c1",
-            "user@test.com",
-            AccountProvider::Codex,
-            Some(10.0),
-        ));
-        let before = dashboard_view(&data);
-        data.revision += 1;
-        data.accounts[0].tokens.access_token = "new private token".to_string();
-        data.accounts[0].tokens_updated_at = Some(2_000_000_000);
-        data.accounts[0].quota.as_mut().unwrap().fetched_at += 1;
-        assert_eq!(before, dashboard_view(&data));
-        data.app_settings.privacy_mode = true;
-        assert_ne!(before, dashboard_view(&data));
-    }
-
-    #[test]
-    fn dashboard_projection_retains_account_actions_and_relogin_gating() {
-        let mut data = AppData::default();
-        let mut account = make_account("c1", "user@test.com", AccountProvider::Codex, Some(10.0));
-        account.token_health.status = TokenHealthStatus::NeedsRelogin;
-        data.accounts.push(account);
-        let view = dashboard_view(&data);
-        assert!(view.entries.contains(&DashboardEntry::Item {
-            id: "switch-codex-account:c1".to_string(),
-            label: "⚠️ user@test.com (re-login required)".to_string(),
-            enabled: false,
-        }));
-        data.app_settings.hidden_account_ids.push("c1".to_string());
-        assert!(!dashboard_view(&data).entries.iter().any(|entry| matches!(entry, DashboardEntry::Item { id, .. } if id == "switch-codex-account:c1")));
-    }
 
     fn make_account(
         id: &str,
@@ -881,7 +784,7 @@ mod tests {
                     fetched_at: None,
                 },
                 secondary: QuotaWindow::default(),
-                fetched_at: 1000,
+                fetched_at: crate::models::now_ts(),
             }),
             quota_next_refresh_at: None,
             quota_refresh_failures: 0,

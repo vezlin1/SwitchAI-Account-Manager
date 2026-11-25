@@ -3,9 +3,9 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::thread;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -168,8 +168,10 @@ fn decode_credential_blob(bytes: Vec<u8>) -> AppResult<String> {
             &bytes[..]
         };
         let u16_vec: Vec<u16> = slice
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u16::from_le_bytes(*chunk))
             .collect();
         String::from_utf16(&u16_vec).map_err(|error| {
             AppError::msg(format!(
@@ -403,68 +405,86 @@ pub fn restore_antigravity_auth(snapshot: Option<&AntigravityAuthSnapshot>) -> A
     }
 }
 
-pub fn reconcile_antigravity_auth_at_startup(data: &mut AppData) -> AppResult<Option<String>> {
-    if let Some(snapshot) = read_antigravity_auth()?
-        && let Some(next) = reconciled_antigravity_data(data, &snapshot)?
-    {
-        crate::storage::commit_app_data(data, next)?;
+pub(crate) fn antigravity_auth_matches_account(
+    snapshot: &AntigravityAuthSnapshot,
+    account: &Account,
+) -> bool {
+    if account.provider != AccountProvider::Gemini {
+        return false;
     }
-    Ok(None)
+    let email = crate::token_utils::extract_email(&snapshot.tokens.id_token);
+    if let Some((external, saved)) = email.as_deref().zip(account.email.as_deref()) {
+        return external.trim().eq_ignore_ascii_case(saved.trim());
+    }
+    (!snapshot.tokens.refresh_token.is_empty()
+        && account.tokens.refresh_token == snapshot.tokens.refresh_token)
+        || (!snapshot.tokens.access_token.is_empty()
+            && account.tokens.access_token == snapshot.tokens.access_token)
 }
 
-fn reconciled_antigravity_data(
+fn matching_antigravity_account_id(
     data: &AppData,
-    snapshot: &AntigravityAuthSnapshot,
-) -> AppResult<Option<AppData>> {
-    let snapshot_email = crate::token_utils::extract_email(&snapshot.tokens.id_token);
-    let matching_id = data
-        .accounts
-        .iter()
-        .find(|account| {
-            account.provider == AccountProvider::Gemini
-                && (((!snapshot.tokens.refresh_token.is_empty()
-                    && account.tokens.refresh_token == snapshot.tokens.refresh_token)
-                    || (!snapshot.tokens.access_token.is_empty()
-                        && account.tokens.access_token == snapshot.tokens.access_token))
-                    || (snapshot_email.is_some()
-                        && account
-                            .email
-                            .as_deref()
-                            .zip(snapshot_email.as_deref())
-                            .is_some_and(|(l, r)| l.trim().eq_ignore_ascii_case(r.trim()))))
-        })
-        .map(|account| account.id.clone());
+    snapshot: Option<&AntigravityAuthSnapshot>,
+) -> Option<String> {
+    snapshot.and_then(|auth| {
+        data.accounts
+            .iter()
+            .find(|account| antigravity_auth_matches_account(auth, account))
+            .map(|account| account.id.clone())
+    })
+}
 
-    let Some(matching_id) = matching_id else {
-        return Ok(data.active_gemini_account_id.as_ref().map(|_| {
-            let mut next = data.clone();
-            next.active_gemini_account_id = None;
-            next
-        }));
-    };
+pub(crate) fn antigravity_auth_unchanged(
+    before: Option<&AntigravityAuthSnapshot>,
+    current: Option<&AntigravityAuthSnapshot>,
+    account: &Account,
+) -> bool {
+    before.is_some_and(|auth| antigravity_auth_matches_account(auth, account)) && before == current
+}
 
+pub(crate) fn reconcile_antigravity_auth_with_snapshot(
+    data: &mut AppData,
+    snapshot: Option<&AntigravityAuthSnapshot>,
+) -> AppResult<bool> {
+    let matching_id = matching_antigravity_account_id(data, snapshot);
     let mut next = data.clone();
-    let mut changed = next.active_gemini_account_id.as_deref() != Some(matching_id.as_str());
-    let account = next
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == matching_id)
-        .ok_or_else(|| AppError::msg("Matched Antigravity account disappeared"))?;
-    let mut reconciled_tokens = snapshot.tokens.clone();
-    if reconciled_tokens.id_token.is_empty() {
-        reconciled_tokens.id_token = account.tokens.id_token.clone();
+    let mut changed = next.active_gemini_account_id != matching_id;
+    next.active_gemini_account_id = matching_id.clone();
+    if let Some((auth, id)) = snapshot.zip(matching_id) {
+        let account = next
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .ok_or_else(|| AppError::msg("Matched Antigravity account disappeared"))?;
+        // Select the externally active account even when our saved credentials are newer.
+        let not_older = auth.expires_at.unwrap_or(0) >= account.token_expires_at.unwrap_or(0);
+        if not_older {
+            let mut tokens = auth.tokens.clone();
+            if tokens.id_token.is_empty() {
+                tokens.id_token = account.tokens.id_token.clone();
+            }
+            if account.tokens != tokens {
+                account.tokens = tokens;
+                account.tokens_updated_at = Some(crate::models::now_ts());
+                changed = true;
+            }
+            if auth.expires_at.is_some() && account.token_expires_at != auth.expires_at {
+                account.token_expires_at = auth.expires_at;
+                changed = true;
+            }
+        }
     }
-    if account.tokens != reconciled_tokens {
-        account.tokens = reconciled_tokens;
-        account.tokens_updated_at = Some(crate::models::now_ts());
-        changed = true;
+    if changed {
+        crate::storage::commit_app_data(data, next)?;
     }
-    if snapshot.expires_at.is_some() && account.token_expires_at != snapshot.expires_at {
-        account.token_expires_at = snapshot.expires_at;
-        changed = true;
-    }
-    next.active_gemini_account_id = Some(matching_id);
-    Ok(changed.then_some(next))
+    Ok(changed)
+}
+
+pub fn reconcile_antigravity_auth_at_startup(data: &mut AppData) -> AppResult<Option<String>> {
+    let snapshot = read_antigravity_auth()?;
+    reconcile_antigravity_auth_with_snapshot(data, snapshot.as_ref())?;
+    Ok((snapshot.is_some() && data.active_gemini_account_id.is_none()).then(||
+        "Antigravity is signed in with an account not yet managed here. Open the Gemini tab and choose Import current session.".to_string()))
 }
 
 #[cfg(target_os = "windows")]
@@ -478,82 +498,7 @@ const ANTIGRAVITY_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "windows")]
 const ANTIGRAVITY_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Default)]
-struct CachedPath {
-    value: Mutex<Option<(Instant, Option<PathBuf>)>>,
-    scanning: Mutex<()>,
-}
-
-impl CachedPath {
-    fn get_or_scan(&self, discover: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
-        self.get_or_scan_with_clock(Instant::now, discover)
-    }
-
-    fn get_or_scan_with_clock(
-        &self,
-        now: impl Fn() -> Instant,
-        discover: impl FnOnce() -> Option<PathBuf>,
-    ) -> Option<PathBuf> {
-        let cached = self.value.lock().ok().and_then(|value| value.clone());
-        if let Some((checked, path)) = &cached {
-            let ttl = if path.is_some() {
-                Duration::from_secs(300)
-            } else {
-                Duration::from_secs(30)
-            };
-            if now().saturating_duration_since(*checked) < ttl {
-                return path.clone();
-            }
-        }
-        // A slow filesystem scan is single-flight. Concurrent callers receive
-        // the previous result rather than queue another PATH/directory scan.
-        let Ok(_scan) = self.scanning.try_lock() else {
-            return cached.and_then(|(_, path)| path);
-        };
-        // Recheck after acquiring the scan gate, since another caller may have
-        // refreshed the cache between the first read and this acquisition.
-        if let Ok(value) = self.value.lock()
-            && let Some((checked, path)) = value.as_ref()
-        {
-            let ttl = if path.is_some() {
-                Duration::from_secs(300)
-            } else {
-                Duration::from_secs(30)
-            };
-            if now().saturating_duration_since(*checked) < ttl {
-                return path.clone();
-            }
-        }
-        let path = discover();
-        if let Ok(mut value) = self.value.lock() {
-            *value = Some((now(), path.clone()));
-        }
-        path
-    }
-}
-
 pub fn antigravity_executable_path() -> Option<PathBuf> {
-    static CACHE: OnceLock<CachedPath> = OnceLock::new();
-    CACHE
-        .get_or_init(CachedPath::default)
-        .get_or_scan(discover_antigravity_executable_path)
-}
-
-pub fn antigravity_ide_executable_path() -> Option<PathBuf> {
-    static CACHE: OnceLock<CachedPath> = OnceLock::new();
-    CACHE
-        .get_or_init(CachedPath::default)
-        .get_or_scan(discover_antigravity_ide_executable_path)
-}
-
-pub fn antigravity_cli_path() -> Option<PathBuf> {
-    static CACHE: OnceLock<CachedPath> = OnceLock::new();
-    CACHE
-        .get_or_init(CachedPath::default)
-        .get_or_scan(discover_antigravity_cli_path)
-}
-
-fn discover_antigravity_executable_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let mut candidates = Vec::new();
@@ -594,7 +539,7 @@ fn discover_antigravity_executable_path() -> Option<PathBuf> {
     None
 }
 
-fn discover_antigravity_ide_executable_path() -> Option<PathBuf> {
+pub fn antigravity_ide_executable_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let mut candidates = Vec::new();
@@ -635,7 +580,7 @@ fn discover_antigravity_ide_executable_path() -> Option<PathBuf> {
     None
 }
 
-fn discover_antigravity_cli_path() -> Option<PathBuf> {
+pub fn antigravity_cli_path() -> Option<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         let state_dir = home.join(".gemini").join("antigravity");
         if state_dir.exists() {
@@ -788,13 +733,10 @@ pub fn restart_antigravity_process() -> AppResult<()> {
     }
 
     // Try graceful termination first so Electron/VS Code flushes workspaces safely
-    let _ = crate::process::command_status_with_timeout(
-        Command::new("taskkill")
-            .args(["/IM", ANTIGRAVITY_PROCESS_IMAGE])
-            .creation_flags(CREATE_NO_WINDOW),
-        Duration::from_secs(5),
-        "Failed to stop client process",
-    );
+    let _ = Command::new("taskkill")
+        .args(["/IM", ANTIGRAVITY_PROCESS_IMAGE])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
 
     let graceful_deadline = Instant::now() + Duration::from_millis(1500);
     let mut exited = false;
@@ -807,13 +749,14 @@ pub fn restart_antigravity_process() -> AppResult<()> {
     }
 
     if !exited && is_antigravity_running()? {
-        let status = crate::process::command_status_with_timeout(
-            Command::new("taskkill")
-                .args(["/IM", ANTIGRAVITY_PROCESS_IMAGE, "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW),
-            Duration::from_secs(5),
-            "Failed to stop client process",
-        )?;
+        let status = Command::new("taskkill")
+            .args(["/IM", ANTIGRAVITY_PROCESS_IMAGE, "/F", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|source| AppError::Io {
+                context: "Failed to close Antigravity",
+                source,
+            })?;
         if !status.success() {
             return Err(AppError::msg(format!(
                 "Antigravity could not be closed ({status})"
@@ -840,11 +783,9 @@ pub fn restart_antigravity_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let _ = crate::process::command_status_with_timeout(
-        Command::new("osascript").args(["-e", "tell application \"Antigravity\" to quit"]),
-        Duration::from_secs(5),
-        "Failed to stop client process",
-    );
+    let _ = Command::new("osascript")
+        .args(["-e", "tell application \"Antigravity\" to quit"])
+        .output();
 
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut exited = false;
@@ -856,11 +797,7 @@ pub fn restart_antigravity_process() -> AppResult<()> {
         thread::sleep(Duration::from_millis(100));
     }
     if !exited && is_antigravity_running()? {
-        let _ = crate::process::command_status_with_timeout(
-            Command::new("pkill").arg("-x").arg("Antigravity"),
-            Duration::from_secs(5),
-            "Failed to stop client process",
-        );
+        let _ = Command::new("pkill").arg("-x").arg("Antigravity").output();
         wait_for_antigravity_to_exit()?;
     }
 
@@ -942,13 +879,10 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let _ = crate::process::command_status_with_timeout(
-        Command::new("taskkill")
-            .args(["/IM", ANTIGRAVITY_IDE_PROCESS_IMAGE])
-            .creation_flags(CREATE_NO_WINDOW),
-        Duration::from_secs(5),
-        "Failed to stop client process",
-    );
+    let _ = Command::new("taskkill")
+        .args(["/IM", ANTIGRAVITY_IDE_PROCESS_IMAGE])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
 
     let graceful_deadline = Instant::now() + Duration::from_millis(1500);
     let mut exited = false;
@@ -961,13 +895,14 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
     }
 
     if !exited && is_antigravity_ide_running()? {
-        let status = crate::process::command_status_with_timeout(
-            Command::new("taskkill")
-                .args(["/IM", ANTIGRAVITY_IDE_PROCESS_IMAGE, "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW),
-            Duration::from_secs(5),
-            "Failed to stop client process",
-        )?;
+        let status = Command::new("taskkill")
+            .args(["/IM", ANTIGRAVITY_IDE_PROCESS_IMAGE, "/F", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|source| AppError::Io {
+                context: "Failed to close Antigravity IDE",
+                source,
+            })?;
         if !status.success() {
             return Err(AppError::msg(format!(
                 "Antigravity IDE could not be closed ({status})"
@@ -994,11 +929,9 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let _ = crate::process::command_status_with_timeout(
-        Command::new("osascript").args(["-e", "tell application \"Antigravity IDE\" to quit"]),
-        Duration::from_secs(5),
-        "Failed to stop client process",
-    );
+    let _ = Command::new("osascript")
+        .args(["-e", "tell application \"Antigravity IDE\" to quit"])
+        .output();
 
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut exited = false;
@@ -1010,11 +943,10 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
         thread::sleep(Duration::from_millis(100));
     }
     if !exited && is_antigravity_ide_running()? {
-        let _ = crate::process::command_status_with_timeout(
-            Command::new("pkill").arg("-x").arg("Antigravity IDE"),
-            Duration::from_secs(5),
-            "Failed to stop client process",
-        );
+        let _ = Command::new("pkill")
+            .arg("-x")
+            .arg("Antigravity IDE")
+            .output();
         wait_for_antigravity_ide_to_exit()?;
     }
 
@@ -1051,70 +983,77 @@ pub fn restart_antigravity_ide_process() -> AppResult<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn installation_cache_avoids_repeated_scans_and_rechecks_missing_paths() {
-        let cache = CachedPath::default();
-        assert_eq!(cache.get_or_scan(|| None), None);
-        assert_eq!(
-            cache.get_or_scan(|| panic!("negative cache should be reused")),
-            None
-        );
-        let expired_at = Instant::now() + Duration::from_secs(31);
-        let path = PathBuf::from("installed-client");
-        assert_eq!(
-            cache.get_or_scan_with_clock(|| expired_at, || Some(path.clone())),
-            Some(path.clone())
-        );
-        assert_eq!(
-            cache.get_or_scan_with_clock(
-                || expired_at,
-                || panic!("positive cache should be reused")
-            ),
-            Some(path)
-        );
+    fn account_for_auth(id: &str, auth: &AntigravityAuthSnapshot) -> Account {
+        Account {
+            id: id.to_string(),
+            provider: AccountProvider::Gemini,
+            email: None,
+            account_id: None,
+            provider_project_id: None,
+            subscription_expires_at: None,
+            subscription_plan: None,
+            subscription_detected_at: None,
+            subscription_checked_at: None,
+            subscription_next_check_at: None,
+            subscription_endpoint_hint: None,
+            tokens: auth.tokens.clone(),
+            token_expires_at: auth.expires_at,
+            tokens_updated_at: None,
+            token_health: crate::models::TokenHealth::healthy(),
+            quota: None,
+            quota_next_refresh_at: None,
+            quota_refresh_failures: 0,
+            created_at: 1,
+            last_login_at: 1,
+            last_error: None,
+            subscription_error: None,
+        }
     }
 
     #[test]
-    fn installation_cache_serves_previous_result_while_a_scan_is_running() {
-        let cache = CachedPath::default();
-        let path = PathBuf::from("installed-client");
-        let checked_at = Instant::now();
-        *cache.value.lock().unwrap() = Some((checked_at, Some(path.clone())));
-        let _scan = cache.scanning.lock().unwrap();
-        assert_eq!(
-            cache.get_or_scan_with_clock(
-                || checked_at + Duration::from_secs(301),
-                || panic!("duplicate scan"),
-            ),
-            Some(path)
-        );
-    }
-
-    #[test]
-    fn unknown_antigravity_session_clears_selection_without_a_warning() {
+    fn external_switch_and_logout_are_detected_without_writing_credentials() {
+        let first =
+            parse_antigravity_payload(r#"{"token":{"access_token":"a","refresh_token":"ra"}}"#)
+                .unwrap();
+        let second =
+            parse_antigravity_payload(r#"{"token":{"access_token":"b","refresh_token":"rb"}}"#)
+                .unwrap();
         let data = AppData {
-            active_gemini_account_id: Some("previous-session".to_string()),
+            accounts: vec![
+                account_for_auth("one", &first),
+                account_for_auth("two", &second),
+            ],
+            active_gemini_account_id: Some("one".to_string()),
             ..AppData::default()
         };
-        let snapshot = AntigravityAuthSnapshot {
-            tokens: Tokens {
-                access_token: "external-session".to_string(),
-                ..Tokens::default()
-            },
-            expires_at: Some(2_000_000_000),
-            raw_credential_blob: None,
-        };
-        let reconciled = reconciled_antigravity_data(&data, &snapshot)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reconciled.active_gemini_account_id, None);
-        assert!(reconciled.accounts.is_empty());
-        // Reconciliation remains stable after clearing the old selection.
-        assert!(
-            reconciled_antigravity_data(&reconciled, &snapshot)
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            matching_antigravity_account_id(&data, Some(&second)).as_deref(),
+            Some("two")
         );
+        assert_eq!(matching_antigravity_account_id(&data, None), None);
+        assert!(antigravity_auth_unchanged(
+            Some(&first),
+            Some(&first),
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            Some(&second),
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            None,
+            &data.accounts[0]
+        ));
+        assert!(!antigravity_auth_unchanged(None, None, &data.accounts[0]));
+        let mut rotated = first.clone();
+        rotated.tokens.access_token = "new-access".to_string();
+        assert!(!antigravity_auth_unchanged(
+            Some(&first),
+            Some(&rotated),
+            &data.accounts[0]
+        ));
     }
 
     #[test]

@@ -13,13 +13,6 @@ fn default_limits_base_url() -> String {
     "https://chatgpt.com/backend-api".to_string()
 }
 
-fn legacy_quota_history_present<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<bool, D::Error> {
-    serde::de::IgnoredAny::deserialize(deserializer)?;
-    Ok(true)
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistedAccountProvider {
@@ -95,13 +88,6 @@ pub struct PersistedAccount {
     #[serde(default)]
     token_health: PersistedTokenHealth,
     quota: Option<PersistedQuotaInfo>,
-    #[serde(
-        default,
-        rename = "quotaHistory",
-        skip_serializing,
-        deserialize_with = "legacy_quota_history_present"
-    )]
-    pub had_legacy_quota_history: bool,
     #[serde(default)]
     pub quota_next_refresh_at: Option<i64>,
     #[serde(default)]
@@ -140,6 +126,10 @@ struct PersistedQuotaInfo {
     fetched_at: i64,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
@@ -162,8 +152,13 @@ struct PersistedAppSettings {
     gemini_switch_targets: Vec<String>,
     #[serde(default = "default_enabled_providers")]
     enabled_providers: Vec<String>,
+    #[serde(default = "default_true")]
+    auto_check_updates: bool,
     #[serde(default)]
-    privacy_mode: bool,
+    ignored_update_version: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    privacy_mode: Option<bool>,
 }
 
 fn default_enabled_providers() -> Vec<String> {
@@ -181,7 +176,9 @@ fn default_gemini_switch_targets() -> Vec<String> {
 
 impl Default for PersistedAppSettings {
     fn default() -> Self {
-        Self::from(&AppSettings::default())
+        let mut settings = Self::from(&AppSettings::default());
+        settings.privacy_mode = None;
+        settings
     }
 }
 
@@ -282,7 +279,9 @@ impl From<&AppSettings> for PersistedAppSettings {
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
-            privacy_mode: settings.privacy_mode,
+            auto_check_updates: settings.auto_check_updates,
+            ignored_update_version: settings.ignored_update_version.clone(),
+            privacy_mode: (!settings.privacy_migration_pending).then_some(settings.privacy_mode),
         }
     }
 }
@@ -299,7 +298,10 @@ impl From<PersistedAppSettings> for AppSettings {
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
-            privacy_mode: settings.privacy_mode,
+            auto_check_updates: settings.auto_check_updates,
+            ignored_update_version: settings.ignored_update_version,
+            privacy_mode: settings.privacy_mode.unwrap_or(true),
+            privacy_migration_pending: settings.privacy_mode.is_none(),
         }
     }
 }
@@ -371,7 +373,6 @@ impl From<&Account> for PersistedAccount {
             tokens_updated_at: account.tokens_updated_at,
             token_health: PersistedTokenHealth::from(&account.token_health),
             quota: account.quota.as_ref().map(PersistedQuotaInfo::from),
-            had_legacy_quota_history: false,
             quota_next_refresh_at: account.quota_next_refresh_at,
             quota_refresh_failures: account.quota_refresh_failures,
             created_at: account.created_at,
@@ -596,9 +597,7 @@ mod tests {
         let json = json!({
             "autoRefreshEnabled": false,
             "autoRefreshIntervalMinutes": 30,
-            "closeToTray": false,
-            "autoCheckUpdates": true,
-            "ignoredUpdateVersion": "2.0.0"
+            "closeToTray": false
         });
 
         let persisted: PersistedAppSettings =
@@ -608,11 +607,44 @@ mod tests {
         assert!(!settings.auto_refresh_enabled);
         assert_eq!(settings.auto_refresh_interval_minutes, 30);
         assert!(!settings.close_to_tray);
-        assert!(!settings.privacy_mode);
-
-        let saved = serde_json::to_value(PersistedAppSettings::from(&settings))
-            .expect("serialize app settings");
-        assert!(saved.get("autoCheckUpdates").is_none());
-        assert!(saved.get("ignoredUpdateVersion").is_none());
+        assert!(settings.auto_check_updates);
+        assert_eq!(settings.ignored_update_version, None);
+        assert!(settings.privacy_mode);
+        assert!(settings.privacy_migration_pending);
+    }
+    #[test]
+    fn privacy_migration_preserves_missing_and_explicit_preferences() {
+        for legacy in [false, true] {
+            let persisted: PersistedAppSettings = serde_json::from_value(json!({
+                "autoRefreshEnabled": true, "autoRefreshIntervalMinutes": 15, "closeToTray": true
+            }))
+            .unwrap();
+            let mut settings = AppSettings::from(persisted);
+            assert!(settings.privacy_mode); // Tray stays masked until migration.
+            let before = serde_json::to_value(PersistedAppSettings::from(&settings)).unwrap();
+            assert!(before.get("privacyMode").is_none()); // Unrelated writes cannot finalize it.
+            assert!(settings.migrate_privacy(legacy));
+            assert_eq!(settings.privacy_mode, legacy);
+            let restored = AppSettings::from(PersistedAppSettings::from(&settings));
+            assert!(!restored.privacy_migration_pending);
+            assert_eq!(restored.privacy_mode, legacy);
+            assert!(!settings.migrate_privacy(!legacy));
+            assert_eq!(settings.privacy_mode, legacy);
+        }
+        for explicit in [false, true] {
+            let persisted: PersistedAppSettings = serde_json::from_value(json!({
+                "autoRefreshEnabled": true, "autoRefreshIntervalMinutes": 15,
+                "closeToTray": true, "privacyMode": explicit
+            }))
+            .unwrap();
+            let mut settings = AppSettings::from(persisted);
+            assert!(!settings.migrate_privacy(!explicit));
+            assert_eq!(settings.privacy_mode, explicit);
+        }
+        let fresh = AppSettings::default();
+        assert!(!fresh.privacy_mode);
+        assert!(!fresh.privacy_migration_pending);
+        let legacy = AppData::from(serde_json::from_value::<PersistedAppData>(json!({})).unwrap());
+        assert!(legacy.app_settings.privacy_migration_pending);
     }
 }

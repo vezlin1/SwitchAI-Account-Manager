@@ -149,7 +149,7 @@ pub struct Account {
     pub subscription_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AppSettings {
     pub auto_refresh_enabled: bool,
     pub auto_refresh_interval_minutes: u64,
@@ -160,7 +160,21 @@ pub struct AppSettings {
     pub last_active_provider: Option<String>,
     pub gemini_switch_targets: Vec<String>,
     pub enabled_providers: Vec<String>,
+    pub auto_check_updates: bool,
+    pub ignored_update_version: Option<String>,
     pub privacy_mode: bool,
+    pub privacy_migration_pending: bool,
+}
+
+impl AppSettings {
+    pub(crate) fn migrate_privacy(&mut self, legacy_enabled: bool) -> bool {
+        if !self.privacy_migration_pending {
+            return false;
+        }
+        self.privacy_mode = legacy_enabled;
+        self.privacy_migration_pending = false;
+        true
+    }
 }
 
 impl Default for AppSettings {
@@ -172,7 +186,7 @@ impl Default for AppSettings {
             detected_targets
         };
         Self {
-            auto_refresh_enabled: true,
+            auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 15,
             close_to_tray: true,
             skip_unsupported_region_refresh: true,
@@ -181,7 +195,10 @@ impl Default for AppSettings {
             last_active_provider: Some("codex".to_string()),
             gemini_switch_targets,
             enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
+            auto_check_updates: true,
+            ignored_update_version: None,
             privacy_mode: false,
+            privacy_migration_pending: false,
         }
     }
 }
@@ -285,6 +302,8 @@ impl AppSettings {
 pub struct AutoRefreshStatus {
     pub enabled: bool,
     pub in_flight: bool,
+    pub refreshing_account_ids: Vec<String>,
+    pub progress: Vec<RefreshProgress>,
     pub last_started_at: Option<i64>,
     pub last_finished_at: Option<i64>,
     pub last_error: Option<String>,
@@ -299,6 +318,8 @@ impl AutoRefreshStatus {
         Self {
             enabled: settings.auto_refresh_enabled,
             in_flight: false,
+            refreshing_account_ids: Vec::new(),
+            progress: Vec::new(),
             last_started_at: None,
             last_finished_at: None,
             last_error: None,
@@ -318,6 +339,15 @@ impl Default for AutoRefreshStatus {
     fn default() -> Self {
         Self::from_settings(&AppSettings::default())
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshProgress {
+    pub provider: String,
+    pub total: u32,
+    pub completed: u32,
+    pub failed: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -395,6 +425,31 @@ impl AppData {
             self.active_gemini_account_id = None;
         }
         self
+    }
+
+    pub fn active_account_id_for_provider(&self, provider: AccountProvider) -> Option<&str> {
+        match provider {
+            AccountProvider::Codex => self.active_account_id.as_deref(),
+            AccountProvider::Gemini => self.active_gemini_account_id.as_deref(),
+        }
+    }
+
+    pub fn set_active_account_id_for_provider(
+        &mut self,
+        provider: AccountProvider,
+        account_id: Option<String>,
+    ) {
+        match provider {
+            AccountProvider::Codex => self.active_account_id = account_id,
+            AccountProvider::Gemini => self.active_gemini_account_id = account_id,
+        }
+    }
+
+    pub fn active_account_for_provider(&self, provider: AccountProvider) -> Option<&Account> {
+        let active_id = self.active_account_id_for_provider(provider)?;
+        self.accounts
+            .iter()
+            .find(|account| account.id == active_id && account.provider == provider)
     }
 }
 

@@ -1,19 +1,19 @@
-import { Suspense, lazy, memo, useCallback, useMemo, useRef, useState } from 'react'
-import type { Account, AccountProvider, AppData } from '../../types'
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react'
+import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
 import { useOAuthLogin } from '../../hooks/useOAuthLogin'
-import { ErrorBanner } from '../common/ErrorBanner'
+import { ErrorBanner } from '../common'
 import { AccountsTable } from './AccountsTable'
 import { AccountsToolbar } from './AccountsToolbar'
 import { GeminiSwitchTargetsBar } from './GeminiSwitchTargetsBar'
-import { recommendedAccount } from '../../utils/accountInsights'
-import { reorderFilteredAccounts } from '../../utils/accountReorder'
 import {
+  recommendedAccount,
+  reorderFilteredAccounts,
   filterAccountsBySubscription,
   subscriptionFiltersForAccounts,
   type SubscriptionFilterId
-} from '../../utils/subscriptionFilters'
+} from '../../utils'
 import { usePrivacy } from '../../context/usePrivacy'
 
 const ConfirmDialog = lazy(() =>
@@ -30,22 +30,20 @@ type AccountsTabProps = {
   saveAppSettings: (settings: AppData['appSettings']) => Promise<AppData | null>
   reload: () => Promise<void>
   reloadAccountOrder: (shouldApply: () => boolean) => Promise<void>
-  autoRefreshing: boolean
-  lastRefreshAt: number | null
+  autoRefreshStatus: AutoRefreshStatus | null
   autoRefreshError?: string | null
   onClearAutoRefreshError?: () => void
   activeProvider?: AccountProvider
 }
 
-export const AccountsTab = memo(function AccountsTab({
+export function AccountsTab({
   data,
   setData,
   getData,
   saveAppSettings,
   reload,
   reloadAccountOrder,
-  autoRefreshing,
-  lastRefreshAt,
+  autoRefreshStatus,
   autoRefreshError,
   onClearAutoRefreshError,
   activeProvider = 'codex'
@@ -64,30 +62,31 @@ export const AccountsTab = memo(function AccountsTab({
   const detailsReturnFocusRef = useRef<HTMLElement | null>(null)
   const reorderVersionRef = useRef(0)
   const pendingSwitchResolveRef = useRef<((confirmed: boolean) => void) | null>(null)
-  const confirmSwitch = useCallback(async (account: Account) => {
-    setPendingSwitch(account)
-    return new Promise<boolean>((resolve) => {
-      pendingSwitchResolveRef.current = resolve
-    })
-  }, [])
   const actions = useAccountsActions({
     setData,
     getData,
     persistAppSettings: saveAppSettings,
-    confirmSwitch
+    confirmSwitch: async (account) => {
+      setPendingSwitch(account)
+      return new Promise<boolean>((resolve) => {
+        pendingSwitchResolveRef.current = resolve
+      })
+    }
   })
+  const clearAccountError = actions.clearError
+  const accountBusyKeys = useMemo(() => {
+    const keys = new Set(actions.busyKeys)
+    for (const id of autoRefreshStatus?.refreshingAccountIds ?? []) keys.add(`account:${id}:quota`)
+    return keys
+  }, [actions.busyKeys, autoRefreshStatus?.refreshingAccountIds])
   const oauth = useOAuthLogin({ onCompleted: reload })
-  const { switchAccount, saveAppSettings: saveSettings, saveOrder, importSession } = actions
-  const { startLogin } = oauth
   const { privacyMode, maskEmail } = usePrivacy()
   const currentProvider = activeProvider ?? 'codex'
-  const importingSession = actions.busyKeys.has(`import:${currentProvider}`)
   const searchTerm = searchTerms[currentProvider] ?? ''
-  const setSearchTerm = useCallback((val: string) =>
-    setSearchTerms((prev) => ({ ...prev, [currentProvider]: val })), [currentProvider])
+  const setSearchTerm = (val: string) => setSearchTerms((prev) => ({ ...prev, [currentProvider]: val }))
   const subscriptionFilter = subscriptionFilters[currentProvider] ?? 'all'
-  const setSubscriptionFilter = useCallback((filter: SubscriptionFilterId) =>
-    setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter })), [currentProvider])
+  const setSubscriptionFilter = (filter: SubscriptionFilterId) =>
+    setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter }))
 
   const accounts = useMemo(
     () => data.accounts.filter((account) => (account.provider ?? 'codex') === currentProvider),
@@ -153,7 +152,7 @@ export const AccountsTab = memo(function AccountsTab({
     setDetailsAccountId(account.id)
   }, [])
 
-  const toggleAccountInAll = useCallback((accountId: string) => {
+  const toggleAccountInAll = (accountId: string) => {
     const next = setData((latest) => {
       const hidden = new Set(latest.appSettings.hiddenAccountIds)
       if (hidden.has(accountId)) hidden.delete(accountId)
@@ -167,28 +166,29 @@ export const AccountsTab = memo(function AccountsTab({
         }
       }
     })
-    if (next) void saveSettings(next.appSettings)
-  }, [setData, saveSettings])
+    if (next) void actions.saveAppSettings(next.appSettings)
+  }
 
   const handleSwitch = useCallback(
     (account: Account) => {
-      void switchAccount(account)
+      void actions.switchAccount(account)
     },
-    [switchAccount]
+    [actions]
   )
 
   const handleRelogin = useCallback(
     (account: Account) => {
-      void startLogin(account, account.provider ?? currentProvider)
+      void oauth.startLogin(account, account.provider ?? currentProvider)
     },
-    [startLogin, currentProvider]
+    [oauth, currentProvider]
   )
 
   const handleRemove = useCallback(
     (account: Account) => {
+      clearAccountError(account.provider ?? currentProvider)
       setPendingDelete(account)
     },
-    []
+    [clearAccountError, currentProvider]
   )
 
   const closeDetails = () => {
@@ -196,7 +196,7 @@ export const AccountsTab = memo(function AccountsTab({
     window.requestAnimationFrame(() => detailsReturnFocusRef.current?.focus())
   }
 
-  const reorderAccounts = useCallback(async (activeId: string, overId: string) => {
+  const reorderAccounts = async (activeId: string, overId: string) => {
     if (searchTerm.trim()) return
     const current = getData()
     if (!current) return
@@ -213,44 +213,18 @@ export const AccountsTab = memo(function AccountsTab({
     }))
 
     try {
-      await saveOrder(nextAccounts, currentProvider)
+      await actions.saveOrder(nextAccounts, currentProvider)
     } catch {
       await reloadAccountOrder(() => reorderVersionRef.current === reorderVersion)
     }
-  }, [searchTerm, getData, filteredAccounts, setData, saveOrder, currentProvider, reloadAccountOrder])
-
-  const handleAddAccount = useCallback(() => {
-    void startLogin(undefined, currentProvider)
-  }, [startLogin, currentProvider])
-  const handleImportSession = useCallback(() => {
-    void importSession(currentProvider)
-  }, [currentProvider, importSession])
-  const handleClearFilter = useCallback(() => {
-    setSubscriptionFilter('all')
-    setSearchTerm('')
-  }, [setSubscriptionFilter, setSearchTerm])
-  const handleShowHiddenAccounts = useCallback(() => {
-    const currentProviderAccountIds = new Set(accounts.map((account) => account.id))
-    const next = setData((latest) => ({
-      ...latest,
-      appSettings: {
-        ...latest.appSettings,
-        hiddenAccountIds: latest.appSettings.hiddenAccountIds.filter(
-          (id) => !currentProviderAccountIds.has(id)
-        )
-      }
-    }))
-    if (next) void saveSettings(next.appSettings)
-  }, [accounts, setData, saveSettings])
-  const saveGeminiSettings = useCallback((settings: AppData['appSettings']) =>
-    saveSettings(settings, 'gemini'), [saveSettings])
+  }
 
   const specificCategoryCount = filters.filter((filter) => filter.id !== 'all' && filter.id !== 'hidden').length
   const totalHiddenCount = filters.find((f) => f.id === 'hidden')?.count ?? 0
   const showSubscriptionFilters = specificCategoryCount > 1 || totalHiddenCount > 0
 
   return (
-    <div className="h-full min-w-0 flex flex-col gap-4">
+    <div className="page-fade h-full min-w-0 flex flex-col gap-4">
       {pendingDelete && (
         <Suspense fallback={null}>
           <ConfirmDialog
@@ -263,10 +237,10 @@ export const AccountsTab = memo(function AccountsTab({
             confirmLabel="Delete"
             variant="danger"
             busy={actions.busyKeys.has(`delete:${pendingDelete.id}`)}
+            error={actions.getError(pendingDelete.provider ?? 'codex')}
             onCancel={() => setPendingDelete(null)}
             onConfirm={async () => {
-              await actions.removeAccount(pendingDelete.id)
-              setPendingDelete(null)
+              if (await actions.removeAccount(pendingDelete.id)) setPendingDelete(null)
             }}
           />
         </Suspense>
@@ -316,9 +290,7 @@ export const AccountsTab = memo(function AccountsTab({
               account={detailsAccount}
               isActive={activeAccountId === detailsAccount.id}
               isRecommended={recommendation?.id === detailsAccount.id}
-              busyKeys={actions.busyKeys}
-              refreshingAll={actions.refreshingAll}
-              autoRefreshing={autoRefreshing}
+              busyKeys={accountBusyKeys}
               onBack={closeDetails}
               onSwitch={handleSwitch}
               onRelogin={handleRelogin}
@@ -332,24 +304,31 @@ export const AccountsTab = memo(function AccountsTab({
           <AccountsToolbar
             accountCount={accounts.length}
             provider={currentProvider}
-            refreshingAll={actions.refreshingAll}
+            refreshingAll={actions.refreshingProviders.has(currentProvider)}
             addingAccount={oauth.isProviderBusy(currentProvider)}
-            importingSession={importingSession}
+            importingSession={
+              currentProvider === 'gemini'
+                ? actions.busyKeys.has('import:antigravity')
+                : actions.busyKeys.has('import:codex')
+            }
             appSettings={data.appSettings}
-            autoRefreshing={autoRefreshing}
-            lastRefreshAt={lastRefreshAt}
+            autoRefreshStatus={autoRefreshStatus}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
-            onAddAccount={handleAddAccount}
+            onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
             onCancelAddAccount={() => oauth.cancelLogin(currentProvider)}
-            onImportSession={handleImportSession}
+            onImportSession={
+              currentProvider === 'gemini'
+                ? () => void actions.importAntigravity()
+                : () => void actions.importCodex()
+            }
             onRefreshAll={() => void actions.refreshAll(currentProvider)}
           />
 
           {currentProvider === 'gemini' && (
             <GeminiSwitchTargetsBar
               appSettings={data.appSettings}
-              onSaveAppSettings={saveGeminiSettings}
+              onSaveAppSettings={(settings) => actions.saveAppSettings(settings, 'gemini')}
             />
           )}
 
@@ -384,7 +363,6 @@ export const AccountsTab = memo(function AccountsTab({
           )}
 
           <AccountsTable
-            key={JSON.stringify([currentProvider, effectiveSubscriptionFilter, searchTerm])}
             accounts={searchedAccounts}
             provider={currentProvider}
             totalAccountCount={accounts.length}
@@ -392,25 +370,48 @@ export const AccountsTab = memo(function AccountsTab({
             hiddenAccountCount={hiddenAccountIds.length}
             addingAccount={oauth.isProviderBusy(currentProvider)}
             isSearching={Boolean(searchTerm.trim())}
-            importingSession={importingSession}
+            importingSession={
+              currentProvider === 'gemini'
+                ? actions.busyKeys.has('import:antigravity')
+                : actions.busyKeys.has('import:codex')
+            }
             activeAccountId={activeAccountId}
-            busyKeys={actions.busyKeys}
-            refreshingAll={actions.refreshingAll}
-            autoRefreshing={autoRefreshing}
+            busyKeys={accountBusyKeys}
+            refreshingAll={actions.refreshingProviders.has(currentProvider)}
+            autoRefreshing={Boolean(autoRefreshStatus?.progress?.some((run) => run.provider === currentProvider))}
             hiddenAccountIds={hiddenAccountIds}
-            onReorder={reorderAccounts}
+            onReorder={(activeId, overId) => void reorderAccounts(activeId, overId)}
             onOpenDetails={openDetails}
             onSwitch={handleSwitch}
             onRelogin={handleRelogin}
             onRemove={handleRemove}
             onToggleAccountInAll={toggleAccountInAll}
-            onAddAccount={handleAddAccount}
-            onImportSession={handleImportSession}
-            onClearFilter={handleClearFilter}
-            onShowHiddenAccounts={handleShowHiddenAccounts}
+            onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
+            onImportSession={
+              currentProvider === 'gemini'
+                ? () => void actions.importAntigravity()
+                : () => void actions.importCodex()
+            }
+            onClearFilter={() => {
+              setSubscriptionFilter('all')
+              setSearchTerm('')
+            }}
+            onShowHiddenAccounts={() => {
+              const currentProviderAccountIds = new Set(accounts.map((a) => a.id))
+              const next = setData((latest) => ({
+                ...latest,
+                appSettings: {
+                  ...latest.appSettings,
+                  hiddenAccountIds: latest.appSettings.hiddenAccountIds.filter(
+                    (id) => !currentProviderAccountIds.has(id)
+                  )
+                }
+              }))
+              if (next) void actions.saveAppSettings(next.appSettings)
+            }}
           />
         </div>
       )}
     </div>
   )
-})
+}

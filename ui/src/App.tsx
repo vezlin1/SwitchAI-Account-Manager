@@ -1,19 +1,21 @@
+import { api, describeIpcError } from './api'
+import { subscribeFocusSync } from './utils/focusSync'
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getVersion } from '@tauri-apps/api/app'
 import './App.css'
 import appLogo from './assets/app-icon.png'
-import { ErrorBanner } from './components/common/ErrorBanner'
-import { TextInputContextMenu } from './components/common/TextInputContextMenu'
+import { ErrorBanner, TextInputContextMenu } from './components/common'
 import { AccountsTab } from './components/accounts/AccountsTab'
 import { useAutoRefreshStatus } from './hooks/useAutoRefreshStatus'
 import { useAppData } from './hooks/useAppData'
-import { isMac } from './utils/platform'
+import { usePlatform } from './hooks/usePlatform'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { usePrivacy } from './context/usePrivacy'
-import type { AccountProvider } from './types'
+import type { AccountProvider, UpdateCheckResult } from './types'
 import { AppTitleBar } from './components/layout/AppTitleBar'
+import { UpdateCoordinator } from './components/layout/UpdateCoordinator'
 import { StartupRecoveryGate } from './components/layout/StartupRecoveryGate'
 
 const SettingsModal = lazy(() =>
@@ -42,6 +44,7 @@ function App() {
     openRecoveryDataDirectory
   } = useAppData()
   const autoRefresh = useAutoRefreshStatus(startup?.autoRefresh ?? null)
+  const { isMac } = usePlatform()
   const { privacyMode, setPrivacyMode } = usePrivacy()
   const [activeProvider, setActiveProvider] = useState<AccountProvider>(() => {
     if (typeof window !== 'undefined') {
@@ -55,10 +58,14 @@ function App() {
     return 'codex'
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
   const syncedProviderRef = useRef<AccountProvider | null>(null)
+  const [privacyError, setPrivacyError] = useState<string | null>(null)
   const pendingPrivacyRef = useRef<boolean | null>(null)
+  const updateAckSentRef = useRef(false)
 
   const enabledProviders = useMemo<AccountProvider[]>(() => {
     const list = data?.appSettings?.enabledProviders
@@ -99,6 +106,12 @@ function App() {
 
   useEffect(() => {
     if (!data?.appSettings) return
+    if (data.appSettings.privacyMigrationPending) {
+      let legacyEnabled = privacyMode
+      try { legacyEnabled = localStorage.getItem('switchai:privacy-mode') === 'true' } catch { /* keep current preference */ }
+      void api.migratePrivacyMode(legacyEnabled).then((state) => { setPrivacyError(null); setData(state) }).catch((error) => setPrivacyError(describeIpcError(error)))
+      return
+    }
     if (pendingPrivacyRef.current !== null) {
       const target = pendingPrivacyRef.current
       pendingPrivacyRef.current = null
@@ -119,7 +132,13 @@ function App() {
         // ignore
       }
     }
-  }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings])
+  }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings, setData])
+
+  useEffect(() => {
+    if (updateAckSentRef.current || !data || loading || startup?.mode !== 'ready' || data.appSettings.privacyMigrationPending) return
+    updateAckSentRef.current = true
+    void api.acknowledgeUpdateStartup().catch(() => undefined)
+  }, [data, loading, startup?.mode])
 
   const handleTogglePrivacyMode = useCallback(() => {
     const next = !privacyMode
@@ -159,6 +178,7 @@ function App() {
 
   useEffect(() => {
     void getVersion().then(setAppVersion).catch(() => setAppVersion(null))
+    void appWindow.show().catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -167,38 +187,12 @@ function App() {
     }
   }, [data, error, loading])
 
-  const lastFocusReloadRef = useRef(0)
-
-  useEffect(() => {
-    const subscribedAt = Date.now()
-    let disposed = false
-    let lostFocus = false
-    let unlistenFocus: (() => void) | undefined
-    void appWindow.onFocusChanged(({ payload: focused }) => {
-      if (disposed) return
-      if (!focused) {
-        lostFocus = true
-        return
-      }
-      const now = Date.now()
-      if (!lostFocus && now - subscribedAt < 2_000) return
-      if (now - lastFocusReloadRef.current > 60_000) {
-        lastFocusReloadRef.current = now
-        void reload()
-      }
-    }).then((stop) => {
-      if (disposed) stop()
-      else unlistenFocus = stop
-    }).catch(() => undefined)
-
-    return () => {
-      disposed = true
-      unlistenFocus?.()
-    }
-  }, [reload])
+  useEffect(() => subscribeFocusSync(
+    (listener) => appWindow.onFocusChanged(listener), document, reload
+  ), [reload])
 
   // Global Keyboard Shortcuts
-  const isModalOpen = settingsOpen || startup?.mode === 'recovery_required'
+  const isModalOpen = settingsOpen || updateModalOpen || startup?.mode === 'recovery_required'
   const shortcuts = useMemo(
     () => ({
       'mod+,': () => setSettingsOpen((prev) => !prev),
@@ -211,8 +205,16 @@ function App() {
   )
   useKeyboardShortcuts(shortcuts, !isModalOpen)
 
+  // Do not mount personal data until persisted privacy and the rendering context agree.
+  if (data && (data.appSettings.privacyMigrationPending ||
+      (data.appSettings.privacyMode !== undefined && data.appSettings.privacyMode !== privacyMode))) {
+    return <div role="status" className="h-full flex flex-col items-center justify-center">
+      {privacyError ? <>Could not save privacy preferences: {privacyError}<button onClick={() => void reload()}>Retry</button></> : 'Loading privacy preferences...'}
+    </div>
+  }
+
   return (
-    <div className="app-outer h-full w-full text-ag-text">
+    <div className={`app-outer h-full w-full text-ag-text ${privacyMode ? 'privacy-mode' : ''}`}>
       <a className="skip-link" href="#main-content">Skip to accounts</a>
 
       <StartupRecoveryGate
@@ -229,11 +231,25 @@ function App() {
           <SettingsModal
             settings={data.appSettings}
             accounts={data.accounts}
+            status={autoRefresh.status}
             onClose={() => setSettingsOpen(false)}
             onSave={saveAppSettings}
+            onRefreshStatus={autoRefresh.refreshStatus}
+            onOpenUpdateModal={(info) => {
+              setUpdateInfo(info)
+              setUpdateModalOpen(true)
+            }}
+            appVersion={appVersion}
           />
         </Suspense>
       )}
+
+      <UpdateCoordinator
+        updateModalOpen={updateModalOpen}
+        setUpdateModalOpen={setUpdateModalOpen}
+        updateInfo={updateInfo}
+        setUpdateInfo={setUpdateInfo}
+      />
 
       <TextInputContextMenu />
 
@@ -248,6 +264,8 @@ function App() {
             gemini: data?.accounts.filter((a) => a.provider === 'gemini').length ?? 0
           }}
           privacyMode={privacyMode}
+          updateAvailable={Boolean(updateInfo?.updateAvailable)}
+          updateVersion={updateInfo?.version}
           closeToTray={data?.appSettings.closeToTray}
           onSelectProvider={handleSelectProvider}
           onTogglePrivacyMode={handleTogglePrivacyMode}
@@ -314,8 +332,7 @@ function App() {
                     saveAppSettings={saveAppSettings}
                     reload={reload}
                     reloadAccountOrder={reloadAccountOrder}
-                    autoRefreshing={Boolean(autoRefresh.status?.inFlight)}
-                    lastRefreshAt={autoRefresh.status?.lastFinishedAt ?? null}
+                    autoRefreshStatus={autoRefresh.status}
                     autoRefreshError={autoRefresh.error}
                     onClearAutoRefreshError={autoRefresh.clearError}
                     activeProvider={activeProvider}

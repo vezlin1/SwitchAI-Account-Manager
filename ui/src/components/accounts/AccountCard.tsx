@@ -3,7 +3,7 @@ import { ChevronRight, Eye, EyeOff, KeyRound, Loader2, Trash2, UserCheck } from 
 import type { Account } from '../../types'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
-import { quotaWindowForColumn, type QuotaColumn } from '../../utils/quotaWindows'
+import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { usePrivacy } from '../../context/usePrivacy'
 
@@ -14,6 +14,7 @@ type AccountCardProps = {
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
+  isRelogining: boolean
   isRefreshing: boolean
   quotaColumns: QuotaColumn[]
   hiddenFromAll: boolean
@@ -29,6 +30,7 @@ export const AccountCard = memo(function AccountCard({
   isActive,
   isSwitching,
   isRemoving,
+  isRelogining,
   isRefreshing,
   quotaColumns,
   hiddenFromAll,
@@ -45,7 +47,7 @@ export const AccountCard = memo(function AccountCard({
     isRefreshing: isAccountRefreshing,
     needsRelogin,
     detectedSubscriptionDate
-  } = useAccountRowState(account, { isSwitching, isRemoving, isRefreshing })
+  } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
@@ -134,8 +136,7 @@ export const AccountCard = memo(function AccountCard({
 
       {quotaColumns.length > 0 && (
         <div className="account-card-quota">
-          {quotaColumns.map((column) => {
-            const window = quotaWindowForColumn(account.quota, column)
+          {quotaCellsForAccount(account.quota, quotaColumns).map(({ column, window }) => {
             return (
               <QuotaCell
                 key={column.key}

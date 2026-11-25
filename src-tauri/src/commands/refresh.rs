@@ -3,14 +3,14 @@ use tauri::State;
 
 use crate::app_state::{SharedState, lock_data};
 use crate::auto_refresh;
-use crate::commands::{command_result, warning};
+use crate::commands::{command_result, run_blocking, warning};
 use crate::dto::{
     AccountDto, AccountRefreshResultDto, AppDataDto, CommandWarningDto, StateResultDto,
 };
 use crate::errors::{AppError, AppResult, IpcErrorDto};
 use crate::models::{AccountProvider, TokenHealthStatus};
 use crate::refresh_service::{QuotaRefreshWarning, RefreshService};
-use crate::tray_dashboard::{refresh_dashboard, refresh_dashboard_and_alerts};
+use crate::tray_dashboard::{emit_state_changed, refresh_dashboard, refresh_dashboard_and_alerts};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AccountRefreshKind {
@@ -33,6 +33,21 @@ fn account_warning(
     )
 }
 
+fn report_selection_change(
+    state: &Arc<SharedState>,
+    account_id: &str,
+    previous: &(Option<String>, Option<String>),
+) -> AppResult<()> {
+    let selection_changed = {
+        let data = lock_data(state)?;
+        data.active_account_id != previous.0 || data.active_gemini_account_id != previous.1
+    };
+    if selection_changed {
+        emit_state_changed(state, "accounts", vec![account_id.to_owned()]);
+    }
+    Ok(())
+}
+
 async fn refresh_account(
     state: &Arc<SharedState>,
     account_id: String,
@@ -40,12 +55,22 @@ async fn refresh_account(
 ) -> AppResult<AccountRefreshResultDto> {
     let gate = auto_refresh::account_gate_for_id(state, &account_id)?;
     let _guard = gate.lock().await;
-    let provider = lock_data(state)?
-        .accounts
-        .iter()
-        .find(|account| account.id == account_id)
-        .map(|account| account.provider)
-        .ok_or_else(|| AppError::msg("Account not found"))?;
+    let (provider, selection) = {
+        let data = lock_data(state)?;
+        let provider = data
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .map(|account| account.provider)
+            .ok_or_else(|| AppError::msg("Account not found"))?;
+        (
+            provider,
+            (
+                data.active_account_id.clone(),
+                data.active_gemini_account_id.clone(),
+            ),
+        )
+    };
 
     if provider == AccountProvider::Codex && kind == AccountRefreshKind::Subscription {
         let result = RefreshService::new(Arc::clone(state))
@@ -66,16 +91,17 @@ async fn refresh_account(
             .map(AccountDto::from)
             .ok_or_else(|| AppError::msg("Account not found"))?;
         refresh_dashboard(state);
-        auto_refresh::emit_account_snapshot(state, &account);
+        report_selection_change(state, &account_id, &selection)?;
         return Ok(AccountRefreshResultDto { account, warnings });
     }
 
     let (outcome, token_warning, warning_code, failure_code, failure_message) = match provider {
         AccountProvider::Gemini => (
-            crate::gemini_quota::refresh_gemini_account(
+            crate::gemini_quota::refresh_gemini_account_with_options(
                 state,
                 &account_id,
                 kind == AccountRefreshKind::Subscription,
+                false,
             )
             .await?,
             None,
@@ -88,7 +114,11 @@ async fn refresh_account(
                 .refresh_account_quota(&account_id)
                 .await?;
             (
-                result.refresh,
+                crate::refresh_service::AccountRefreshOutcome {
+                    succeeded: result.succeeded,
+                    retry_after_seconds: result.retry_after_seconds,
+                    warnings: result.warnings,
+                },
                 result.warning,
                 "auth_reconcile_warning",
                 "quota_refresh_warning",
@@ -96,12 +126,16 @@ async fn refresh_account(
             )
         }
     };
-    auto_refresh::update_account_schedule(
-        state,
-        &account_id,
-        outcome.succeeded,
-        outcome.retry_after_seconds,
-    )
+    let schedule_state = Arc::clone(state);
+    let schedule_id = account_id.clone();
+    run_blocking(move || {
+        auto_refresh::update_account_schedule_with_retry(
+            &schedule_state,
+            &schedule_id,
+            outcome.succeeded,
+            outcome.retry_after_seconds,
+        )
+    })
     .await?;
 
     let mut warnings = outcome
@@ -143,7 +177,7 @@ async fn refresh_account(
     }
     .ok_or_else(|| AppError::msg("Account not found"))?;
     refresh_dashboard_and_alerts(state);
-    auto_refresh::emit_account_snapshot(state, &account);
+    report_selection_change(state, &account_id, &selection)?;
     Ok(AccountRefreshResultDto { account, warnings })
 }
 
@@ -184,16 +218,15 @@ pub async fn refresh_all_quotas(
                 auto_refresh::refresh_accounts_for_provider(state.inner(), target_provider).await?;
             let mut warnings = result
                 .warnings
-                .iter()
-                .cloned()
+                .into_iter()
                 .map(|message| warning("refresh_warning", "account", message, None, false))
                 .collect::<Vec<_>>();
-            for account_id in &result.failed_account_ids {
+            for account_id in result.failed_account_ids {
                 let is_needs_relogin = result
                     .state
                     .accounts
                     .iter()
-                    .find(|account| account.id == *account_id)
+                    .find(|account| account.id == account_id)
                     .is_some_and(|account| {
                         account.token_health.status == TokenHealthStatus::NeedsRelogin
                     });
@@ -202,7 +235,7 @@ pub async fn refresh_all_quotas(
                         "refresh_failed",
                         "account",
                         "Quota refresh failed for this account".to_string(),
-                        Some(account_id.clone()),
+                        Some(account_id),
                         true,
                     ));
                 }

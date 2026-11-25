@@ -1,3 +1,10 @@
+pub mod providers;
+pub use providers::chatgpt::quota;
+pub use providers::chatgpt::sync as codex;
+pub use providers::gemini::oauth as oauth_gemini;
+pub use providers::gemini::quota as gemini_quota;
+pub use providers::gemini::sync as gemini;
+
 mod app_state;
 mod atomic_file;
 mod auto_refresh;
@@ -6,10 +13,10 @@ mod dto;
 mod errors;
 mod geo;
 mod models;
-mod oauth;
+pub mod oauth;
 mod persisted;
-mod process;
-mod providers;
+pub mod portable_updater;
+pub mod process;
 mod refresh_service;
 mod secret_store;
 mod shell;
@@ -23,9 +30,7 @@ use std::sync::atomic::Ordering;
 
 use app_state::SharedState;
 use models::AppData;
-use providers::chatgpt::{quota, sync as codex};
-use providers::gemini::{oauth as oauth_gemini, quota as gemini_quota, sync as gemini};
-use storage::load_app_data;
+use storage::load_app_data_with_warnings;
 use tauri::{
     Manager, WindowEvent,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -33,17 +38,22 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (mut initial_data, startup_error) = match load_app_data() {
-        Ok(data) => (data, None),
+    if crate::portable_updater::run_update_helper() {
+        return;
+    }
+    crate::portable_updater::handle_after_update_wait();
+    crate::portable_updater::cleanup_stale_update_files();
+    let loaded = load_app_data_with_warnings();
+    let (mut initial_data, mut startup_warnings, startup_error) = match loaded {
+        Ok((data, warnings)) => (data, warnings, None),
         Err(err) => {
             let message = format!(
                 "Failed to load saved accounts: {err}. The existing state files were preserved for recovery."
             );
             log::error!("{message}");
-            (AppData::default(), Some(message))
+            (AppData::default(), Vec::new(), Some(message))
         }
     };
-    let mut startup_warnings = Vec::new();
     if startup_error.is_none() {
         if let Err(error) = codex::reconcile_codex_auth_at_startup(&mut initial_data) {
             startup_warnings.push(format!(
@@ -97,19 +107,23 @@ pub fn run() {
     builder
         .setup(move |app| {
             let _ = setup_state.app_handle.set(app.handle().clone());
-            app.manage(tray_dashboard::DashboardRefreshState::default());
-            let (menu, tooltip) = tray_dashboard::build_initial_menu(app.handle(), &setup_state)
+            let initial = app_state::lock_data(&setup_state)?.clone();
+            let menu = tray_dashboard::build_menu(app.handle(), &initial)
                 .map_err(|error| error.user_message())?;
 
             let tray_state = Arc::clone(&setup_state);
             let tray_builder = TrayIconBuilder::with_id(tray_dashboard::TRAY_ID)
                 .menu(&menu)
-                .tooltip(tooltip)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {
                     let id = event.id().as_ref();
                     match id {
                         "show" => show_main_window(app),
+                        "open_update" => {
+                            show_main_window(app);
+                            use tauri::Emitter;
+                            let _ = app.emit("open-update-modal", ());
+                        }
                         "refresh" => auto_refresh::request_refresh_now(&tray_state),
                         "quit" => {
                             tray_state.is_quitting.store(true, Ordering::SeqCst);
@@ -122,37 +136,26 @@ pub fn run() {
                                     id.strip_prefix(tray_dashboard::QUICK_SWITCH_CODEX_PREFIX)
                                 })
                             {
-                                let selection_state = Arc::clone(&tray_state);
-                                let account_id = account_id.to_string();
-                                tauri::async_runtime::spawn_blocking(move || {
-                                    match commands::set_active_account_data(
-                                        &account_id,
-                                        &selection_state,
-                                    ) {
-                                        Ok(data) => {
-                                            tray_dashboard::emit_state_changed(
-                                                &selection_state,
-                                                "accounts",
-                                                vec![account_id.to_string()],
+                                match commands::switch_codex_account(account_id, &tray_state) {
+                                    Ok((data, restart_warning)) => {
+                                        if let Some(account) = data
+                                            .accounts
+                                            .iter()
+                                            .find(|account| account.id == account_id)
+                                        {
+                                            tray_dashboard::notify_account_selected(
+                                                &tray_state,
+                                                account,
+                                                restart_warning.as_deref(),
                                             );
-                                            if let Some(account) = data
-                                                .accounts
-                                                .iter()
-                                                .find(|account| account.id == account_id)
-                                            {
-                                                tray_dashboard::notify_account_selected(
-                                                    &selection_state,
-                                                    account,
-                                                );
-                                            }
-                                            tray_dashboard::refresh_dashboard(&selection_state);
                                         }
-                                        Err(error) => log::warn!(
-                                            "Tray Codex account selection failed: {}",
-                                            error.user_message()
-                                        ),
+                                        tray_dashboard::refresh_dashboard(&tray_state);
                                     }
-                                });
+                                    Err(error) => log::warn!(
+                                        "Tray Codex account selection failed: {}",
+                                        error.user_message()
+                                    ),
+                                }
                             } else if let Some(account_id) = id
                                 .strip_prefix(tray_dashboard::SWITCH_GEMINI_ACCOUNT_PREFIX)
                                 .or_else(|| {
@@ -162,18 +165,13 @@ pub fn run() {
                                 let selection_state = Arc::clone(&tray_state);
                                 let account_id = account_id.to_string();
                                 tauri::async_runtime::spawn(async move {
-                                    match commands::set_active_gemini_account_data(
+                                    match commands::switch_gemini_account(
                                         &account_id,
                                         &selection_state,
                                     )
                                     .await
                                     {
-                                        Ok(data) => {
-                                            tray_dashboard::emit_state_changed(
-                                                &selection_state,
-                                                "accounts",
-                                                vec![account_id.clone()],
-                                            );
+                                        Ok((data, restart_warning)) => {
                                             if let Some(account) = data
                                                 .accounts
                                                 .iter()
@@ -182,6 +180,7 @@ pub fn run() {
                                                 tray_dashboard::notify_account_selected(
                                                     &selection_state,
                                                     account,
+                                                    restart_warning.as_deref(),
                                                 );
                                             }
                                             tray_dashboard::refresh_dashboard(&selection_state);
@@ -230,6 +229,47 @@ pub fn run() {
             }
             if app_state::lock_startup_error(&setup_state)?.is_none() {
                 let _ = auto_refresh::start(&setup_state);
+
+                let bg_state = Arc::clone(&setup_state);
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    let should_check = crate::app_state::lock_data(&bg_state)
+                        .map(|d| d.app_settings.auto_check_updates)
+                        .unwrap_or(true);
+                    if should_check {
+                        log::info!("Starting background update check...");
+                        if let Ok(res) =
+                            crate::commands::check_for_updates_internal(&bg_state, false).await
+                            && res.update_available
+                        {
+                            log::info!("Update available: v{}", res.version);
+                            if let Some(app) = bg_state.app_handle.get() {
+                                use tauri::Emitter;
+                                let _ = app.emit("update-available", &res);
+
+                                #[cfg(not(test))]
+                                {
+                                    use tauri_plugin_notification::NotificationExt;
+                                    let _ = app
+                                        .notification()
+                                        .builder()
+                                        .title("SwitchAI Update Available")
+                                        .body(format!(
+                                            "Version v{} is available for download.",
+                                            res.version
+                                        ))
+                                        .show();
+                                }
+                            }
+                        }
+                    }
+                });
+                if !crate::portable_updater::is_supervised_update_launch() {
+                    // Legacy v1.2 launches used --after-update without the
+                    // helper handshake; keep that path compatible while new
+                    // updates are confirmed by the frontend acknowledgement.
+                    crate::portable_updater::confirm_update_startup();
+                }
             }
             show_main_window(app.handle());
 
@@ -267,6 +307,8 @@ pub fn run() {
             commands::get_account,
             commands::get_auto_refresh_status,
             commands::set_app_settings,
+            commands::migrate_privacy_mode,
+            commands::acknowledge_update_startup,
             commands::start_oauth_flow,
             commands::get_oauth_flow_status,
             commands::cancel_oauth_flow,
@@ -280,7 +322,11 @@ pub fn run() {
             commands::set_account_order,
             commands::refresh_account_subscription,
             commands::refresh_account_quota,
-            commands::refresh_all_quotas
+            commands::refresh_all_quotas,
+            commands::check_for_updates,
+            commands::download_and_stage_update,
+            commands::install_update_and_restart,
+            commands::dismiss_update_version
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -289,6 +335,12 @@ pub fn run() {
             move |_app_handle, event| {
                 if let tauri::RunEvent::ExitRequested { .. } = event {
                     run_state.is_quitting.store(true, Ordering::SeqCst);
+                    if let Err(error) = storage::flush_refresh_metadata(&run_state) {
+                        log::error!(
+                            "Could not save quota metadata before exit: {}",
+                            error.user_message()
+                        );
+                    }
                 }
             }
         });

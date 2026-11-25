@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { quotaColumnsForAccounts, quotaWindowForColumn } from './quotaWindows.ts'
+import { quotaCellsForAccount, quotaColumnsForAccounts, quotaWindowForColumn } from './quotaWindows.ts'
 
 function window(limitWindowSeconds, usedPercent = 25) {
   return {
@@ -28,6 +28,30 @@ function quota(primary, secondary = null) {
 function account(id, value) {
   return { id, quota: value }
 }
+
+test('the available quota spans all columns when the other quota is missing', () => {
+  const standard = quota(window(5 * 60 * 60), window(7 * 24 * 60 * 60))
+  const columns = quotaColumnsForAccounts([account('standard', standard)])
+
+  for (const remaining of [standard.primary, standard.secondary]) {
+    const cells = quotaCellsForAccount(quota(remaining), columns)
+    assert.equal(cells.length, 1)
+    assert.equal(cells[0].window, remaining)
+    assert.equal(cells[0].colSpan, 2)
+  }
+  assert.deepEqual(quotaCellsForAccount(standard, columns).map((cell) => cell.colSpan), [1, 1])
+  assert.equal(quotaCellsForAccount(null, columns).length, 2)
+})
+
+test('zero usage remains available and absorbs metadata-only quota cells', () => {
+  const standard = quota(window(5 * 60 * 60), window(7 * 24 * 60 * 60))
+  const columns = quotaColumnsForAccounts([account('standard', standard)])
+  const partial = quota(window(5 * 60 * 60, null), window(7 * 24 * 60 * 60, 0))
+  const cells = quotaCellsForAccount(partial, columns)
+  assert.equal(cells.length, 1)
+  assert.equal(cells[0].column.key, 'weekly')
+  assert.equal(cells[0].colSpan, 2)
+})
 
 test('weekly-only primary window is not labeled as 5h', () => {
   const weekly = quota(window(7 * 24 * 60 * 60))

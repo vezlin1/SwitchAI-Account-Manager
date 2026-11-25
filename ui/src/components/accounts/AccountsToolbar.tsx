@@ -1,27 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ChevronDown, Loader2, LogIn, RefreshCw, Search, UserPlus, X } from 'lucide-react'
-import type { AccountProvider, AppSettings } from '../../types'
+import type { AccountProvider, AppSettings, AutoRefreshStatus } from '../../types'
 
 type AccountsToolbarProps = {
   accountCount: number
   provider?: AccountProvider
   refreshingAll: boolean
   addingAccount: boolean
-  importingSession: boolean
+  importingSession?: boolean
+  importingAntigravity?: boolean
   appSettings: AppSettings
-  autoRefreshing: boolean
-  lastRefreshAt: number | null
-  searchTerm: string
-  onSearchChange: (value: string) => void
+  autoRefreshStatus: AutoRefreshStatus | null
+  searchTerm?: string
+  onSearchChange?: (value: string) => void
   onAddAccount: () => void
   onCancelAddAccount: () => void
-  onImportSession: () => void
+  onImportSession?: () => void
+  onImportAntigravity?: () => void
   onRefreshAll: () => void
 }
 
-function autoRefreshLabel(settings: AppSettings, autoRefreshing: boolean): string {
+function autoRefreshLabel(settings: AppSettings, status: AutoRefreshStatus | null): string {
   if (!settings.autoRefreshEnabled) return 'off'
-  if (autoRefreshing) return 'updating…'
+  if (status?.inFlight) return 'updating…'
   return `active (${settings.autoRefreshIntervalMinutes}m)`
 }
 
@@ -31,18 +32,23 @@ export function AccountsToolbar({
   refreshingAll,
   addingAccount,
   importingSession,
+  importingAntigravity = false,
   appSettings,
-  autoRefreshing,
-  lastRefreshAt,
-  searchTerm,
+  autoRefreshStatus,
+  searchTerm = '',
   onSearchChange,
   onAddAccount,
   onCancelAddAccount,
   onImportSession,
+  onImportAntigravity,
   onRefreshAll
 }: AccountsToolbarProps) {
   const isGoogle = provider === 'gemini'
-  const accountActionBusy = addingAccount || importingSession
+  const isImporting = importingSession ?? importingAntigravity
+  const accountActionBusy = addingAccount || isImporting
+  const progress = autoRefreshStatus?.progress?.find((run) => run.provider === (provider ?? 'codex'))
+  const providerRefreshing = refreshingAll || Boolean(progress)
+  const handleImport = onImportSession ?? onImportAntigravity
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
@@ -71,95 +77,112 @@ export function AccountsToolbar({
   return (
     <div className="accounts-toolbar flex items-center justify-between gap-3 flex-wrap">
       <div className="accounts-toolbar-primary inline-flex items-center gap-2 flex-wrap">
-        <div className="relative inline-flex items-center" ref={dropdownRef}>
+        {handleImport ? (
+          <div className="relative inline-flex items-center" ref={dropdownRef}>
+            <button
+              type="button"
+              className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 active:bg-blue-700 active:scale-[0.98] inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-sm cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              onClick={() => {
+                if (accountActionBusy) return
+                setDropdownOpen((prev) => !prev)
+              }}
+              disabled={accountActionBusy}
+              aria-haspopup="menu"
+              aria-expanded={dropdownOpen}
+              title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
+            >
+              {accountActionBusy ? (
+                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <UserPlus size={15} aria-hidden="true" />
+              )}
+              <span>
+                {addingAccount
+                  ? (isGoogle ? 'Waiting for Google…' : 'Waiting for sign-in…')
+                  : isImporting
+                    ? 'Importing session…'
+                    : 'Add Account'}
+              </span>
+              {!accountActionBusy && (
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform duration-150 opacity-80 ${dropdownOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+
+            {dropdownOpen && !accountActionBusy && (
+              <div
+                className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 origin-top-left animate-in fade-in-0 zoom-in-95 duration-100"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
+                  onClick={() => {
+                    setDropdownOpen(false)
+                    onAddAccount()
+                  }}
+                >
+                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 group-hover:text-blue-300 transition-colors mt-0.5 shrink-0">
+                    <LogIn size={15} />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                      {isGoogle ? 'Sign in with Google' : 'Sign in with ChatGPT'}
+                    </span>
+                    <span className="text-[11px] text-ag-muted leading-snug">
+                      Authorize account via browser OAuth
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
+                  onClick={() => {
+                    setDropdownOpen(false)
+                    handleImport()
+                  }}
+                >
+                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300 transition-colors mt-0.5 shrink-0">
+                    <ArrowDownToLine size={15} />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                      Import current session
+                    </span>
+                    <span className="text-[11px] text-ag-muted leading-snug">
+                      {isGoogle
+                        ? 'Import active Antigravity credentials'
+                        : 'Import active session from ~/.codex/auth.json'}
+                    </span>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
           <button
             type="button"
             className="h-9 px-3.5 rounded-lg bg-ag-primary text-white text-xs font-semibold hover:bg-blue-600 active:bg-blue-700 active:scale-[0.98] inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100 transition-all shadow-sm cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-            onClick={() => {
-              if (accountActionBusy) return
-              setDropdownOpen((prev) => !prev)
-            }}
-            disabled={accountActionBusy || refreshingAll}
-            aria-haspopup="menu"
-            aria-expanded={dropdownOpen}
+            onClick={onAddAccount}
+            disabled={accountActionBusy}
             title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
           >
-            {accountActionBusy ? (
+            {addingAccount ? (
               <Loader2 size={15} className="animate-spin" aria-hidden="true" />
             ) : (
               <UserPlus size={15} aria-hidden="true" />
             )}
-            <span>
-              {addingAccount
-                ? (isGoogle ? 'Waiting for Google…' : 'Waiting for sign-in…')
-                : importingSession
-                  ? 'Importing session…'
-                  : 'Add Account'}
-            </span>
-            {!accountActionBusy && (
-              <ChevronDown
-                size={13}
-                className={`transition-transform duration-150 opacity-80 ${dropdownOpen ? 'rotate-180' : ''}`}
-                aria-hidden="true"
-              />
-            )}
+            {addingAccount ? 'Waiting for sign-in…' : 'Add account'}
           </button>
+        )}
 
-          {dropdownOpen && !accountActionBusy && (
-            <div
-              className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 origin-top-left duration-100"
-              role="menu"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
-                onClick={() => {
-                  setDropdownOpen(false)
-                  onAddAccount()
-                }}
-              >
-                <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 group-hover:text-blue-300 transition-colors mt-0.5 shrink-0">
-                  <LogIn size={15} />
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="text-xs font-semibold text-ag-text group-hover:text-white">
-                    {isGoogle ? 'Sign in with Google' : 'Sign in with ChatGPT'}
-                  </span>
-                  <span className="text-[11px] text-ag-muted leading-snug">
-                    Authorize account via browser OAuth
-                  </span>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
-                onClick={() => {
-                  setDropdownOpen(false)
-                  onImportSession()
-                }}
-              >
-                <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300 transition-colors mt-0.5 shrink-0">
-                  <ArrowDownToLine size={15} />
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="text-xs font-semibold text-ag-text group-hover:text-white">
-                    Import current session
-                  </span>
-                  <span className="text-[11px] text-ag-muted leading-snug">
-                    {isGoogle
-                      ? 'Import active Antigravity credentials'
-                      : 'Import active session from ~/.codex/auth.json'}
-                  </span>
-                </div>
-              </button>
-            </div>
-          )}
-        </div>
-
-        {accountActionBusy && (
+        {addingAccount && (
           <button
             className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-ag-border text-ag-muted hover:text-ag-text hover:bg-ag-surface hover:border-white/20 active:scale-95 active:bg-ag-surface/80 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary"
             onClick={onCancelAddAccount}
@@ -175,35 +198,43 @@ export function AccountsToolbar({
           type="button"
           className="h-9 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface hover:border-white/20 hover:text-white active:scale-[0.98] active:bg-ag-surface/80 inline-flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-ag-border disabled:hover:bg-transparent disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ag-primary select-none"
           onClick={onRefreshAll}
-          disabled={refreshingAll || autoRefreshing || accountCount === 0}
+          disabled={providerRefreshing || accountCount === 0}
         >
-          {refreshingAll
+          {providerRefreshing
             ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
             : <RefreshCw size={14} aria-hidden="true" />}
           Refresh
         </button>
+        {progress && (
+          <span className="text-xs text-ag-muted" role="status">
+            Processed {progress.completed} of {progress.total}
+            {progress.failed > 0 ? ` · ${progress.failed} failed` : ''}
+          </span>
+        )}
 
-        <div className="account-search-wrapper">
-          <Search size={14} className="absolute left-2.5 text-ag-muted pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search accounts..."
-            value={searchTerm}
-            onChange={(e) => onSearchChange(e.target.value)}
-            className="account-search-input"
-          />
-          {searchTerm && (
-            <button
-              type="button"
-              onClick={() => onSearchChange('')}
-              className="account-search-clear"
-              title="Clear search"
-              aria-label="Clear search"
-            >
-              <X size={12} strokeWidth={2} />
-            </button>
-          )}
-        </div>
+        {onSearchChange && (
+          <div className="account-search-wrapper">
+            <Search size={14} className="absolute left-2.5 text-ag-muted pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search accounts..."
+              value={searchTerm}
+              onChange={(e) => onSearchChange(e.target.value)}
+              className="account-search-input"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => onSearchChange('')}
+                className="account-search-clear"
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X size={12} strokeWidth={2} />
+              </button>
+            )}
+          </div>
+        )}
 
         {addingAccount && (
           <span className="text-xs text-ag-muted ml-2" role="status" aria-live="polite">
@@ -216,8 +247,8 @@ export function AccountsToolbar({
         <div
           className="inline-flex items-center gap-1.5 cursor-default select-none"
           title={
-            lastRefreshAt
-              ? `Last updated: ${new Date(lastRefreshAt * 1000).toLocaleTimeString()}`
+            autoRefreshStatus?.lastFinishedAt
+              ? `Last updated: ${new Date(autoRefreshStatus.lastFinishedAt * 1000).toLocaleTimeString()}`
               : 'Auto-refresh active'
           }
         >
@@ -225,13 +256,13 @@ export function AccountsToolbar({
             className={`w-1.5 h-1.5 rounded-full ${
               !appSettings.autoRefreshEnabled
                 ? 'bg-zinc-600'
-                : autoRefreshing
+                : autoRefreshStatus?.inFlight
                   ? 'bg-ag-primary'
                   : 'bg-ag-success'
             }`}
           />
           <span className="text-ag-muted">Auto-refresh:</span>
-          <span className="text-ag-text font-medium">{autoRefreshLabel(appSettings, autoRefreshing)}</span>
+          <span className="text-ag-text font-medium">{autoRefreshLabel(appSettings, autoRefreshStatus)}</span>
         </div>
       </div>
     </div>

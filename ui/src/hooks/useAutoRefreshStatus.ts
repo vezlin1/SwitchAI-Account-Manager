@@ -2,23 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api } from '../api'
 import type { AutoRefreshStatus } from '../types'
+import { sameValue } from '../utils/stateMerge'
 
-type VisibleStatus = Pick<AutoRefreshStatus, 'inFlight' | 'lastFinishedAt'>
+function mergeStatus(previous: AutoRefreshStatus | null, next: AutoRefreshStatus) {
+  if (sameValue(previous, next)) return previous
+  return { ...next, refreshingAccountIds: sameValue(previous?.refreshingAccountIds, next.refreshingAccountIds)
+    ? previous!.refreshingAccountIds : next.refreshingAccountIds }
+}
 
-export function useAutoRefreshStatus(initialStatus: VisibleStatus | null) {
-  const [status, setStatus] = useState<VisibleStatus | null>(null)
+export function useAutoRefreshStatus(initialStatus: AutoRefreshStatus | null) {
+  const [status, setStatus] = useState<AutoRefreshStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const refreshInFlightRef = useRef<Promise<AutoRefreshStatus> | null>(null)
 
   const clearError = useCallback(() => setError(null), [])
-  const publishStatus = useCallback(({ inFlight, lastFinishedAt }: VisibleStatus) => {
-    setStatus((current) => (
-      current?.inFlight === inFlight && current.lastFinishedAt === lastFinishedAt
-        ? current
-        : { inFlight, lastFinishedAt }
-    ))
-    setError(null)
-  }, [])
 
   const refreshStatus = useCallback(() => {
     if (refreshInFlightRef.current) {
@@ -28,7 +25,8 @@ export function useAutoRefreshStatus(initialStatus: VisibleStatus | null) {
     const request = (async () => {
       try {
         const next = await api.getAutoRefreshStatus()
-        publishStatus(next)
+        setStatus((previous) => mergeStatus(previous, next))
+        setError(null)
 
         return next
       } catch (err) {
@@ -41,7 +39,7 @@ export function useAutoRefreshStatus(initialStatus: VisibleStatus | null) {
 
     refreshInFlightRef.current = request
     return request
-  }, [publishStatus])
+  }, [])
 
   useEffect(() => {
     let disposed = false
@@ -56,7 +54,8 @@ export function useAutoRefreshStatus(initialStatus: VisibleStatus | null) {
     }
 
     void listen<AutoRefreshStatus>('auto-refresh-status-changed', ({ payload }) => {
-      publishStatus(payload)
+      setStatus((previous) => mergeStatus(previous, payload))
+      setError(null)
     }).then((dispose) => {
       if (disposed) dispose()
       else unlisten = dispose
@@ -74,11 +73,12 @@ export function useAutoRefreshStatus(initialStatus: VisibleStatus | null) {
       unlisten?.()
       if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer)
     }
-  }, [publishStatus, refreshStatus])
+  }, [refreshStatus])
 
   return {
     status: status ?? initialStatus,
     error,
-    clearError
+    clearError,
+    refreshStatus
   }
 }

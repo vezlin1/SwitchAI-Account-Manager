@@ -1,5 +1,15 @@
 import type { Account, AppData, AppSettings } from '../types'
 
+export function sameValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false
+  if (Array.isArray(left) !== Array.isArray(right)) return false
+  const keys = Object.keys(left)
+  return keys.length === Object.keys(right).length && keys.every((key) =>
+    Object.hasOwn(right, key) && sameValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key])
+  )
+}
+
 const NEVER = Number.MIN_SAFE_INTEGER
 
 // IPC deserializes every nested object again. Share equal parts of these plain

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use crate::app_state::{SharedState, lock_data, lock_data_for_update, lock_flows};
+use crate::app_state::{SharedState, lock_data, lock_flows};
 use crate::codex::write_codex_auth;
 use crate::dto::AccountDto;
 use crate::errors::{AppError, AppResult};
@@ -518,11 +518,13 @@ pub async fn complete_oauth_code(
         }
 
         let mut gemini_project_id = None;
+        let mut gemini_discovery_checked_at = None;
         let (quota_result, subscription_result) = if flow_provider == AccountProvider::Gemini {
             let quota = fetch_gemini_quota(&shared.http_client, &tokens, None)
                 .await
                 .map(|result| {
                     gemini_project_id = result.project_id;
+                    gemini_discovery_checked_at = result.discovery_checked_at;
                     result.quota
                 });
             (quota, Err(AppError::msg("Not applicable")))
@@ -568,7 +570,7 @@ pub async fn complete_oauth_code(
             }
 
             let outcome = (|| -> AppResult<Account> {
-                let mut data = lock_data_for_update(&commit_shared)?;
+                let mut data = lock_data(&commit_shared)?;
                 let mut next = data.clone();
                 let account = if flow_provider == AccountProvider::Gemini {
                     save_authenticated_gemini_account(
@@ -595,6 +597,9 @@ pub async fn complete_oauth_code(
                     .find(|entry| entry.id == account.id)
                     .ok_or_else(|| AppError::msg("Account disappeared during OAuth completion"))?;
 
+                if flow_provider == AccountProvider::Gemini {
+                    account_mut.subscription_checked_at = gemini_discovery_checked_at;
+                }
                 match quota_result {
                     Ok(quota) => {
                         if let Some(plan_type) = quota.plan_type.as_ref() {

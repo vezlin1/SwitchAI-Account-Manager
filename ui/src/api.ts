@@ -12,7 +12,8 @@ import type {
   OAuthStartResponse,
   StartupStatus,
   StateResult,
-  SwitchAccountRestartResponse
+  SwitchAccountRestartResponse,
+  UpdateCheckResult
 } from './types'
 
 function toIpcError(error: unknown): IpcError {
@@ -61,7 +62,9 @@ export function describeIpcError(error: unknown): string {
 }
 
 export const api = {
-  getState: () => invoke<AppData>('get_app_state'),
+  getState: (reconcileLocalAuth = false) => invoke<AppData>('get_app_state', { reconcileLocalAuth }),
+  migratePrivacyMode: (legacyEnabled: boolean) => invoke<AppData>('migrate_privacy_mode', { legacyEnabled }),
+  acknowledgeUpdateStartup: () => invoke<void>('acknowledge_update_startup'),
   getStartupStatus: () => invoke<StartupStatus>('get_startup_status'),
   restoreStateBackup: () => invoke<StartupStatus>('restore_state_backup'),
   startFresh: () => invoke<StartupStatus>('start_fresh'),
@@ -107,4 +110,12 @@ export const api = {
   refreshAllQuotas: (provider?: AccountProvider) =>
     invoke<StateResult>('refresh_all_quotas', { provider }),
 
+  checkForUpdates: (force = false) =>
+    invoke<UpdateCheckResult>('check_for_updates', { force }),
+  downloadAndStageUpdate: (expectedVersion: string) =>
+    invoke<boolean>('download_and_stage_update', { expectedVersion }),
+  installUpdateAndRestart: (expectedVersion: string) =>
+    invoke<void>('install_update_and_restart', { expectedVersion }),
+  dismissUpdateVersion: (version: string) =>
+    invoke<AppData>('dismiss_update_version', { version }),
 }

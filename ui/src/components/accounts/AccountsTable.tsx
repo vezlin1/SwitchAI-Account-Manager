@@ -347,9 +347,7 @@ export const AccountsTable = memo(function AccountsTable({
                   {visibleAccounts.map((account) => {
                     const statusFlags = computeAccountStatusFlags(
                       account.id,
-                      busyKeys,
-                      refreshingAll,
-                      autoRefreshing
+                      busyKeys
                     )
                     return (
                       <SortableAccountRow
@@ -358,6 +356,7 @@ export const AccountsTable = memo(function AccountsTable({
                         isActive={activeAccountId === account.id}
                         isSwitching={statusFlags.isSwitching}
                         isRemoving={statusFlags.isRemoving}
+                        isRelogining={statusFlags.isRelogining}
                         isRefreshing={statusFlags.isRefreshing}
                         hiddenFromAll={hiddenIds.has(account.id)}
                         quotaColumns={quotaColumns}
@@ -404,9 +403,7 @@ export const AccountsTable = memo(function AccountsTable({
             {visibleAccounts.map((account) => {
               const statusFlags = computeAccountStatusFlags(
                 account.id,
-                busyKeys,
-                refreshingAll,
-                autoRefreshing
+                busyKeys
               )
               return (
                 <li key={account.id}>
@@ -415,6 +412,7 @@ export const AccountsTable = memo(function AccountsTable({
                     isActive={activeAccountId === account.id}
                     isSwitching={statusFlags.isSwitching}
                     isRemoving={statusFlags.isRemoving}
+                    isRelogining={statusFlags.isRelogining}
                     isRefreshing={statusFlags.isRefreshing}
                     quotaColumns={quotaColumns}
                     hiddenFromAll={hiddenIds.has(account.id)}
@@ -453,6 +451,7 @@ type SortableAccountRowProps = {
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
+  isRelogining: boolean
   isRefreshing: boolean
   hiddenFromAll: boolean
   quotaColumns: QuotaColumn[]
@@ -469,6 +468,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
   isActive,
   isSwitching,
   isRemoving,
+  isRelogining,
   isRefreshing,
   hiddenFromAll,
   quotaColumns,
@@ -506,6 +506,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
       isActive={isActive}
       isSwitching={isSwitching}
       isRemoving={isRemoving}
+      isRelogining={isRelogining}
       isRefreshing={isRefreshing}
       hiddenFromAll={hiddenFromAll}
       quotaColumns={quotaColumns}

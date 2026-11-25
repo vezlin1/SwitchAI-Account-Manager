@@ -1,6 +1,6 @@
-import { memo, useCallback } from 'react'
-import { formatTimeUntil, isTimePast, remainingPercent } from '../../utils/format'
-import { useSharedTicker } from '../../hooks/useSharedTicker'
+import { memo } from 'react'
+import { formatRemainingPercent, formatTimeUntil, isTimePast, remainingPercent } from '../../utils/format'
+import { useTimeValue } from '../../hooks/useSharedTicker'
 
 function quotaClass(remaining: number, hasQuota: boolean): string {
   if (!hasQuota) return ''
@@ -17,7 +17,7 @@ type QuotaCellProps = {
 }
 
 export const QuotaCell = memo(function QuotaCell({ value, resetAt, title, isRefreshing = false }: QuotaCellProps) {
-  const resetLabel = useSharedTicker(useCallback(() => formatTimeUntil(resetAt), [resetAt]), Boolean(resetAt))
+  const resetLabel = useTimeValue(() => formatTimeUntil(resetAt), Boolean(resetAt))
   const remaining = remainingPercent(value)
   const barPercent = remaining ?? 0
   const hasQuota = remaining != null
@@ -27,7 +27,7 @@ export const QuotaCell = memo(function QuotaCell({ value, resetAt, title, isRefr
       <div className="flex items-center justify-between text-xs text-ag-muted mb-1">
         <span>{title}</span>
         <span className="font-semibold text-ag-text tabular-nums transition-opacity duration-300">
-          {hasQuota ? `${Math.round(barPercent)}% left` : 'Not available'}
+          {hasQuota ? `${formatRemainingPercent(value)} left` : 'Not available'}
         </span>
       </div>
       <div
