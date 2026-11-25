@@ -1,16 +1,14 @@
+import type { AccountProvider } from '../types'
+
 export type BusyKey =
   | 'order'
   | 'settings:subscription-visibility'
   | 'refresh-all'
-  | 'import:antigravity'
-  | 'import:codex'
-  | 'usage:clear'
-  | 'usage:all'
+  | `import:${AccountProvider}`
   | `delete:${string}`
   | `switch:${string}`
   | `quota:${string}`
   | `subscription-detect:${string}`
-  | `usage:${string}`
 
 export type BusyCounters = Partial<Record<BusyKey, number>>
 
@@ -24,12 +22,4 @@ export function addBusyCount(
   if (nextCount <= 0) delete next[key]
   else next[key] = nextCount
   return next
-}
-
-export function busyCount(counters: BusyCounters, key: BusyKey): number {
-  return counters[key] ?? 0
-}
-
-export function keyIsBusy(counters: BusyCounters, key: BusyKey): boolean {
-  return busyCount(counters, key) > 0
 }

@@ -149,7 +149,7 @@ pub struct Account {
     pub subscription_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
     pub auto_refresh_enabled: bool,
     pub auto_refresh_interval_minutes: u64,
@@ -160,8 +160,6 @@ pub struct AppSettings {
     pub last_active_provider: Option<String>,
     pub gemini_switch_targets: Vec<String>,
     pub enabled_providers: Vec<String>,
-    pub auto_check_updates: bool,
-    pub ignored_update_version: Option<String>,
     pub privacy_mode: bool,
 }
 
@@ -183,8 +181,6 @@ impl Default for AppSettings {
             last_active_provider: Some("codex".to_string()),
             gemini_switch_targets,
             enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
-            auto_check_updates: true,
-            ignored_update_version: None,
             privacy_mode: false,
         }
     }
@@ -399,31 +395,6 @@ impl AppData {
             self.active_gemini_account_id = None;
         }
         self
-    }
-
-    pub fn active_account_id_for_provider(&self, provider: AccountProvider) -> Option<&str> {
-        match provider {
-            AccountProvider::Codex => self.active_account_id.as_deref(),
-            AccountProvider::Gemini => self.active_gemini_account_id.as_deref(),
-        }
-    }
-
-    pub fn set_active_account_id_for_provider(
-        &mut self,
-        provider: AccountProvider,
-        account_id: Option<String>,
-    ) {
-        match provider {
-            AccountProvider::Codex => self.active_account_id = account_id,
-            AccountProvider::Gemini => self.active_gemini_account_id = account_id,
-        }
-    }
-
-    pub fn active_account_for_provider(&self, provider: AccountProvider) -> Option<&Account> {
-        let active_id = self.active_account_id_for_provider(provider)?;
-        self.accounts
-            .iter()
-            .find(|account| account.id == active_id && account.provider == provider)
     }
 }
 

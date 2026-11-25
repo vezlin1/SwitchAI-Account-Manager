@@ -248,11 +248,6 @@ a {
   height: auto;
 }
 
-/* Fade animation */
-.page-fade {
-  /* Static layout container — no opacity animations to prevent re-render flickering */
-}
-
 /* ==========================================================================
    Toolbar & Action Bar
    ========================================================================== */
@@ -476,104 +471,6 @@ a {
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-/* Visibility dropdown */
-.account-visibility-menu {
-  position: relative;
-}
-
-.account-visibility-menu summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.02);
-  color: rgb(var(--ag-muted));
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  list-style: none;
-  transition: all 0.12s ease;
-  user-select: none;
-}
-
-.account-visibility-menu summary::-webkit-details-marker {
-  display: none;
-}
-
-.account-visibility-menu summary:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.15);
-  color: #ffffff;
-}
-
-.account-visibility-menu summary:active {
-  transform: scale(0.97);
-}
-
-.account-visibility-menu summary:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgb(var(--ag-primary));
-}
-
-.account-visibility-popover {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 40;
-  width: 260px;
-  border-radius: 12px;
-  border: 1px solid rgb(var(--ag-border));
-  background: rgb(var(--ag-card));
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-  padding: 12px;
-}
-
-.account-visibility-heading {
-  margin-bottom: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.account-visibility-heading strong {
-  display: block;
-  font-size: 12px;
-  color: rgb(var(--ag-text));
-}
-
-.account-visibility-heading span {
-  font-size: 11px;
-  color: rgb(var(--ag-muted));
-}
-
-.account-visibility-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: rgb(var(--ag-text));
-  cursor: pointer;
-  transition: background-color 0.1s ease;
-}
-
-.account-visibility-option:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #ffffff;
-}
-
-.account-visibility-saving {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: rgb(var(--ag-muted));
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
 /* ==========================================================================
    Accounts Table (Desktop View)
    ========================================================================== */
@@ -587,10 +484,6 @@ a {
   border-radius: 12px;
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
-}
-
-.accounts-desktop-view .dnd-empty {
-  display: none;
 }
 
 .accounts-table {
@@ -1323,11 +1216,6 @@ a {
   font-weight: 500;
 }
 
-.account-detail-health-loading {
-  border-color: rgba(96, 165, 250, 0.3);
-  background: rgba(96, 165, 250, 0.05);
-}
-
 .account-detail-health {
   border-color: rgba(245, 158, 11, 0.3);
   background: rgba(245, 158, 11, 0.05);
@@ -1762,26 +1650,6 @@ a {
   width: 22px;
 }
 
-.settings-clear-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 6px;
-  background: rgba(239, 68, 68, 0.08);
-  color: rgb(var(--ag-danger));
-  padding: 4px 10px;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-
-.settings-clear-button:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.16);
-  border-color: rgba(239, 68, 68, 0.45);
-}
-
 .settings-error {
   padding: 8px 12px;
   border-radius: 8px;
@@ -1793,7 +1661,6 @@ a {
 
 .settings-dialog-footer,
 .confirm-dialog-footer,
-.confirm-dialog-actions,
 .recovery-dialog-actions {
   display: flex;
   align-items: center;
@@ -1805,7 +1672,6 @@ a {
 
 .settings-cancel,
 .confirm-dialog-footer .confirm-cancel,
-.confirm-dialog-actions .confirm-cancel,
 .recovery-dialog-actions button.recovery-secondary {
   display: inline-flex;
   align-items: center;
@@ -1824,7 +1690,6 @@ a {
 
 .settings-cancel:hover:not(:disabled),
 .confirm-dialog-footer .confirm-cancel:hover:not(:disabled),
-.confirm-dialog-actions .confirm-cancel:hover:not(:disabled),
 .recovery-dialog-actions button.recovery-secondary:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.16);
@@ -1833,7 +1698,6 @@ a {
 
 .settings-cancel:active:not(:disabled),
 .confirm-dialog-footer .confirm-cancel:active:not(:disabled),
-.confirm-dialog-actions .confirm-cancel:active:not(:disabled),
 .recovery-dialog-actions button.recovery-secondary:active:not(:disabled) {
   transform: scale(0.97);
   background: rgba(255, 255, 255, 0.12);
@@ -1841,7 +1705,6 @@ a {
 
 .settings-save,
 .confirm-dialog-footer .confirm-primary,
-.confirm-dialog-actions .confirm-primary,
 .recovery-dialog-actions button.recovery-primary {
   display: inline-flex;
   align-items: center;
@@ -1860,7 +1723,6 @@ a {
 
 .settings-save:hover:not(:disabled),
 .confirm-dialog-footer .confirm-primary:hover:not(:disabled),
-.confirm-dialog-actions .confirm-primary:hover:not(:disabled),
 .recovery-dialog-actions button.recovery-primary:hover:not(:disabled) {
   background: #2563eb;
   box-shadow: 0 0 12px rgba(59, 130, 246, 0.35);
@@ -1868,14 +1730,12 @@ a {
 
 .settings-save:active:not(:disabled),
 .confirm-dialog-footer .confirm-primary:active:not(:disabled),
-.confirm-dialog-actions .confirm-primary:active:not(:disabled),
 .recovery-dialog-actions button.recovery-primary:active:not(:disabled) {
   transform: scale(0.97);
   background: #1d4ed8;
 }
 
-.confirm-dialog-footer .confirm-danger,
-.confirm-dialog-actions .confirm-danger {
+.confirm-dialog-footer .confirm-danger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1891,14 +1751,12 @@ a {
   user-select: none;
 }
 
-.confirm-dialog-footer .confirm-danger:hover:not(:disabled),
-.confirm-dialog-actions .confirm-danger:hover:not(:disabled) {
+.confirm-dialog-footer .confirm-danger:hover:not(:disabled) {
   background: #b91c1c;
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.35);
 }
 
-.confirm-dialog-footer .confirm-danger:active:not(:disabled),
-.confirm-dialog-actions .confirm-danger:active:not(:disabled) {
+.confirm-dialog-footer .confirm-danger:active:not(:disabled) {
   transform: scale(0.97);
   background: #991b1b;
 }
@@ -1906,7 +1764,6 @@ a {
 .settings-cancel:disabled,
 .settings-save:disabled,
 .confirm-dialog-footer button:disabled,
-.confirm-dialog-actions button:disabled,
 .recovery-dialog-actions button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1915,7 +1772,6 @@ a {
 .settings-cancel:focus-visible,
 .settings-save:focus-visible,
 .confirm-dialog-footer button:focus-visible,
-.confirm-dialog-actions button:focus-visible,
 .recovery-dialog-actions button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5), 0 0 0 4px rgba(0, 0, 0, 0.8);
@@ -2287,10 +2143,6 @@ a {
 .account-context-menu-item-danger:focus {
   background: rgb(var(--ag-danger)) !important;
   color: #ffffff !important;
-}
-
-.account-context-menu-item-warning {
-  color: rgb(var(--ag-warning));
 }
 
 /* Gemini Switch Targets Bar */

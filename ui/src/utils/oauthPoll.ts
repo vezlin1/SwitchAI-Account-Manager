@@ -1,5 +1,5 @@
-export const OAUTH_POLL_INTERVAL_MS = 1500
-export const OAUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000
+const OAUTH_POLL_INTERVAL_MS = 1500
+const OAUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000
 
 export type OAuthPollResult =
   | { terminal: 'completed' }

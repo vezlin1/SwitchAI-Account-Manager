@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::app_state::{SharedState, lock_data};
+use crate::app_state::{SharedState, lock_data, lock_data_for_update};
 use crate::codex::{
     clear_codex_auth, read_codex_auth, reconcile_codex_auth_transactionally,
     reconcile_codex_auth_with_snapshot, write_codex_auth, write_codex_auth_if_changed,
@@ -21,6 +21,7 @@ use crate::subscription::{
 
 type ActiveAuth = Option<(Tokens, Option<String>)>;
 
+#[derive(Clone)]
 pub struct RefreshService {
     state: Arc<SharedState>,
 }
@@ -38,14 +39,14 @@ pub enum QuotaRefreshWarning {
 
 #[derive(Debug, Clone)]
 pub struct QuotaRefreshOutcome {
-    pub succeeded: bool,
+    pub refresh: AccountRefreshOutcome,
     pub warning: Option<QuotaRefreshWarning>,
-    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AccountRefreshOutcome {
     pub succeeded: bool,
+    pub retry_after_seconds: Option<i64>,
     pub warnings: Vec<String>,
 }
 
@@ -84,23 +85,16 @@ impl RefreshService {
         account_id: &str,
     ) -> AppResult<SubscriptionRefreshResult> {
         let snapshot = self
-            .snapshot_account(account_id)?
+            .snapshot_account_async(account_id)
+            .await?
             .ok_or_else(|| AppError::msg("Account not found"))?;
 
-        let skip_unsupported = lock_data(&self.state)?
-            .app_settings
-            .skip_unsupported_region_refresh;
-        if skip_unsupported && snapshot.account.provider == AccountProvider::Codex {
-            let reachability =
-                crate::auto_refresh::get_chatgpt_reachability(&self.state, false).await;
-            if !reachability.is_available() {
-                let msg = reachability.user_summary();
-                log::info!("Skipping ChatGPT subscription refresh for account {account_id}: {msg}");
-                return Ok(SubscriptionRefreshResult {
-                    state: lock_data(&self.state)?.clone(),
-                    warning: Some(format!("Subscription refresh skipped: {msg}")),
-                });
-            }
+        if let Some(msg) = self.chatgpt_unavailable(snapshot.account.provider).await? {
+            log::info!("Skipping ChatGPT subscription refresh for account {account_id}: {msg}");
+            return Ok(SubscriptionRefreshResult {
+                state: lock_data(&self.state)?.clone(),
+                warning: Some(format!("Subscription refresh skipped: {msg}")),
+            });
         }
 
         let mut warnings = snapshot.warnings.clone();
@@ -115,8 +109,9 @@ impl RefreshService {
         let mut source_snapshot = snapshot.account.clone();
 
         if should_retry_subscription_after_reconcile(&update) {
-            let (retry, warning) =
-                self.refreshed_snapshot_after_reconcile(account_id, &snapshot.account)?;
+            let (retry, warning) = self
+                .refreshed_snapshot_after_reconcile_async(account_id, &snapshot.account)
+                .await?;
             if let Some(warning) = warning {
                 warnings.push(warning);
             }
@@ -132,13 +127,18 @@ impl RefreshService {
             }
         }
 
-        let mut result = self.commit_subscription_update(
-            account_id,
-            &source_snapshot,
-            &old_refresh_token,
-            update,
-            snapshot.ownership,
-        )?;
+        let service = self.clone();
+        let account_id = account_id.to_owned();
+        let mut result = crate::commands::run_blocking(move || {
+            service.commit_subscription_update(
+                &account_id,
+                &source_snapshot,
+                &old_refresh_token,
+                update,
+                snapshot.ownership,
+            )
+        })
+        .await?;
         if let Some(warning) = result.warning.take() {
             warnings.push(warning);
         }
@@ -148,157 +148,151 @@ impl RefreshService {
 
     pub async fn refresh_account_quota(&self, account_id: &str) -> AppResult<QuotaRefreshOutcome> {
         let snapshot = self
-            .snapshot_account(account_id)?
+            .snapshot_account_async(account_id)
+            .await?
             .ok_or_else(|| AppError::msg("Account not found"))?;
 
-        let skip_unsupported = lock_data(&self.state)?
-            .app_settings
-            .skip_unsupported_region_refresh;
-        if skip_unsupported && snapshot.account.provider == AccountProvider::Codex {
-            let reachability =
-                crate::auto_refresh::get_chatgpt_reachability(&self.state, false).await;
-            if !reachability.is_available() {
-                let msg = reachability.user_summary();
-                log::info!("Skipping ChatGPT quota refresh for account {account_id}: {msg}");
-                return Ok(QuotaRefreshOutcome {
+        if let Some(msg) = self.chatgpt_unavailable(snapshot.account.provider).await? {
+            log::info!("Skipping ChatGPT quota refresh for account {account_id}: {msg}");
+            return Ok(QuotaRefreshOutcome {
+                refresh: AccountRefreshOutcome {
                     succeeded: false,
-                    warning: None,
+                    retry_after_seconds: None,
                     warnings: vec![format!("Quota refresh skipped: {msg}")],
-                });
-            }
+                },
+                warning: None,
+            });
         }
 
-        let mut warnings = snapshot.warnings.clone();
-        let old_refresh_token = snapshot.account.tokens.refresh_token.clone();
-        let mut update = self
-            .refresh_quota_for_owner(&snapshot.base_url, &snapshot.account, snapshot.ownership)
-            .await;
-        let mut source_snapshot = snapshot.account.clone();
-
-        if should_retry_after_reconcile(&update) {
-            let (retry, warning) =
-                self.refreshed_snapshot_after_reconcile(account_id, &snapshot.account)?;
-            if let Some(warning) = warning {
-                warnings.push(warning);
-            }
-            if let Some((retry_base_url, retry_snapshot)) = retry {
-                update = self
-                    .refresh_quota_for_owner(&retry_base_url, &retry_snapshot, snapshot.ownership)
-                    .await;
-                source_snapshot = retry_snapshot;
-            }
-        }
+        let AccountSnapshot {
+            mut base_url,
+            account: mut source_snapshot,
+            ownership,
+            mut warnings,
+        } = snapshot;
+        let old_refresh_token = source_snapshot.tokens.refresh_token.clone();
+        let (update, reconcile_warning) = self
+            .fetch_quota_with_reconciliation(&mut base_url, &mut source_snapshot, ownership)
+            .await?;
+        warnings.extend(reconcile_warning);
 
         let quota_succeeded = update.quota_result.is_ok();
-        let ownership = snapshot.ownership;
-        let mut data = lock_data(&self.state)?;
-        let decision = self.allow_token_update(&data, account_id, &source_snapshot, ownership);
-        let allow_token_update = decision.allowed;
-        let skipped_tokens = skipped_token_update(
-            allow_token_update,
-            update.refreshed_tokens.as_ref(),
-            &source_snapshot,
-        );
-        let mut has_explicit_skip_warning = false;
-        if skipped_tokens && let Some(warning) = decision.warning {
-            has_explicit_skip_warning = true;
-            warnings.push(warning);
-        }
-        let mut next = data.clone();
-        let active_auth = apply_quota_update(
-            &data,
-            &mut next,
-            account_id,
-            &source_snapshot,
-            &old_refresh_token,
-            update,
-            None,
-            allow_token_update,
-        )?;
-        if let Some(warning) = commit_update(&mut data, next, active_auth)? {
-            warnings.push(warning);
-        }
+        let retry_after_seconds = update
+            .quota_result
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds);
+        let service = self.clone();
+        let account_id = account_id.to_owned();
+        crate::commands::run_blocking(move || {
+            let mut data = lock_data_for_update(&service.state)?;
+            let decision =
+                Self::allow_token_update(&data, &account_id, &source_snapshot, ownership);
+            let allow_token_update = decision.allowed;
+            let skipped_tokens = skipped_token_update(
+                allow_token_update,
+                update.refreshed_tokens.as_ref(),
+                &source_snapshot,
+            );
+            let mut has_explicit_skip_warning = false;
+            if skipped_tokens && let Some(warning) = decision.warning {
+                has_explicit_skip_warning = true;
+                warnings.push(warning);
+            }
+            let mut next = data.clone();
+            let active_auth = apply_quota_update(
+                &data,
+                &mut next,
+                &account_id,
+                &source_snapshot,
+                &old_refresh_token,
+                update,
+                None,
+                allow_token_update,
+            )?;
+            if let Some(warning) = commit_update(&mut data, next, active_auth)? {
+                warnings.push(warning);
+            }
 
-        Ok(QuotaRefreshOutcome {
-            succeeded: quota_succeeded,
-            warning: (!has_explicit_skip_warning)
-                .then(|| quota_warning_for_cas(skipped_tokens, quota_succeeded))
-                .flatten(),
-            warnings,
+            Ok(QuotaRefreshOutcome {
+                refresh: AccountRefreshOutcome {
+                    succeeded: quota_succeeded,
+                    retry_after_seconds,
+                    warnings,
+                },
+                warning: (!has_explicit_skip_warning)
+                    .then(|| quota_warning_for_cas(skipped_tokens, quota_succeeded))
+                    .flatten(),
+            })
         })
+        .await
     }
 
     pub async fn refresh_single_account(
         &self,
         account_id: &str,
     ) -> AppResult<AccountRefreshOutcome> {
-        let Some(snapshot) = self.snapshot_account(account_id)? else {
+        let Some(snapshot) = self.snapshot_account_async(account_id).await? else {
             return Ok(AccountRefreshOutcome {
                 succeeded: true,
+                retry_after_seconds: None,
                 warnings: Vec::new(),
             });
         };
 
-        let skip_unsupported = lock_data(&self.state)?
-            .app_settings
-            .skip_unsupported_region_refresh;
-        if skip_unsupported && snapshot.account.provider == AccountProvider::Codex {
-            let reachability =
-                crate::auto_refresh::get_chatgpt_reachability(&self.state, false).await;
-            if !reachability.is_available() {
-                let msg = reachability.user_summary();
-                log::info!("Skipping ChatGPT refresh for account {account_id}: {msg}");
-                return Ok(AccountRefreshOutcome {
-                    succeeded: false,
-                    warnings: vec![format!("Refresh skipped: {msg}")],
-                });
-            }
+        if let Some(msg) = self.chatgpt_unavailable(snapshot.account.provider).await? {
+            log::info!("Skipping ChatGPT refresh for account {account_id}: {msg}");
+            return Ok(AccountRefreshOutcome {
+                succeeded: false,
+                retry_after_seconds: None,
+                warnings: vec![format!("Refresh skipped: {msg}")],
+            });
         }
 
-        let mut warnings = snapshot.warnings.clone();
-        let old_refresh_token = snapshot.account.tokens.refresh_token.clone();
-        let mut update = self
-            .refresh_quota_for_owner(&snapshot.base_url, &snapshot.account, snapshot.ownership)
-            .await;
-        let mut source_snapshot = snapshot.account.clone();
-        let mut effective_base_url = snapshot.base_url.clone();
-
-        if should_retry_after_reconcile(&update) {
-            let (retry, _) =
-                self.refreshed_snapshot_after_reconcile(account_id, &snapshot.account)?;
-            if let Some((retry_base_url, retry_snapshot)) = retry {
-                update = self
-                    .refresh_quota_for_owner(&retry_base_url, &retry_snapshot, snapshot.ownership)
-                    .await;
-                source_snapshot = retry_snapshot;
-                effective_base_url = retry_base_url;
-            }
-        }
+        let AccountSnapshot {
+            mut base_url,
+            account: mut source_snapshot,
+            ownership,
+            mut warnings,
+        } = snapshot;
+        let old_refresh_token = source_snapshot.tokens.refresh_token.clone();
+        let subscription_next_check_at = source_snapshot.subscription_next_check_at;
+        let (update, _) = self
+            .fetch_quota_with_reconciliation(&mut base_url, &mut source_snapshot, ownership)
+            .await?;
 
         let refresh_succeeded = update.quota_result.is_ok();
-        let subscription_result =
-            if refresh_succeeded && subscription_refresh_due(&snapshot.account, now_ts()) {
-                let tokens = update
-                    .refreshed_tokens
-                    .as_ref()
-                    .unwrap_or(&source_snapshot.tokens);
-                Some(
-                    fetch_subscription_info(
-                        &self.state.http_client,
-                        &effective_base_url,
-                        tokens,
-                        source_snapshot.account_id.as_deref(),
-                        source_snapshot.subscription_endpoint_hint.as_deref(),
-                    )
-                    .await,
+        let retry_after_seconds = update
+            .quota_result
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds);
+        let subscription_result = if refresh_succeeded
+            && subscription_refresh_due(subscription_next_check_at, now_ts())
+        {
+            let tokens = update
+                .refreshed_tokens
+                .as_ref()
+                .unwrap_or(&source_snapshot.tokens);
+            Some(
+                fetch_subscription_info(
+                    &self.state.http_client,
+                    &base_url,
+                    tokens,
+                    source_snapshot.account_id.as_deref(),
+                    source_snapshot.subscription_endpoint_hint.as_deref(),
                 )
-            } else {
-                None
-            };
+                .await,
+            )
+        } else {
+            None
+        };
 
-        let ownership = snapshot.ownership;
-        let mut data = lock_data(&self.state)?;
-        let decision = self.allow_token_update(&data, account_id, &source_snapshot, ownership);
+        let service = self.clone();
+        let account_id = account_id.to_owned();
+        crate::commands::run_blocking(move || {
+        let mut data = lock_data_for_update(&service.state)?;
+        let decision = Self::allow_token_update(&data, &account_id, &source_snapshot, ownership);
         let allow_token_update = decision.allowed;
         if skipped_token_update(
             allow_token_update,
@@ -320,7 +314,7 @@ impl RefreshService {
         let active_auth = apply_quota_update(
             &data,
             &mut next,
-            account_id,
+            &account_id,
             &source_snapshot,
             &old_refresh_token,
             update,
@@ -333,12 +327,72 @@ impl RefreshService {
 
         Ok(AccountRefreshOutcome {
             succeeded: refresh_succeeded,
+            retry_after_seconds,
             warnings,
         })
+        }).await
+    }
+
+    async fn chatgpt_unavailable(&self, provider: AccountProvider) -> AppResult<Option<String>> {
+        let skip_unsupported = lock_data(&self.state)?
+            .app_settings
+            .skip_unsupported_region_refresh;
+        if !skip_unsupported || provider != AccountProvider::Codex {
+            return Ok(None);
+        }
+        let reachability = crate::auto_refresh::get_chatgpt_reachability(&self.state, false).await;
+        Ok((!reachability.is_available()).then(|| reachability.user_summary()))
+    }
+
+    async fn fetch_quota_with_reconciliation(
+        &self,
+        base_url: &mut String,
+        account: &mut Account,
+        ownership: CredentialOwnership,
+    ) -> AppResult<(QuotaRefreshUpdate, Option<String>)> {
+        let update = self
+            .refresh_quota_for_owner(base_url, account, ownership)
+            .await;
+        if !should_retry_after_reconcile(&update) {
+            return Ok((update, None));
+        }
+
+        let (retry, warning) = self
+            .refreshed_snapshot_after_reconcile_async(&account.id, account)
+            .await?;
+        if let Some((retry_base_url, retry_account)) = retry {
+            *base_url = retry_base_url;
+            *account = retry_account;
+            let update = self
+                .refresh_quota_for_owner(base_url, account, ownership)
+                .await;
+            return Ok((update, warning));
+        }
+        Ok((update, warning))
+    }
+
+    async fn snapshot_account_async(&self, account_id: &str) -> AppResult<Option<AccountSnapshot>> {
+        let service = self.clone();
+        let account_id = account_id.to_owned();
+        crate::commands::run_blocking(move || service.snapshot_account(&account_id)).await
+    }
+
+    async fn refreshed_snapshot_after_reconcile_async(
+        &self,
+        account_id: &str,
+        previous: &Account,
+    ) -> AppResult<ReconciledAccountSnapshot> {
+        let service = self.clone();
+        let account_id = account_id.to_owned();
+        let previous = previous.clone();
+        crate::commands::run_blocking(move || {
+            service.refreshed_snapshot_after_reconcile(&account_id, &previous)
+        })
+        .await
     }
 
     fn snapshot_account(&self, account_id: &str) -> AppResult<Option<AccountSnapshot>> {
-        let mut data = lock_data(&self.state)?;
+        let mut data = lock_data_for_update(&self.state)?;
         let mut warnings = Vec::new();
         // One read backs both the reconciliation below and the ownership
         // decision, so a refresh cannot reconcile against one version of
@@ -368,7 +422,6 @@ impl RefreshService {
             data.accounts
                 .iter()
                 .find(|account| &account.id == active_id)
-                .cloned()
         });
         Ok(data
             .accounts
@@ -377,11 +430,7 @@ impl RefreshService {
             .cloned()
             .map(|account| {
                 let ownership = CredentialOwnership {
-                    codex: codex_owns_account(
-                        &account,
-                        active_account.as_ref(),
-                        codex_auth_present,
-                    ),
+                    codex: codex_owns_account(&account, active_account, codex_auth_present),
                 };
                 AccountSnapshot {
                     base_url,
@@ -397,7 +446,7 @@ impl RefreshService {
         account_id: &str,
         previous: &Account,
     ) -> AppResult<ReconciledAccountSnapshot> {
-        let mut data = lock_data(&self.state)?;
+        let mut data = lock_data_for_update(&self.state)?;
         let mut warnings = Vec::new();
         if let Err(error) = reconcile_codex_auth_transactionally(&mut data) {
             let message = format!(
@@ -458,8 +507,8 @@ impl RefreshService {
         update: SubscriptionRefreshUpdate,
         ownership: CredentialOwnership,
     ) -> AppResult<SubscriptionRefreshResult> {
-        let mut data = lock_data(&self.state)?;
-        let decision = self.allow_token_update(&data, account_id, source_snapshot, ownership);
+        let mut data = lock_data_for_update(&self.state)?;
+        let decision = Self::allow_token_update(&data, account_id, source_snapshot, ownership);
         let mut warnings = Vec::new();
         let allow_token_update = decision.allowed;
         if skipped_token_update(
@@ -498,7 +547,6 @@ impl RefreshService {
     /// replaced credentials between snapshot and commit, the stale refresh is
     /// not allowed to advance or overwrite them.
     fn allow_token_update(
-        &self,
         data: &AppData,
         account_id: &str,
         source_snapshot: &Account,
@@ -1094,10 +1142,8 @@ fn quota_warning_for_cas(
     (skipped_token_update && quota_succeeded).then_some(QuotaRefreshWarning::TokenUpdateSkipped)
 }
 
-fn subscription_refresh_due(account: &Account, now: i64) -> bool {
-    account
-        .subscription_next_check_at
-        .is_none_or(|next_check_at| next_check_at <= now)
+fn subscription_refresh_due(next_check_at: Option<i64>, now: i64) -> bool {
+    next_check_at.is_none_or(|next_check_at| next_check_at <= now)
 }
 
 #[cfg(test)]
@@ -1783,10 +1829,19 @@ mod tests {
         let now = 1_000_000;
         let mut account = account("schedule");
         account.subscription_next_check_at = None;
-        assert!(subscription_refresh_due(&account, now));
+        assert!(subscription_refresh_due(
+            account.subscription_next_check_at,
+            now
+        ));
         account.subscription_next_check_at = Some(now + 1);
-        assert!(!subscription_refresh_due(&account, now));
-        assert!(subscription_refresh_due(&account, now + 1));
+        assert!(!subscription_refresh_due(
+            account.subscription_next_check_at,
+            now
+        ));
+        assert!(subscription_refresh_due(
+            account.subscription_next_check_at,
+            now + 1
+        ));
     }
 
     #[test]

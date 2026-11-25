@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use crate::app_state::{SharedState, lock_data, lock_flows};
+use crate::app_state::{SharedState, lock_data, lock_data_for_update, lock_flows};
 use crate::codex::write_codex_auth;
 use crate::dto::AccountDto;
 use crate::errors::{AppError, AppResult};
@@ -30,11 +30,8 @@ pub const OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const OAUTH_ISSUER: &str = "https://auth.openai.com";
 const OAUTH_SCOPE: &str = "openid profile email offline_access";
 const OAUTH_ORIGINATOR: &str = "codex_cli_rs";
-pub use crate::oauth::server::{
-    CALLBACK_ADDR, MAX_OAUTH_ERROR_BODY_BYTES, MAX_OAUTH_SUCCESS_BODY_BYTES, OAUTH_REDIRECT_URI,
-    ensure_callback_server, handle_callback_stream, html_escape, html_message,
-    parse_callback_target, write_error_http_response, write_http_response,
-    write_http_response_with_limit,
+use crate::oauth::server::{
+    MAX_OAUTH_ERROR_BODY_BYTES, MAX_OAUTH_SUCCESS_BODY_BYTES, OAUTH_REDIRECT_URI,
 };
 const ACTIVE_FLOW_MAX_AGE_SECS: i64 = 10 * 60;
 const TERMINAL_FLOW_MAX_AGE_SECS: i64 = 2 * 60;
@@ -559,17 +556,19 @@ pub async fn complete_oauth_code(
             (quota_result, subscription_result)
         };
 
-        let account = {
-            let mut flows = lock_flows(shared)?;
+        let commit_shared = Arc::clone(shared);
+        let flow_id = flow_id.to_owned();
+        let account = crate::commands::run_blocking(move || {
+            let mut flows = lock_flows(&commit_shared)?;
             let flow = flows
-                .get_mut(flow_id)
+                .get_mut(&flow_id)
                 .ok_or_else(|| AppError::msg("OAuth flow not found"))?;
             if matches!(flow.status, OauthFlowStatus::Cancelled) {
                 return Err(AppError::msg("OAuth flow was cancelled"));
             }
 
             let outcome = (|| -> AppResult<Account> {
-                let mut data = lock_data(shared)?;
+                let mut data = lock_data_for_update(&commit_shared)?;
                 let mut next = data.clone();
                 let account = if flow_provider == AccountProvider::Gemini {
                     save_authenticated_gemini_account(
@@ -713,8 +712,8 @@ pub async fn complete_oauth_code(
             }
             flow.updated_at = now_ts();
             flow.terminal_at = Some(flow.updated_at);
-            outcome?
-        };
+            outcome
+        }).await?;
 
         crate::tray_dashboard::emit_state_changed(shared, "accounts", vec![account.id.clone()]);
         crate::auto_refresh::notify_schedule_changed(shared);

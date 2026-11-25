@@ -2,6 +2,29 @@ import type { Account, AppData, AppSettings } from '../types'
 
 const NEVER = Number.MIN_SAFE_INTEGER
 
+// IPC deserializes every nested object again. Share equal parts of these plain
+// JSON snapshots so a no-op reload does not invalidate memoized account rows.
+function shareSnapshot<T>(current: T, incoming: T): T {
+  if (Object.is(current, incoming)) return current
+  if (
+    current == null || incoming == null ||
+    typeof current !== 'object' || typeof incoming !== 'object' ||
+    Array.isArray(current) !== Array.isArray(incoming)
+  ) return incoming
+
+  const previous = current as Record<string, unknown>
+  const next = incoming as Record<string, unknown>
+  const keys = Object.keys(next)
+  let equal = keys.length === Object.keys(previous).length
+  const shared = (Array.isArray(incoming) ? [] : {}) as unknown as Record<string, unknown>
+  for (const key of keys) {
+    const value = shareSnapshot(previous[key], next[key])
+    shared[key] = value
+    if (!Object.hasOwn(previous, key) || value !== previous[key]) equal = false
+  }
+  return equal ? current : shared as T
+}
+
 export function isStaleRevision(
   incoming: number,
   current: number | null | undefined
@@ -46,8 +69,12 @@ export function mergeAccountSnapshot(
   const newSubscriptionPlan = subscriptionNewest ? incoming.subscriptionPlan : current.subscriptionPlan
   const newSubscriptionDetectedAt = subscriptionNewest ? incoming.subscriptionDetectedAt : current.subscriptionDetectedAt
   const newSubscriptionCheckedAt = subscriptionNewest ? incoming.subscriptionCheckedAt : current.subscriptionCheckedAt
-  const newTokenHealth = tokenNewest ? incoming.tokenHealth : current.tokenHealth
-  const newQuota = quotaNewest ? incoming.quota : current.quota
+  const newTokenHealth = tokenNewest
+    ? shareSnapshot(current.tokenHealth, incoming.tokenHealth)
+    : current.tokenHealth
+  const newQuota = quotaNewest
+    ? shareSnapshot(current.quota, incoming.quota)
+    : current.quota
   const newLastLoginAt = Math.max(current.lastLoginAt, incoming.lastLoginAt)
 
   const quotaIssue = quotaNewest
@@ -76,7 +103,7 @@ export function mergeAccountSnapshot(
     return current
   }
 
-  const issues = {
+  const issues = issuesEqual ? current.issues : {
     quota: quotaIssue,
     subscription: subIssue
   }
@@ -96,7 +123,55 @@ export function mergeAccountSnapshot(
   }
 }
 
-export function mergeServerAccountsPreservingOrder(
+export function mergeAccountUpdates(current: AppData, updates: Iterable<Account>): AppData {
+  const updatesById = new Map<string, Account>()
+  for (const update of updates) {
+    const previous = updatesById.get(update.id)
+    updatesById.set(update.id, previous ? mergeAccountSnapshot(previous, update) : update)
+  }
+  let accounts: Account[] | undefined
+  for (let index = 0; index < current.accounts.length; index += 1) {
+    const account = current.accounts[index]
+    const update = updatesById.get(account.id)
+    if (!update) continue
+    const merged = mergeAccountSnapshot(account, update)
+    if (merged === account) continue
+    accounts ??= current.accounts.slice()
+    accounts[index] = merged
+  }
+  return accounts ? { ...current, accounts } : current
+}
+
+export function applyServerAccountOrder(
+  current: AppData,
+  incoming: AppData,
+  reconcile: (current: Account, incoming: Account) => Account = (account) => account
+): AppData {
+  if (isStaleRevision(incoming.revision, current.revision)) return current
+
+  const currentById = new Map(current.accounts.map((account) => [account.id, account]))
+  const incomingIds = new Set<string>()
+  const accounts: Account[] = []
+  for (const incomingAccount of incoming.accounts) {
+    incomingIds.add(incomingAccount.id)
+    const currentAccount = currentById.get(incomingAccount.id)
+    if (currentAccount) accounts.push(reconcile(currentAccount, incomingAccount))
+  }
+  for (const account of current.accounts) {
+    if (!incomingIds.has(account.id)) accounts.push(account)
+  }
+
+  const unchanged = accounts.length === current.accounts.length &&
+    accounts.every((account, index) => account === current.accounts[index])
+  if (unchanged && current.revision === incoming.revision) return current
+  return {
+    ...current,
+    accounts: unchanged ? current.accounts : accounts,
+    revision: incoming.revision
+  }
+}
+
+function mergeServerAccountsPreservingOrder(
   current: Account[],
   incoming: Account[]
 ): Account[] {
@@ -131,15 +206,22 @@ export function mergeIncomingState(
   settingsOverlay: AppSettings | null
 ): AppData {
   if (isStaleRevision(incoming.revision, current.revision)) {
-    return settingsOverlay ? { ...current, appSettings: settingsOverlay } : current
+    if (!settingsOverlay) return current
+    const appSettings = shareSnapshot(current.appSettings, settingsOverlay)
+    return appSettings === current.appSettings ? current : { ...current, appSettings }
   }
+
+  const accounts = mergeServerAccountsPreservingOrder(current.accounts, incoming.accounts)
+  const appSettings = shareSnapshot(current.appSettings, settingsOverlay ?? incoming.appSettings)
+  if (
+    incoming.revision === current.revision && accounts === current.accounts &&
+    appSettings === current.appSettings && incoming.activeAccountId === current.activeAccountId &&
+    incoming.activeGeminiAccountId === current.activeGeminiAccountId
+  ) return current
 
   return {
     ...incoming,
-    accounts: mergeServerAccountsPreservingOrder(
-      current.accounts,
-      incoming.accounts
-    ),
-    appSettings: settingsOverlay ?? incoming.appSettings
+    accounts,
+    appSettings
   }
 }

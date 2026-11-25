@@ -14,7 +14,6 @@ type AccountCardProps = {
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
-  isRelogining: boolean
   isRefreshing: boolean
   quotaColumns: QuotaColumn[]
   hiddenFromAll: boolean
@@ -30,7 +29,6 @@ export const AccountCard = memo(function AccountCard({
   isActive,
   isSwitching,
   isRemoving,
-  isRelogining,
   isRefreshing,
   quotaColumns,
   hiddenFromAll,
@@ -44,11 +42,10 @@ export const AccountCard = memo(function AccountCard({
   const {
     isSwitching: switching,
     isRemoving: removing,
-    isRelogining: relogining,
     isRefreshing: isAccountRefreshing,
     needsRelogin,
     detectedSubscriptionDate
-  } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  } = useAccountRowState(account, { isSwitching, isRemoving, isRefreshing })
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
@@ -98,13 +95,11 @@ export const AccountCard = memo(function AccountCard({
               type="button"
               className="account-card-icon-action account-card-icon-action-warning"
               onClick={() => onRelogin(account)}
-              disabled={relogining || switching || removing || isAccountRefreshing}
+              disabled={switching || removing || isAccountRefreshing}
               title="Re-login account"
               aria-label={`Re-login ${accountLabel}`}
             >
-              {relogining
-                ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-                : <KeyRound size={16} aria-hidden="true" />}
+              <KeyRound size={16} aria-hidden="true" />
             </button>
           )}
           <button
@@ -147,7 +142,6 @@ export const AccountCard = memo(function AccountCard({
                 value={window?.usedPercent}
                 resetAt={window?.resetAt}
                 title={column.cellTitle}
-                isRefreshing={isAccountRefreshing}
               />
             )
           })}

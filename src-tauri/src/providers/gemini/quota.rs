@@ -5,10 +5,11 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::app_state::{SharedState, lock_data};
+use crate::app_state::{SharedState, lock_data, lock_data_for_update};
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    AccountProvider, QuotaInfo, QuotaWindow, TokenHealth, TokenHealthStatus, Tokens, now_ts,
+    Account, AccountProvider, QuotaInfo, QuotaWindow, TokenHealth, TokenHealthStatus, Tokens,
+    now_ts,
 };
 use crate::oauth_gemini::{GoogleTokenSet, google_reauth_required, refresh_google_access_token};
 use crate::refresh_service::AccountRefreshOutcome;
@@ -18,6 +19,7 @@ const CLOUD_CODE_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 const CLOUD_CODE_FALLBACK_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
 const CLOUD_CODE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 const TOKEN_REFRESH_SKEW_SECONDS: i64 = 15 * 60;
+const DISCOVERY_TTL_SECONDS: i64 = 60 * 60;
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 const FIVE_HOURS_SECONDS: i64 = 5 * 60 * 60;
@@ -27,6 +29,7 @@ const WEEK_SECONDS: i64 = 7 * 24 * 60 * 60;
 pub struct GeminiQuotaResult {
     pub quota: QuotaInfo,
     pub project_id: Option<String>,
+    discovery_checked_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -193,11 +196,7 @@ async fn post_cloud_code_to_url(
         .map_err(|source| AppError::Http { context, source })?;
 
     let status = response.status();
-    let retry_after_seconds = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<i64>().ok());
+    let retry_after_seconds = crate::quota::parse_retry_after(response.headers());
     if status.is_success() {
         return read_bounded_response(response, context, MAX_RESPONSE_BYTES).await;
     }
@@ -219,6 +218,12 @@ async fn post_cloud_code(
 ) -> AppResult<Vec<u8>> {
     match post_cloud_code_to_url(client, tokens, CLOUD_CODE_BASE_URL, path, body, context).await {
         Ok(bytes) => Ok(bytes),
+        Err(error)
+            if google_reauth_required(&error)
+                || matches!(error, AppError::RemoteHttp { status: 429, .. }) =>
+        {
+            Err(error)
+        }
         Err(primary_err) => {
             // Antigravity language server runs against daily-cloudcode-pa.googleapis.com.
             // If the primary daily endpoint is unreachable or errors, fallback to legacy cloudcode-pa.googleapis.com.
@@ -525,8 +530,23 @@ pub async fn fetch_gemini_quota(
             error.user_message()
         )));
     }
+    if let Err(error @ AppError::RemoteHttp { status: 429, .. }) = discovery {
+        return Err(error);
+    }
+    let discovery_checked_at = discovery.as_ref().ok().map(|_| now_ts());
     let (discovered_project, plan_type) = discovery.unwrap_or((None, None));
-    let project_id = cached_project_id.map(str::to_string).or(discovered_project);
+    let project_id = discovered_project.or_else(|| cached_project_id.map(str::to_owned));
+    let mut result = fetch_quota_for_project(client, tokens, project_id, plan_type).await?;
+    result.discovery_checked_at = discovery_checked_at;
+    Ok(result)
+}
+
+async fn fetch_quota_for_project(
+    client: &Client,
+    tokens: &Tokens,
+    project_id: Option<String>,
+    plan_type: Option<String>,
+) -> AppResult<GeminiQuotaResult> {
     let request_body = project_id
         .as_ref()
         .map_or_else(|| json!({}), |project| json!({ "project": project }));
@@ -539,15 +559,28 @@ pub async fn fetch_gemini_quota(
         "Antigravity quota summary failed",
     )
     .await;
-    if let Ok(body) = summary_result {
-        let envelope: QuotaSummaryEnvelope =
-            serde_json::from_slice(&body).map_err(|source| AppError::Json {
-                context: "Invalid Antigravity quota summary",
-                source,
-            })?;
-        if let Some(quota) = quota_from_summary(envelope, plan_type.clone()) {
-            return Ok(GeminiQuotaResult { quota, project_id });
+    match summary_result {
+        Ok(body) => {
+            let envelope: QuotaSummaryEnvelope =
+                serde_json::from_slice(&body).map_err(|source| AppError::Json {
+                    context: "Invalid Antigravity quota summary",
+                    source,
+                })?;
+            if let Some(quota) = quota_from_summary(envelope, plan_type.clone()) {
+                return Ok(GeminiQuotaResult {
+                    quota,
+                    project_id,
+                    discovery_checked_at: None,
+                });
+            }
         }
+        Err(error)
+            if google_reauth_required(&error)
+                || matches!(error, AppError::RemoteHttp { status: 429, .. }) =>
+        {
+            return Err(error);
+        }
+        Err(_) => {}
     }
 
     let available_body = post_cloud_code(
@@ -568,7 +601,49 @@ pub async fn fetch_gemini_quota(
             "Antigravity did not expose quota values for this Google account. The account remains available for switching.",
         )
     })?;
-    Ok(GeminiQuotaResult { quota, project_id })
+    Ok(GeminiQuotaResult {
+        quota,
+        project_id,
+        discovery_checked_at: None,
+    })
+}
+
+fn cached_discovery(
+    account: &Account,
+    force_discovery: bool,
+    now: i64,
+) -> Option<(Option<&str>, &str)> {
+    let checked_at = account.subscription_checked_at?;
+    if force_discovery || !(0..DISCOVERY_TTL_SECONDS).contains(&now.saturating_sub(checked_at)) {
+        return None;
+    }
+    Some((
+        account.provider_project_id.as_deref(),
+        account.subscription_plan.as_deref()?,
+    ))
+}
+
+async fn fetch_account_quota(
+    client: &Client,
+    tokens: &Tokens,
+    account: &Account,
+    force_discovery: bool,
+) -> AppResult<GeminiQuotaResult> {
+    if let Some((project_id, plan)) = cached_discovery(account, force_discovery, now_ts()) {
+        let result = fetch_quota_for_project(
+            client,
+            tokens,
+            project_id.map(str::to_owned),
+            Some(plan.to_owned()),
+        )
+        .await;
+        if !matches!(&result, Err(error @ AppError::RemoteHttp { status: 400 | 403 | 404, .. })
+            if !google_reauth_required(error))
+        {
+            return result;
+        }
+    }
+    fetch_gemini_quota(client, tokens, account.provider_project_id.as_deref()).await
 }
 
 pub async fn fresh_google_tokens(
@@ -609,6 +684,7 @@ fn token_health_for_error(error: &AppError) -> TokenHealth {
 pub async fn refresh_gemini_account(
     state: &Arc<SharedState>,
     account_id: &str,
+    force_discovery: bool,
 ) -> AppResult<AccountRefreshOutcome> {
     let snapshot = {
         let data = lock_data(state)?;
@@ -627,30 +703,46 @@ pub async fn refresh_gemini_account(
     .await;
     let network_result = match token_result {
         Ok(mut token_set) => {
-            let mut quota_result = fetch_gemini_quota(
+            let mut quota_result = fetch_account_quota(
                 &state.http_client,
                 &token_set.tokens,
-                snapshot.provider_project_id.as_deref(),
+                &snapshot,
+                force_discovery,
             )
             .await;
-            if let Err(AppError::RemoteHttp { status: 401, .. }) = &quota_result
-                && let Ok(new_token_set) =
-                    refresh_google_access_token(&state.http_client, &snapshot.tokens).await
-            {
-                token_set = new_token_set;
-                quota_result = fetch_gemini_quota(
-                    &state.http_client,
-                    &token_set.tokens,
-                    snapshot.provider_project_id.as_deref(),
-                )
-                .await;
+            if let Err(AppError::RemoteHttp { status: 401, .. }) = &quota_result {
+                match refresh_google_access_token(&state.http_client, &snapshot.tokens).await {
+                    Ok(new_token_set) => {
+                        token_set = new_token_set;
+                        quota_result = fetch_account_quota(
+                            &state.http_client,
+                            &token_set.tokens,
+                            &snapshot,
+                            force_discovery,
+                        )
+                        .await;
+                    }
+                    // Keep the retry metadata and status from the actual failed
+                    // refresh instead of treating a rate limit as an expired login.
+                    Err(error) => quota_result = Err(error),
+                }
             }
             Ok((token_set, quota_result))
         }
         Err(error) => Err(error),
     };
 
-    let mut data = lock_data(state)?;
+    let retry_after_seconds = match &network_result {
+        Ok((_, result)) => result
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds),
+        Err(error) => error.retry_after_seconds(),
+    };
+    let state = Arc::clone(state);
+    let account_id = account_id.to_owned();
+    crate::commands::run_blocking(move || {
+    let mut data = lock_data_for_update(&state)?;
     let current = data
         .accounts
         .iter()
@@ -661,6 +753,7 @@ pub async fn refresh_gemini_account(
     {
         return Ok(AccountRefreshOutcome {
             succeeded: false,
+            retry_after_seconds: None,
             warnings: vec![
                 "Antigravity credentials changed while quota was refreshing; the newer credentials were kept."
                     .to_string(),
@@ -669,7 +762,7 @@ pub async fn refresh_gemini_account(
     }
 
     let settings = data.app_settings.clone().normalized();
-    let is_active = data.active_gemini_account_id.as_deref() == Some(account_id);
+    let is_active = data.active_gemini_account_id.as_deref() == Some(account_id.as_str());
     let mut next = data.clone();
     let account = next
         .accounts
@@ -694,7 +787,10 @@ pub async fn refresh_gemini_account(
                     }
                     if let Some(plan_type) = result.quota.plan_type.as_ref() {
                         account.subscription_plan = Some(plan_type.clone());
-                        account.subscription_detected_at = Some(now_ts());
+                        if let Some(checked_at) = result.discovery_checked_at {
+                            account.subscription_detected_at = Some(checked_at);
+                            account.subscription_checked_at = Some(checked_at);
+                        }
                     }
                     account.quota = Some(result.quota);
                     account.token_health = if refreshed_tokens {
@@ -729,7 +825,7 @@ pub async fn refresh_gemini_account(
     }
 
     let mut warnings = Vec::new();
-    let active = next.active_gemini_account_id.as_deref() == Some(account_id);
+    let active = next.active_gemini_account_id.as_deref() == Some(account_id.as_str());
     let previous_external = if active && refreshed_tokens {
         crate::gemini::read_antigravity_auth().ok().flatten()
     } else {
@@ -763,13 +859,43 @@ pub async fn refresh_gemini_account(
 
     Ok(AccountRefreshOutcome {
         succeeded,
+        retry_after_seconds,
         warnings,
     })
+    }).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_cache_expires_and_explicit_plan_refresh_bypasses_it() {
+        use crate::models::AppData;
+        use crate::persisted::PersistedAppData;
+
+        let persisted: PersistedAppData = serde_json::from_value(json!({
+            "accounts": [{
+                "id": "gemini-1",
+                "provider": "gemini",
+                "createdAt": 1000,
+                "lastLoginAt": 1000,
+                "providerProjectId": "project",
+                "subscriptionPlan": "Google AI Pro",
+                "subscriptionCheckedAt": 1000
+            }]
+        }))
+        .unwrap();
+        let data = AppData::from(persisted);
+        let account = &data.accounts[0];
+        assert_eq!(
+            cached_discovery(account, false, 1001),
+            Some((Some("project"), "Google AI Pro"))
+        );
+        assert!(cached_discovery(account, true, 1001).is_none());
+        assert!(cached_discovery(account, false, 999).is_none());
+        assert!(cached_discovery(account, false, 1000 + DISCOVERY_TTL_SECONDS).is_none());
+    }
 
     #[test]
     fn quota_summary_maps_real_five_hour_and_weekly_buckets() {

@@ -18,14 +18,12 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 base64 = "0.22.1"
 aes-gcm = "0.10.3"
-chrono = { version = "0.4.45", features = ["serde", "clock"] }
+chrono = "0.4.45"
 dirs = "6.0.0"
 keyring = "4.1.6"
 log = "0.4.33"
-minisign-verify = "0.2.5"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }
-semver = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
@@ -34,12 +32,12 @@ tauri-plugin-log = "2.8.0"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-single-instance = "2.4.2"
 thiserror = "2.0.18"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 url = "2.5.8"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Credentials", "Win32_System_Diagnostics_ToolHelp"] }
 
 [profile.release]
 opt-level = 3

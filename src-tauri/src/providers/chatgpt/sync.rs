@@ -156,6 +156,9 @@ pub fn reconcile_codex_auth_with_snapshot(
     data: &mut AppData,
     snapshot: Option<&CodexAuthSnapshot>,
 ) -> AppResult<bool> {
+    if snapshot.is_none() {
+        return Ok(false);
+    }
     let mut next = data.clone();
     if !reconcile_codex_auth_from_snapshot(&mut next, snapshot) {
         return Ok(false);
@@ -424,14 +427,13 @@ pub fn restart_codex_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let status = Command::new("taskkill")
-        .args(["/IM", CHATGPT_PROCESS_IMAGE, "/F", "/T"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map_err(|source| AppError::Io {
-            context: "Failed to stop ChatGPT process",
-            source,
-        })?;
+    let status = crate::process::command_status_with_timeout(
+        Command::new("taskkill")
+            .args(["/IM", CHATGPT_PROCESS_IMAGE, "/F", "/T"])
+            .creation_flags(CREATE_NO_WINDOW),
+        Duration::from_secs(5),
+        "Failed to stop client process",
+    )?;
 
     if !status.success() {
         log::info!(
@@ -468,9 +470,11 @@ pub fn restart_codex_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let _ = Command::new("osascript")
-        .args(["-e", "tell application \"ChatGPT\" to quit"])
-        .output();
+    let _ = crate::process::command_status_with_timeout(
+        Command::new("osascript").args(["-e", "tell application \"ChatGPT\" to quit"]),
+        Duration::from_secs(5),
+        "Failed to stop client process",
+    );
 
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut exited = false;
@@ -482,7 +486,11 @@ pub fn restart_codex_process() -> AppResult<()> {
         thread::sleep(Duration::from_millis(100));
     }
     if !exited && is_chatgpt_running()? {
-        let _ = Command::new("pkill").arg("-x").arg("ChatGPT").output();
+        let _ = crate::process::command_status_with_timeout(
+            Command::new("pkill").arg("-x").arg("ChatGPT"),
+            Duration::from_secs(5),
+            "Failed to stop client process",
+        );
         wait_for_chatgpt_to_exit()?;
     }
 

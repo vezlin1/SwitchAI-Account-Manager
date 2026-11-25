@@ -1,4 +1,58 @@
-use crate::errors::AppResult;
+use crate::errors::{AppError, AppResult};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+
+fn poll_until<T>(
+    timeout: Duration,
+    interval: Duration,
+    mut poll: impl FnMut() -> AppResult<Option<T>>,
+) -> AppResult<Option<T>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(Some(value));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        std::thread::sleep(interval.min(remaining));
+    }
+}
+
+/// Every external stop helper gets its own deadline, including taskkill itself.
+/// Output is discarded; no pipes can fill and stop process termination.
+pub fn command_status_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    context: &'static str,
+) -> AppResult<ExitStatus> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| AppError::Io { context, source })?;
+    let status = poll_until(timeout, Duration::from_millis(25), || {
+        child
+            .try_wait()
+            .map_err(|source| AppError::Io { context, source })
+    })?;
+    if let Some(status) = status {
+        return Ok(status);
+    }
+    let _ = child.kill();
+    // Reap after cancellation, also with a bounded wait.
+    let _ = poll_until(Duration::from_secs(1), Duration::from_millis(25), || {
+        child
+            .try_wait()
+            .map_err(|source| AppError::Io { context, source })
+    });
+    Err(AppError::msg(format!(
+        "{context}: command timed out after {} seconds",
+        timeout.as_secs()
+    )))
+}
 
 #[cfg(target_os = "windows")]
 pub fn is_named_process_running(exe_names: &[&str]) -> Vec<bool> {
@@ -159,6 +213,58 @@ pub fn is_process_running(name: &str) -> AppResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn stalled_child_command_returns_a_timeout_instead_of_waiting_for_exit() {
+        use std::os::windows::process::CommandExt;
+
+        let started = Instant::now();
+        let result = command_status_with_timeout(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 20",
+                ])
+                .creation_flags(0x0800_0000),
+            Duration::from_millis(100),
+            "Test child command",
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .user_message()
+                .contains("command timed out")
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn bounded_poll_times_out_without_waiting_for_a_child() {
+        let mut calls = 0;
+        let result = poll_until::<()>(Duration::ZERO, Duration::from_secs(60), || {
+            calls += 1;
+            Ok(None)
+        })
+        .expect("poll");
+        assert_eq!(result, None);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn bounded_poll_returns_ready_result_and_propagates_errors() {
+        assert_eq!(
+            poll_until(Duration::ZERO, Duration::ZERO, || Ok(Some(42))).unwrap(),
+            Some(42)
+        );
+        let result = poll_until::<()>(Duration::ZERO, Duration::ZERO, || {
+            Err(AppError::msg("poll failed"))
+        });
+        assert_eq!(result.unwrap_err().user_message(), "poll failed");
+    }
 
     #[test]
     fn process_running_does_not_crash_on_nonexistent() {

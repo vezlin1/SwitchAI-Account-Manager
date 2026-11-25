@@ -1,16 +1,11 @@
-import React from 'react'
-import { usePlatform } from '../../hooks/usePlatform'
+import { isMac } from '../../utils/platform'
 
 interface KbdProps {
-  children?: React.ReactNode
-  combo?: string
-  className?: string
+  combo: string
 }
 
-export function Kbd({ children, combo, className = '' }: KbdProps) {
-  const { isMac } = usePlatform()
-
-  let text = children ? String(children) : (combo ?? '')
+export function Kbd({ combo }: KbdProps) {
+  let text = combo
 
   if (isMac) {
     text = text
@@ -34,7 +29,7 @@ export function Kbd({ children, combo, className = '' }: KbdProps) {
   }
 
   return (
-    <kbd className={`kbd-badge ${className}`}>
+    <kbd className="kbd-badge">
       {text}
     </kbd>
   )

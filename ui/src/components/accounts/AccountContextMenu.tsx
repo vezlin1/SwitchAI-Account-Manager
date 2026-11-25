@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Copy, Eye, EyeOff } from 'lucide-react'
-import { Kbd } from '../common'
+import { Kbd } from '../common/Kbd'
 import type { Account } from '../../types'
 import { usePrivacy } from '../../context/usePrivacy'
 

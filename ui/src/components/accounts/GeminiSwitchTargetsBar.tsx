@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AppWindow, Code2, Info, Terminal } from 'lucide-react'
-import { api } from '../../api'
 import type { AntigravitySurface, AntigravitySurfaceId, AppSettings } from '../../types'
 import {
-  ANTIGRAVITY_SURFACES_CACHE_KEY,
   getInitialSurfaces,
-  setCachedSurfaces
+  refreshAntigravitySurfaces
 } from '../../utils/antigravitySurfaces'
+import { createCompletionPoller } from '../../utils/polling'
 
 type GeminiSwitchTargetsBarProps = {
   appSettings: AppSettings
@@ -35,77 +34,31 @@ export function GeminiSwitchTargetsBar({
 
     const fetchSurfaces = async () => {
       try {
-        const data = await api.getAntigravitySurfaces()
+        const data = await refreshAntigravitySurfaces()
         if (cancelled || !data || data.length === 0) return
 
-        setCachedSurfaces(data)
-        try {
-          localStorage.setItem(ANTIGRAVITY_SURFACES_CACHE_KEY, JSON.stringify(data))
-        } catch {
-          // ignore storage error
-        }
-
-        setSurfaces((prev) => {
-          // Avoid re-render if data is identical
-          if (
-            prev.length === data.length &&
-            prev.every((s, i) =>
-              s.id === data[i].id &&
-              s.running === data[i].running &&
-              s.installed === data[i].installed &&
-              s.name === data[i].name
-            )
-          ) {
-            return prev
-          }
-          return data
-        })
+        setSurfaces(data)
       } catch {
         // preserve existing cache on error
       }
     }
 
-    let interval: ReturnType<typeof setInterval> | null = null
-
-    const startPolling = () => {
-      if (!interval && !cancelled) {
-        interval = setInterval(() => {
-          void fetchSurfaces()
-        }, 5000)
-      }
-    }
-
-    const stopPolling = () => {
-      if (interval) {
-        clearInterval(interval)
-        interval = null
-      }
-    }
-
-    // Immediate background fetch and start polling if visible
-    void fetchSurfaces()
-    if (document.visibilityState === 'visible') {
-      startPolling()
-    }
+    const poller = createCompletionPoller({ run: fetchSurfaces, intervalMs: 5000 })
+    poller.setActive(document.visibilityState === 'visible')
 
     // Immediate refresh on window focus / tab visibility
     const handleFocus = () => {
-      void fetchSurfaces()
+      void poller.request()
     }
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void fetchSurfaces()
-        startPolling()
-      } else {
-        stopPolling()
-      }
+      poller.setActive(document.visibilityState === 'visible')
     }
     window.addEventListener('focus', handleFocus)
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
       cancelled = true
-      stopPolling()
+      poller.dispose()
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibility)
     }

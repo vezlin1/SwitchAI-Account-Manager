@@ -12,7 +12,7 @@ export type QuotaInfo = {
   fetchedAt: number
 }
 
-export type TokenHealthStatus =
+type TokenHealthStatus =
   | 'unknown'
   | 'healthy'
   | 'refreshed'
@@ -20,7 +20,7 @@ export type TokenHealthStatus =
   | 'network_error'
   | 'server_error'
 
-export type TokenHealth = {
+type TokenHealth = {
   status: TokenHealthStatus
   lastCheckedAt: number | null
   lastRefreshedAt: number | null
@@ -29,7 +29,7 @@ export type TokenHealth = {
 
 export type AccountProvider = 'codex' | 'gemini'
 
-export type AccountIssues = {
+type AccountIssues = {
   quota: string | null
   subscription: string | null
 }
@@ -65,24 +65,7 @@ export type AppSettings = {
   lastActiveProvider?: AccountProvider
   geminiSwitchTargets?: string[]
   enabledProviders?: AccountProvider[]
-  autoCheckUpdates: boolean
-  ignoredUpdateVersion?: string | null
   privacyMode?: boolean
-}
-
-export type UpdateCheckResult = {
-  updateAvailable: boolean
-  version: string
-  currentVersion: string
-  releaseDate?: string | null
-  releaseNotes?: string | null
-  downloadSize?: number | null
-}
-
-export type UpdateProgress = {
-  downloadedBytes: number
-  totalBytes?: number | null
-  percent: number
 }
 
 export type AppData = {
@@ -134,6 +117,7 @@ export type RecoveryStatus = {
 export type StartupStatus = {
   mode: string
   state: AppData | null
+  autoRefresh: AutoRefreshStatus | null
   warnings: string[]
   recovery: RecoveryStatus | null
 }
@@ -142,6 +126,7 @@ export type AppStateChangedEvent = {
   scope: 'account' | 'accounts' | 'settings' | string
   accountIds: string[]
   revision: number
+  state?: AppData
 }
 
 export type AntigravitySurfaceId = 'antigravity' | 'ide' | 'cli'
@@ -155,7 +140,7 @@ export type AntigravitySurface = {
   path: string | null
 }
 
-export type RefreshRunSummary = {
+type RefreshRunSummary = {
   startedAt: number
   finishedAt: number
   succeeded: number

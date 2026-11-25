@@ -12,8 +12,7 @@ import type {
   OAuthStartResponse,
   StartupStatus,
   StateResult,
-  SwitchAccountRestartResponse,
-  UpdateCheckResult
+  SwitchAccountRestartResponse
 } from './types'
 
 function toIpcError(error: unknown): IpcError {
@@ -108,12 +107,4 @@ export const api = {
   refreshAllQuotas: (provider?: AccountProvider) =>
     invoke<StateResult>('refresh_all_quotas', { provider }),
 
-  checkForUpdates: (force = false) =>
-    invoke<UpdateCheckResult>('check_for_updates', { force }),
-  downloadAndStageUpdate: () =>
-    invoke<boolean>('download_and_stage_update'),
-  installUpdateAndRestart: () =>
-    invoke<void>('install_update_and_restart'),
-  dismissUpdateVersion: (version: string) =>
-    invoke<AppData>('dismiss_update_version', { version }),
 }

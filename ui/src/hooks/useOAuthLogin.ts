@@ -9,7 +9,6 @@ type UseOAuthLoginArgs = {
 
 type ActivePoll = {
   flowId: string
-  startedAt: number
   cancelled: boolean
   provider: AccountProvider
 }
@@ -41,13 +40,9 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
     setErrors((prev) => ({ ...prev, [provider]: msg }))
   }, [])
 
-  const clearError = useCallback((provider?: AccountProvider) => {
-    if (provider) {
-      setErrors((prev) => ({ ...prev, [provider]: null }))
-    } else {
-      setErrors({ codex: null, gemini: null })
-    }
-  }, [])
+  const clearError = useCallback((provider: AccountProvider) => {
+    setProviderError(provider, null)
+  }, [setProviderError])
 
   const getError = useCallback((provider: AccountProvider) => {
     return errors[provider]
@@ -96,7 +91,6 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
       const startedAt = Date.now()
       const active: ActivePoll = {
         flowId: flow.flowId,
-        startedAt,
         cancelled: false,
         provider: currentProv
       }
@@ -144,11 +138,7 @@ export function useOAuthLogin({ onCompleted }: UseOAuthLoginArgs) {
   }, [stopPolling, setProviderError])
 
   return {
-    busy: busyProvider !== null,
-    busyProvider,
     isProviderBusy,
-    errors,
-    error: errors.codex ?? errors.gemini,
     getError,
     clearError,
     startLogin,

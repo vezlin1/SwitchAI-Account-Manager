@@ -2,16 +2,27 @@ pub mod accounts;
 pub mod oauth;
 pub mod refresh;
 pub mod system;
-pub mod updater;
 
 pub use accounts::*;
 pub use oauth::*;
 pub use refresh::*;
 pub use system::*;
-pub use updater::*;
 
 use crate::dto::CommandWarningDto;
-use crate::errors::{AppResult, IpcErrorDto, to_command_error};
+use crate::errors::{AppError, AppResult, IpcErrorDto, to_command_error};
+
+/// Runs filesystem, credential-store and process operations outside the window
+/// thread and the async executor. Closures own their state, so no data guard can
+/// accidentally cross an await point.
+pub(crate) async fn run_blocking<T, F>(work: F) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> AppResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| AppError::msg(format!("Background operation failed: {error}")))?
+}
 
 pub(crate) fn warning(
     code: &str,
@@ -35,14 +46,36 @@ pub(crate) fn command_result<T>(result: AppResult<T>) -> Result<T, IpcErrorDto> 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::app_state::SharedState;
     use crate::errors::AppError;
     use crate::models::{Account, AppData, TokenHealth, Tokens};
     use crate::refresh_service::apply_subscription_result;
 
     use super::accounts::remove_account_from_data;
+
+    #[test]
+    fn blocking_operations_leave_the_async_executor_responsive() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        runtime.block_on(async {
+            let progress = tokio::spawn(async move {
+                entered_rx.await.unwrap();
+                release_tx.send(()).unwrap();
+            });
+            let work = super::run_blocking(move || {
+                entered_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|_| AppError::msg("async executor stalled"))?;
+                Ok(())
+            })
+            .await;
+            work.expect("worker should not stall the executor");
+            progress.await.unwrap();
+        });
+    }
 
     fn account(id: &str) -> Account {
         Account {
@@ -151,45 +184,5 @@ mod tests {
         assert_eq!(account.subscription_expires_at, previous_expiry);
         assert_eq!(account.subscription_detected_at, previous_detected_at);
         assert_eq!(account.subscription_plan.as_deref(), Some("Plus"));
-    }
-
-    #[test]
-    fn check_for_updates_respects_auto_check_disabled() {
-        let mut data = AppData::default();
-        data.app_settings.auto_check_updates = false;
-        let state = Arc::new(SharedState::new_with_startup_error(data, None).unwrap());
-
-        let res = tauri::async_runtime::block_on(super::updater::check_for_updates_internal(
-            &state, false,
-        ))
-        .expect("check should succeed");
-        assert!(!res.update_available);
-    }
-
-    #[test]
-    fn dismissing_update_version_persists_and_clears_available_update() {
-        let data = AppData::default();
-        let state = Arc::new(SharedState::new_with_startup_error(data, None).unwrap());
-
-        let manifest = crate::portable_updater::UpdateManifest {
-            version: "9.9.9".to_string(),
-            notes: Some("Notes".to_string()),
-            release_date: None,
-            platforms: std::collections::HashMap::new(),
-        };
-        *crate::app_state::lock_available_update(&state).unwrap() = Some(manifest);
-
-        let res = super::updater::dismiss_update_version_internal(&state, "9.9.9")
-            .expect("dismiss should succeed");
-
-        assert_eq!(
-            res.app_settings.ignored_update_version.as_deref(),
-            Some("9.9.9")
-        );
-        assert!(
-            crate::app_state::lock_available_update(&state)
-                .unwrap()
-                .is_none()
-        );
     }
 }

@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { api, describeIpcError } from '../api'
-import type { Account, AccountProvider, AppData, AppSettings, CommandWarning } from '../types'
+import type {
+  Account, AccountProvider, AccountRefreshResult, AppData, AppSettings, CommandWarning, StateResult
+} from '../types'
 import type { AppDataUpdater } from './useAppData'
 import {
   addBusyCount,
-  keyIsBusy,
   type BusyCounters,
   type BusyKey
 } from '../utils/busy'
-import { mergeAccountSnapshot } from '../utils/stateMerge'
+import { applyServerAccountOrder, mergeAccountUpdates } from '../utils/stateMerge'
 
 type UseAccountsActionsArgs = {
   setData: (next: AppDataUpdater) => AppData | null
-  getData?: () => AppData | null
+  getData: () => AppData | null
   persistAppSettings: (settings: AppSettings) => Promise<AppData | null>
-  onError?: (message: string | null) => void
-  confirmSwitch?: (account: Account) => Promise<boolean>
+  confirmSwitch: (account: Account) => Promise<boolean>
 }
 
 function warningMessage(
@@ -31,11 +31,9 @@ export function useAccountsActions({
   setData,
   getData,
   persistAppSettings,
-  onError,
   confirmSwitch
 }: UseAccountsActionsArgs) {
   const [busyCounters, setBusyCounters] = useState<BusyCounters>({})
-  const [refreshingAll, setRefreshingAll] = useState(false)
   const [errors, setErrors] = useState<Record<AccountProvider, string | null>>({
     codex: null,
     gemini: null
@@ -43,101 +41,75 @@ export function useAccountsActions({
   const refreshAllInFlightRef = useRef(false)
   const orderQueueRef = useRef<Promise<void>>(Promise.resolve())
   const orderVersionRef = useRef(0)
-  const onErrorRef = useRef(onError)
-  const confirmSwitchRef = useRef(confirmSwitch)
 
-  useEffect(() => {
-    onErrorRef.current = onError
-  }, [onError])
-
-  useEffect(() => {
-    confirmSwitchRef.current = confirmSwitch
-  }, [confirmSwitch])
-
-  const getAccountProvider = useCallback((accountId?: string | null): AccountProvider => {
-    if (accountId && getData) {
-      const data = getData()
-      const candidate = data?.accounts.find((a) => a.id === accountId)
-      if (candidate?.provider) return candidate.provider
-    }
-    return 'codex'
-  }, [getData])
+  const getAccountProvider = useCallback((accountId: string): AccountProvider => (
+    getData()?.accounts.find((account) => account.id === accountId)?.provider ?? 'codex'
+  ), [getData])
 
   const busyKeys = useMemo<ReadonlySet<string>>(
     () => new Set(Object.keys(busyCounters)),
     [busyCounters]
   )
-  const beginOp = useCallback((key: BusyKey) => {
-    setBusyCounters((prev) => addBusyCount(prev, key, 1))
-  }, [])
-  const endOp = useCallback((key: BusyKey) => {
-    setBusyCounters((prev) => addBusyCount(prev, key, -1))
-  }, [])
 
   const setProviderError = useCallback((provider: AccountProvider, message: string | null) => {
     setErrors((prev) => ({ ...prev, [provider]: message }))
   }, [])
 
-  const clearError = useCallback((provider?: AccountProvider) => {
-    if (provider) {
-      setErrors((prev) => ({ ...prev, [provider]: null }))
-    } else {
-      setErrors({ codex: null, gemini: null })
+  const clearError = useCallback((provider: AccountProvider) => {
+    setProviderError(provider, null)
+  }, [setProviderError])
+
+  const getError = useCallback((provider: AccountProvider) => errors[provider], [errors])
+
+  const runOperation = useCallback(async (
+    key: BusyKey,
+    provider: AccountProvider,
+    operation: () => Promise<void>,
+    options?: { rethrow: boolean }
+  ) => {
+    setBusyCounters((previous) => addBusyCount(previous, key, 1))
+    try {
+      clearError(provider)
+      await operation()
+    } catch (err) {
+      setProviderError(provider, describeIpcError(err))
+      if (options?.rethrow) throw err
+    } finally {
+      setBusyCounters((previous) => addBusyCount(previous, key, -1))
     }
-  }, [])
+  }, [clearError, setProviderError])
 
-  const getError = useCallback((provider: AccountProvider) => {
-    return errors[provider]
-  }, [errors])
-
-  const reportWarning = useCallback((message: string | null, provider: AccountProvider = 'codex') => {
-    if (!message) return
+  const reportWarnings = useCallback((warnings: CommandWarning[], provider: AccountProvider) => {
+    if (!warnings?.length) return
+    const message = warnings.map((warning) => warningMessage(warning, 'Operation completed with a warning')).join(' · ')
     const lower = message.toLowerCase()
-    const targetProv: AccountProvider =
+    const targetProvider: AccountProvider =
       lower.includes('gemini') || lower.includes('antigravity') || lower.includes('google')
         ? 'gemini'
         : lower.includes('chatgpt') || lower.includes('codex') || lower.includes('openai')
           ? 'codex'
           : provider
-    setProviderError(targetProv, message)
-    if (onErrorRef.current) onErrorRef.current(message)
+    setProviderError(targetProvider, message)
   }, [setProviderError])
 
-  const reportWarnings = useCallback((warnings: CommandWarning[], defaultProvider: AccountProvider = 'codex') => {
-    if (!warnings || warnings.length === 0) return
-    const messages = warnings.map((w) => warningMessage(w, 'Operation completed with a warning')).filter(Boolean)
-    if (messages.length > 0) {
-      reportWarning(messages.join(' · '), defaultProvider)
-    }
-  }, [reportWarning])
+  const applyStateResult = useCallback((result: StateResult, provider: AccountProvider) => {
+    setData(result.state)
+    reportWarnings(result.warnings, provider)
+  }, [reportWarnings, setData])
 
-  const removeAccount = useCallback(async (accountId: string) => {
-    const provider = getAccountProvider(accountId)
-    const key: BusyKey = `delete:${accountId}`
-    beginOp(key)
-    try {
-      clearError(provider)
-      const next = await api.removeAccount(accountId)
-      setData(next)
-    } catch (err) {
-      setProviderError(provider, describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, setData, clearError, setProviderError, getAccountProvider])
+  const removeAccount = useCallback((accountId: string) => (
+    runOperation(`delete:${accountId}`, getAccountProvider(accountId), async () => {
+      setData(await api.removeAccount(accountId))
+    })
+  ), [getAccountProvider, runOperation, setData])
 
   const switchAccount = useCallback(async (account: Account) => {
-    const confirmed = confirmSwitchRef.current
-      ? await confirmSwitchRef.current(account)
-      : false
+    const confirmed = await confirmSwitch(account)
     if (!confirmed) return
 
     const isGemini = account.provider === 'gemini'
-    const provider: AccountProvider = isGemini ? 'gemini' : 'codex'
-    const key: BusyKey = `switch:${account.id}`
-    beginOp(key)
-    try {
-      setProviderError(provider, null)
+    const provider = isGemini ? 'gemini' : 'codex'
+    await runOperation(`switch:${account.id}`, provider, async () => {
       const response = isGemini
         ? await api.switchActiveAccountAndRestartAntigravity(account.id)
         : await api.switchActiveAccountAndRestartCodex(account.id)
@@ -146,165 +118,77 @@ export function useAccountsActions({
         const appName = isGemini ? 'Antigravity' : 'ChatGPT'
         setProviderError(provider, `Account switched, but ${appName} restart failed: ${response.restartWarning}`)
       }
-    } catch (err) {
-      setProviderError(provider, describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, setData, setProviderError])
+    })
+  }, [confirmSwitch, runOperation, setData, setProviderError])
 
   const saveOrder = useCallback((nextAccounts: Account[], provider: AccountProvider = 'codex') => {
-    const version = orderVersionRef.current + 1
-    orderVersionRef.current = version
+    const version = ++orderVersionRef.current
     const accountIds = nextAccounts.map((account) => account.id)
-    const run = async () => {
-      beginOp('order')
-      try {
-        clearError(provider)
-        const next = await api.setAccountOrder(accountIds)
-        if (orderVersionRef.current === version) {
-          setData((latest) => {
-            if (next.revision < latest.revision) return latest
-            const latestById = new Map(latest.accounts.map((account) => [account.id, account]))
-            const serverIds = new Set(next.accounts.map((account) => account.id))
-            const ordered = next.accounts.flatMap((account) => {
-              const candidate = latestById.get(account.id)
-              return candidate ? [candidate] : []
-            })
-            const remaining = latest.accounts.filter((account) => !serverIds.has(account.id))
-            return { ...latest, accounts: [...ordered, ...remaining], revision: next.revision }
-          })
-        }
-      } catch (err) {
-        setProviderError(provider, describeIpcError(err))
-        throw err
-      } finally {
-        endOp('order')
+    const run = () => runOperation('order', provider, async () => {
+      const next = await api.setAccountOrder(accountIds)
+      if (orderVersionRef.current === version) {
+        setData((latest) => applyServerAccountOrder(latest, next))
       }
-    }
-    const task = orderQueueRef.current.then(run, run)
+    }, { rethrow: true })
+    const task = orderQueueRef.current.then(run)
     orderQueueRef.current = task.catch(() => undefined)
     return task
-  }, [beginOp, endOp, setData, clearError, setProviderError])
+  }, [runOperation, setData])
 
-  const detectSubscription = useCallback(async (accountId: string) => {
+  const refreshAccountData = useCallback((
+    accountId: string,
+    key: BusyKey,
+    request: (id: string) => Promise<AccountRefreshResult>
+  ) => {
     const provider = getAccountProvider(accountId)
-    const key: BusyKey = `subscription-detect:${accountId}`
-    beginOp(key)
-    try {
-      setProviderError(provider, null)
-      const response = await api.refreshAccountSubscription(accountId)
-      setData((latest) => {
-        if (!latest) return latest
-        const index = latest.accounts.findIndex((a) => a.id === response.account.id)
-        if (index === -1) return latest
-        const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
-        return { ...latest, accounts }
-      })
+    return runOperation(key, provider, async () => {
+      const response = await request(accountId)
+      setData((latest) => mergeAccountUpdates(latest, [response.account]))
       reportWarnings(response.warnings, provider)
-    } catch (err) {
-      setProviderError(provider, describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError, getAccountProvider])
+    })
+  }, [getAccountProvider, reportWarnings, runOperation, setData])
 
-  const refreshAccount = useCallback(async (accountId: string) => {
-    const provider = getAccountProvider(accountId)
-    const key: BusyKey = `quota:${accountId}`
-    beginOp(key)
-    try {
-      setProviderError(provider, null)
-      const response = await api.refreshAccountQuota(accountId)
-      setData((latest) => {
-        if (!latest) return latest
-        const index = latest.accounts.findIndex((a) => a.id === response.account.id)
-        if (index === -1) return latest
-        const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], response.account)
-        return { ...latest, accounts }
-      })
-      reportWarnings(response.warnings, provider)
-    } catch (err) {
-      setProviderError(provider, describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError, getAccountProvider])
+  const detectSubscription = useCallback((accountId: string) => (
+    refreshAccountData(accountId, `subscription-detect:${accountId}`, api.refreshAccountSubscription)
+  ), [refreshAccountData])
 
-  const saveAppSettings = useCallback(async (settings: AppSettings, provider: AccountProvider = 'codex') => {
-    const key: BusyKey = 'settings:subscription-visibility'
-    beginOp(key)
-    try {
-      clearError(provider)
+  const refreshAccount = useCallback((accountId: string) => (
+    refreshAccountData(accountId, `quota:${accountId}`, api.refreshAccountQuota)
+  ), [refreshAccountData])
+
+  const saveAppSettings = useCallback((settings: AppSettings, provider: AccountProvider = 'codex') => (
+    runOperation('settings:subscription-visibility', provider, async () => {
       await persistAppSettings(settings)
-    } catch (err) {
-      setProviderError(provider, describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, persistAppSettings, clearError, setProviderError])
+    })
+  ), [persistAppSettings, runOperation])
 
   const refreshAll = useCallback(async (provider?: AccountProvider) => {
     if (refreshAllInFlightRef.current) return
     refreshAllInFlightRef.current = true
-    const currentProv: AccountProvider = provider ?? 'codex'
-    beginOp('refresh-all')
+    const currentProvider = provider ?? 'codex'
     try {
-      setRefreshingAll(true)
-      setProviderError(currentProv, null)
-      const response = await api.refreshAllQuotas(provider)
-      setData(response.state)
-      reportWarnings(response.warnings, currentProv)
-    } catch (err) {
-      setProviderError(currentProv, describeIpcError(err))
+      await runOperation('refresh-all', currentProvider, async () => {
+        applyStateResult(await api.refreshAllQuotas(provider), currentProvider)
+      })
     } finally {
-      setRefreshingAll(false)
       refreshAllInFlightRef.current = false
-      endOp('refresh-all')
     }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError])
+  }, [applyStateResult, runOperation])
 
-  const importAntigravity = useCallback(async () => {
-    const key: BusyKey = 'import:antigravity'
-    beginOp(key)
-    try {
-      setProviderError('gemini', null)
-      const response = await api.importAntigravityAccount()
-      setData(response.state)
-      reportWarnings(response.warnings, 'gemini')
-    } catch (err) {
-      setProviderError('gemini', describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError])
-
-  const importCodex = useCallback(async () => {
-    const key: BusyKey = 'import:codex'
-    beginOp(key)
-    try {
-      setProviderError('codex', null)
-      const response = await api.importCodexAccount()
-      setData(response.state)
-      reportWarnings(response.warnings, 'codex')
-    } catch (err) {
-      setProviderError('codex', describeIpcError(err))
-    } finally {
-      endOp(key)
-    }
-  }, [beginOp, endOp, reportWarnings, setData, setProviderError])
+  const importSession = useCallback((provider: AccountProvider) => (
+    runOperation(`import:${provider}`, provider, async () => {
+      const result = provider === 'gemini'
+        ? await api.importAntigravityAccount()
+        : await api.importCodexAccount()
+      applyStateResult(result, provider)
+    })
+  ), [applyStateResult, runOperation])
 
   return {
     busyKeys,
-    refreshingAll,
-    errors,
-    error: errors.codex ?? errors.gemini,
+    refreshingAll: busyKeys.has('refresh-all'),
     getError,
     clearError,
-    isBusy: (key: BusyKey) => keyIsBusy(busyCounters, key),
-    busyCount: (key: BusyKey) => busyCounters[key] ?? 0,
     removeAccount,
     switchAccount,
     saveOrder,
@@ -312,7 +196,6 @@ export function useAccountsActions({
     refreshAccount,
     saveAppSettings,
     refreshAll,
-    importAntigravity,
-    importCodex
+    importSession
   }
 }

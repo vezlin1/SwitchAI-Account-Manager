@@ -1,19 +1,19 @@
-import { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react'
-import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
+import { Suspense, lazy, memo, useCallback, useMemo, useRef, useState } from 'react'
+import type { Account, AccountProvider, AppData } from '../../types'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
 import { useOAuthLogin } from '../../hooks/useOAuthLogin'
-import { ErrorBanner } from '../common'
+import { ErrorBanner } from '../common/ErrorBanner'
 import { AccountsTable } from './AccountsTable'
 import { AccountsToolbar } from './AccountsToolbar'
 import { GeminiSwitchTargetsBar } from './GeminiSwitchTargetsBar'
+import { recommendedAccount } from '../../utils/accountInsights'
+import { reorderFilteredAccounts } from '../../utils/accountReorder'
 import {
-  recommendedAccount,
-  reorderFilteredAccounts,
   filterAccountsBySubscription,
   subscriptionFiltersForAccounts,
   type SubscriptionFilterId
-} from '../../utils'
+} from '../../utils/subscriptionFilters'
 import { usePrivacy } from '../../context/usePrivacy'
 
 const ConfirmDialog = lazy(() =>
@@ -30,20 +30,22 @@ type AccountsTabProps = {
   saveAppSettings: (settings: AppData['appSettings']) => Promise<AppData | null>
   reload: () => Promise<void>
   reloadAccountOrder: (shouldApply: () => boolean) => Promise<void>
-  autoRefreshStatus: AutoRefreshStatus | null
+  autoRefreshing: boolean
+  lastRefreshAt: number | null
   autoRefreshError?: string | null
   onClearAutoRefreshError?: () => void
   activeProvider?: AccountProvider
 }
 
-export function AccountsTab({
+export const AccountsTab = memo(function AccountsTab({
   data,
   setData,
   getData,
   saveAppSettings,
   reload,
   reloadAccountOrder,
-  autoRefreshStatus,
+  autoRefreshing,
+  lastRefreshAt,
   autoRefreshError,
   onClearAutoRefreshError,
   activeProvider = 'codex'
@@ -62,25 +64,30 @@ export function AccountsTab({
   const detailsReturnFocusRef = useRef<HTMLElement | null>(null)
   const reorderVersionRef = useRef(0)
   const pendingSwitchResolveRef = useRef<((confirmed: boolean) => void) | null>(null)
+  const confirmSwitch = useCallback(async (account: Account) => {
+    setPendingSwitch(account)
+    return new Promise<boolean>((resolve) => {
+      pendingSwitchResolveRef.current = resolve
+    })
+  }, [])
   const actions = useAccountsActions({
     setData,
     getData,
     persistAppSettings: saveAppSettings,
-    confirmSwitch: async (account) => {
-      setPendingSwitch(account)
-      return new Promise<boolean>((resolve) => {
-        pendingSwitchResolveRef.current = resolve
-      })
-    }
+    confirmSwitch
   })
   const oauth = useOAuthLogin({ onCompleted: reload })
+  const { switchAccount, saveAppSettings: saveSettings, saveOrder, importSession } = actions
+  const { startLogin } = oauth
   const { privacyMode, maskEmail } = usePrivacy()
   const currentProvider = activeProvider ?? 'codex'
+  const importingSession = actions.busyKeys.has(`import:${currentProvider}`)
   const searchTerm = searchTerms[currentProvider] ?? ''
-  const setSearchTerm = (val: string) => setSearchTerms((prev) => ({ ...prev, [currentProvider]: val }))
+  const setSearchTerm = useCallback((val: string) =>
+    setSearchTerms((prev) => ({ ...prev, [currentProvider]: val })), [currentProvider])
   const subscriptionFilter = subscriptionFilters[currentProvider] ?? 'all'
-  const setSubscriptionFilter = (filter: SubscriptionFilterId) =>
-    setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter }))
+  const setSubscriptionFilter = useCallback((filter: SubscriptionFilterId) =>
+    setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter })), [currentProvider])
 
   const accounts = useMemo(
     () => data.accounts.filter((account) => (account.provider ?? 'codex') === currentProvider),
@@ -120,8 +127,8 @@ export function AccountsTab({
     ? accounts.find((account) => account.id === detailsAccountId) ?? null
     : null
   const recommendation = useMemo(
-    () => recommendedAccount(accounts, hiddenAccountIds),
-    [accounts, hiddenAccountIds]
+    () => detailsAccountId ? recommendedAccount(accounts, hiddenAccountIds) : null,
+    [accounts, detailsAccountId, hiddenAccountIds]
   )
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
@@ -146,7 +153,7 @@ export function AccountsTab({
     setDetailsAccountId(account.id)
   }, [])
 
-  const toggleAccountInAll = (accountId: string) => {
+  const toggleAccountInAll = useCallback((accountId: string) => {
     const next = setData((latest) => {
       const hidden = new Set(latest.appSettings.hiddenAccountIds)
       if (hidden.has(accountId)) hidden.delete(accountId)
@@ -160,21 +167,21 @@ export function AccountsTab({
         }
       }
     })
-    if (next) void actions.saveAppSettings(next.appSettings)
-  }
+    if (next) void saveSettings(next.appSettings)
+  }, [setData, saveSettings])
 
   const handleSwitch = useCallback(
     (account: Account) => {
-      void actions.switchAccount(account)
+      void switchAccount(account)
     },
-    [actions]
+    [switchAccount]
   )
 
   const handleRelogin = useCallback(
     (account: Account) => {
-      void oauth.startLogin(account, account.provider ?? currentProvider)
+      void startLogin(account, account.provider ?? currentProvider)
     },
-    [oauth, currentProvider]
+    [startLogin, currentProvider]
   )
 
   const handleRemove = useCallback(
@@ -189,7 +196,7 @@ export function AccountsTab({
     window.requestAnimationFrame(() => detailsReturnFocusRef.current?.focus())
   }
 
-  const reorderAccounts = async (activeId: string, overId: string) => {
+  const reorderAccounts = useCallback(async (activeId: string, overId: string) => {
     if (searchTerm.trim()) return
     const current = getData()
     if (!current) return
@@ -206,18 +213,44 @@ export function AccountsTab({
     }))
 
     try {
-      await actions.saveOrder(nextAccounts, currentProvider)
+      await saveOrder(nextAccounts, currentProvider)
     } catch {
       await reloadAccountOrder(() => reorderVersionRef.current === reorderVersion)
     }
-  }
+  }, [searchTerm, getData, filteredAccounts, setData, saveOrder, currentProvider, reloadAccountOrder])
+
+  const handleAddAccount = useCallback(() => {
+    void startLogin(undefined, currentProvider)
+  }, [startLogin, currentProvider])
+  const handleImportSession = useCallback(() => {
+    void importSession(currentProvider)
+  }, [currentProvider, importSession])
+  const handleClearFilter = useCallback(() => {
+    setSubscriptionFilter('all')
+    setSearchTerm('')
+  }, [setSubscriptionFilter, setSearchTerm])
+  const handleShowHiddenAccounts = useCallback(() => {
+    const currentProviderAccountIds = new Set(accounts.map((account) => account.id))
+    const next = setData((latest) => ({
+      ...latest,
+      appSettings: {
+        ...latest.appSettings,
+        hiddenAccountIds: latest.appSettings.hiddenAccountIds.filter(
+          (id) => !currentProviderAccountIds.has(id)
+        )
+      }
+    }))
+    if (next) void saveSettings(next.appSettings)
+  }, [accounts, setData, saveSettings])
+  const saveGeminiSettings = useCallback((settings: AppData['appSettings']) =>
+    saveSettings(settings, 'gemini'), [saveSettings])
 
   const specificCategoryCount = filters.filter((filter) => filter.id !== 'all' && filter.id !== 'hidden').length
   const totalHiddenCount = filters.find((f) => f.id === 'hidden')?.count ?? 0
   const showSubscriptionFilters = specificCategoryCount > 1 || totalHiddenCount > 0
 
   return (
-    <div className="page-fade h-full min-w-0 flex flex-col gap-4">
+    <div className="h-full min-w-0 flex flex-col gap-4">
       {pendingDelete && (
         <Suspense fallback={null}>
           <ConfirmDialog
@@ -285,7 +318,7 @@ export function AccountsTab({
               isRecommended={recommendation?.id === detailsAccount.id}
               busyKeys={actions.busyKeys}
               refreshingAll={actions.refreshingAll}
-              autoRefreshing={Boolean(autoRefreshStatus?.inFlight)}
+              autoRefreshing={autoRefreshing}
               onBack={closeDetails}
               onSwitch={handleSwitch}
               onRelogin={handleRelogin}
@@ -301,29 +334,22 @@ export function AccountsTab({
             provider={currentProvider}
             refreshingAll={actions.refreshingAll}
             addingAccount={oauth.isProviderBusy(currentProvider)}
-            importingSession={
-              currentProvider === 'gemini'
-                ? actions.busyKeys.has('import:antigravity')
-                : actions.busyKeys.has('import:codex')
-            }
+            importingSession={importingSession}
             appSettings={data.appSettings}
-            autoRefreshStatus={autoRefreshStatus}
+            autoRefreshing={autoRefreshing}
+            lastRefreshAt={lastRefreshAt}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
-            onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
+            onAddAccount={handleAddAccount}
             onCancelAddAccount={() => oauth.cancelLogin(currentProvider)}
-            onImportSession={
-              currentProvider === 'gemini'
-                ? () => void actions.importAntigravity()
-                : () => void actions.importCodex()
-            }
+            onImportSession={handleImportSession}
             onRefreshAll={() => void actions.refreshAll(currentProvider)}
           />
 
           {currentProvider === 'gemini' && (
             <GeminiSwitchTargetsBar
               appSettings={data.appSettings}
-              onSaveAppSettings={(settings) => actions.saveAppSettings(settings, 'gemini')}
+              onSaveAppSettings={saveGeminiSettings}
             />
           )}
 
@@ -358,6 +384,7 @@ export function AccountsTab({
           )}
 
           <AccountsTable
+            key={JSON.stringify([currentProvider, effectiveSubscriptionFilter, searchTerm])}
             accounts={searchedAccounts}
             provider={currentProvider}
             totalAccountCount={accounts.length}
@@ -365,48 +392,25 @@ export function AccountsTab({
             hiddenAccountCount={hiddenAccountIds.length}
             addingAccount={oauth.isProviderBusy(currentProvider)}
             isSearching={Boolean(searchTerm.trim())}
-            importingSession={
-              currentProvider === 'gemini'
-                ? actions.busyKeys.has('import:antigravity')
-                : actions.busyKeys.has('import:codex')
-            }
+            importingSession={importingSession}
             activeAccountId={activeAccountId}
             busyKeys={actions.busyKeys}
             refreshingAll={actions.refreshingAll}
-            autoRefreshing={Boolean(autoRefreshStatus?.inFlight)}
+            autoRefreshing={autoRefreshing}
             hiddenAccountIds={hiddenAccountIds}
-            onReorder={(activeId, overId) => void reorderAccounts(activeId, overId)}
+            onReorder={reorderAccounts}
             onOpenDetails={openDetails}
             onSwitch={handleSwitch}
             onRelogin={handleRelogin}
             onRemove={handleRemove}
             onToggleAccountInAll={toggleAccountInAll}
-            onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}
-            onImportSession={
-              currentProvider === 'gemini'
-                ? () => void actions.importAntigravity()
-                : () => void actions.importCodex()
-            }
-            onClearFilter={() => {
-              setSubscriptionFilter('all')
-              setSearchTerm('')
-            }}
-            onShowHiddenAccounts={() => {
-              const currentProviderAccountIds = new Set(accounts.map((a) => a.id))
-              const next = setData((latest) => ({
-                ...latest,
-                appSettings: {
-                  ...latest.appSettings,
-                  hiddenAccountIds: latest.appSettings.hiddenAccountIds.filter(
-                    (id) => !currentProviderAccountIds.has(id)
-                  )
-                }
-              }))
-              if (next) void actions.saveAppSettings(next.appSettings)
-            }}
+            onAddAccount={handleAddAccount}
+            onImportSession={handleImportSession}
+            onClearFilter={handleClearFilter}
+            onShowHiddenAccounts={handleShowHiddenAccounts}
           />
         </div>
       )}
     </div>
   )
-}
+})

@@ -13,6 +13,13 @@ fn default_limits_base_url() -> String {
     "https://chatgpt.com/backend-api".to_string()
 }
 
+fn legacy_quota_history_present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(true)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistedAccountProvider {
@@ -88,6 +95,13 @@ pub struct PersistedAccount {
     #[serde(default)]
     token_health: PersistedTokenHealth,
     quota: Option<PersistedQuotaInfo>,
+    #[serde(
+        default,
+        rename = "quotaHistory",
+        skip_serializing,
+        deserialize_with = "legacy_quota_history_present"
+    )]
+    pub had_legacy_quota_history: bool,
     #[serde(default)]
     pub quota_next_refresh_at: Option<i64>,
     #[serde(default)]
@@ -126,10 +140,6 @@ struct PersistedQuotaInfo {
     fetched_at: i64,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
@@ -152,10 +162,6 @@ struct PersistedAppSettings {
     gemini_switch_targets: Vec<String>,
     #[serde(default = "default_enabled_providers")]
     enabled_providers: Vec<String>,
-    #[serde(default = "default_true")]
-    auto_check_updates: bool,
-    #[serde(default)]
-    ignored_update_version: Option<String>,
     #[serde(default)]
     privacy_mode: bool,
 }
@@ -276,8 +282,6 @@ impl From<&AppSettings> for PersistedAppSettings {
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version.clone(),
             privacy_mode: settings.privacy_mode,
         }
     }
@@ -295,8 +299,6 @@ impl From<PersistedAppSettings> for AppSettings {
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version,
             privacy_mode: settings.privacy_mode,
         }
     }
@@ -369,6 +371,7 @@ impl From<&Account> for PersistedAccount {
             tokens_updated_at: account.tokens_updated_at,
             token_health: PersistedTokenHealth::from(&account.token_health),
             quota: account.quota.as_ref().map(PersistedQuotaInfo::from),
+            had_legacy_quota_history: false,
             quota_next_refresh_at: account.quota_next_refresh_at,
             quota_refresh_failures: account.quota_refresh_failures,
             created_at: account.created_at,
@@ -593,7 +596,9 @@ mod tests {
         let json = json!({
             "autoRefreshEnabled": false,
             "autoRefreshIntervalMinutes": 30,
-            "closeToTray": false
+            "closeToTray": false,
+            "autoCheckUpdates": true,
+            "ignoredUpdateVersion": "2.0.0"
         });
 
         let persisted: PersistedAppSettings =
@@ -603,8 +608,11 @@ mod tests {
         assert!(!settings.auto_refresh_enabled);
         assert_eq!(settings.auto_refresh_interval_minutes, 30);
         assert!(!settings.close_to_tray);
-        assert!(settings.auto_check_updates);
-        assert_eq!(settings.ignored_update_version, None);
         assert!(!settings.privacy_mode);
+
+        let saved = serde_json::to_value(PersistedAppSettings::from(&settings))
+            .expect("serialize app settings");
+        assert!(saved.get("autoCheckUpdates").is_none());
+        assert!(saved.get("ignoredUpdateVersion").is_none());
     }
 }

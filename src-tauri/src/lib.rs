@@ -1,10 +1,3 @@
-pub mod providers;
-pub use providers::chatgpt::quota;
-pub use providers::chatgpt::sync as codex;
-pub use providers::gemini::oauth as oauth_gemini;
-pub use providers::gemini::quota as gemini_quota;
-pub use providers::gemini::sync as gemini;
-
 mod app_state;
 mod atomic_file;
 mod auto_refresh;
@@ -13,10 +6,10 @@ mod dto;
 mod errors;
 mod geo;
 mod models;
-pub mod oauth;
+mod oauth;
 mod persisted;
-pub mod portable_updater;
-pub mod process;
+mod process;
+mod providers;
 mod refresh_service;
 mod secret_store;
 mod shell;
@@ -30,6 +23,8 @@ use std::sync::atomic::Ordering;
 
 use app_state::SharedState;
 use models::AppData;
+use providers::chatgpt::{quota, sync as codex};
+use providers::gemini::{oauth as oauth_gemini, quota as gemini_quota, sync as gemini};
 use storage::load_app_data;
 use tauri::{
     Manager, WindowEvent,
@@ -38,7 +33,6 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    crate::portable_updater::handle_after_update_wait();
     let (mut initial_data, startup_error) = match load_app_data() {
         Ok(data) => (data, None),
         Err(err) => {
@@ -103,23 +97,19 @@ pub fn run() {
     builder
         .setup(move |app| {
             let _ = setup_state.app_handle.set(app.handle().clone());
-            let initial = app_state::lock_data(&setup_state)?.clone();
-            let menu = tray_dashboard::build_menu(app.handle(), &initial)
+            app.manage(tray_dashboard::DashboardRefreshState::default());
+            let (menu, tooltip) = tray_dashboard::build_initial_menu(app.handle(), &setup_state)
                 .map_err(|error| error.user_message())?;
 
             let tray_state = Arc::clone(&setup_state);
             let tray_builder = TrayIconBuilder::with_id(tray_dashboard::TRAY_ID)
                 .menu(&menu)
+                .tooltip(tooltip)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {
                     let id = event.id().as_ref();
                     match id {
                         "show" => show_main_window(app),
-                        "open_update" => {
-                            show_main_window(app);
-                            use tauri::Emitter;
-                            let _ = app.emit("open-update-modal", ());
-                        }
                         "refresh" => auto_refresh::request_refresh_now(&tray_state),
                         "quit" => {
                             tray_state.is_quitting.store(true, Ordering::SeqCst);
@@ -132,30 +122,37 @@ pub fn run() {
                                     id.strip_prefix(tray_dashboard::QUICK_SWITCH_CODEX_PREFIX)
                                 })
                             {
-                                match commands::set_active_account_data(account_id, &tray_state) {
-                                    Ok(data) => {
-                                        tray_dashboard::emit_state_changed(
-                                            &tray_state,
-                                            "accounts",
-                                            vec![account_id.to_string()],
-                                        );
-                                        if let Some(account) = data
-                                            .accounts
-                                            .iter()
-                                            .find(|account| account.id == account_id)
-                                        {
-                                            tray_dashboard::notify_account_selected(
-                                                &tray_state,
-                                                account,
+                                let selection_state = Arc::clone(&tray_state);
+                                let account_id = account_id.to_string();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    match commands::set_active_account_data(
+                                        &account_id,
+                                        &selection_state,
+                                    ) {
+                                        Ok(data) => {
+                                            tray_dashboard::emit_state_changed(
+                                                &selection_state,
+                                                "accounts",
+                                                vec![account_id.to_string()],
                                             );
+                                            if let Some(account) = data
+                                                .accounts
+                                                .iter()
+                                                .find(|account| account.id == account_id)
+                                            {
+                                                tray_dashboard::notify_account_selected(
+                                                    &selection_state,
+                                                    account,
+                                                );
+                                            }
+                                            tray_dashboard::refresh_dashboard(&selection_state);
                                         }
-                                        tray_dashboard::refresh_dashboard(&tray_state);
+                                        Err(error) => log::warn!(
+                                            "Tray Codex account selection failed: {}",
+                                            error.user_message()
+                                        ),
                                     }
-                                    Err(error) => log::warn!(
-                                        "Tray Codex account selection failed: {}",
-                                        error.user_message()
-                                    ),
-                                }
+                                });
                             } else if let Some(account_id) = id
                                 .strip_prefix(tray_dashboard::SWITCH_GEMINI_ACCOUNT_PREFIX)
                                 .or_else(|| {
@@ -233,41 +230,6 @@ pub fn run() {
             }
             if app_state::lock_startup_error(&setup_state)?.is_none() {
                 let _ = auto_refresh::start(&setup_state);
-
-                let bg_state = Arc::clone(&setup_state);
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                    let should_check = crate::app_state::lock_data(&bg_state)
-                        .map(|d| d.app_settings.auto_check_updates)
-                        .unwrap_or(true);
-                    if should_check {
-                        log::info!("Starting background update check...");
-                        if let Ok(res) =
-                            crate::commands::check_for_updates_internal(&bg_state, false).await
-                            && res.update_available
-                        {
-                            log::info!("Update available: v{}", res.version);
-                            if let Some(app) = bg_state.app_handle.get() {
-                                use tauri::Emitter;
-                                let _ = app.emit("update-available", &res);
-
-                                #[cfg(not(test))]
-                                {
-                                    use tauri_plugin_notification::NotificationExt;
-                                    let _ = app
-                                        .notification()
-                                        .builder()
-                                        .title("SwitchAI Update Available")
-                                        .body(format!(
-                                            "Version v{} is available for download.",
-                                            res.version
-                                        ))
-                                        .show();
-                                }
-                            }
-                        }
-                    }
-                });
             }
             show_main_window(app.handle());
 
@@ -318,11 +280,7 @@ pub fn run() {
             commands::set_account_order,
             commands::refresh_account_subscription,
             commands::refresh_account_quota,
-            commands::refresh_all_quotas,
-            commands::check_for_updates,
-            commands::download_and_stage_update,
-            commands::install_update_and_restart,
-            commands::dismiss_update_version
+            commands::refresh_all_quotas
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

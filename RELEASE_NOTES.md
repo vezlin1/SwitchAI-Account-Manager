@@ -1,7 +1,7 @@
 ## SwitchAI v1.2.0
 
 ### What's New:
-* **Portable Auto-Updater for Windows:** built-in update checks and 1-click update installation with Minisign cryptographic verification, atomic replacement, and rollback protection.
+* **Manual app updates:** download new versions from [GitHub Releases](https://github.com/vezlin1/SwitchAI-Account-Manager/releases/latest).
 * **Redesigned System Tray Menu:** structured sectioned menu (`── Codex ──` and `── Antigravity ──`), 1-click quick switch to recommended accounts, and clean bullet-aligned layout.
 * **Persistent Privacy Mode:** privacy masking settings now persist cleanly across sessions and synchronize between the UI, tray dashboard, and notifications.
 * **Modular Backend Architecture:** refactored command layer into dedicated modules with stricter concurrency gates and CAS state invariants.

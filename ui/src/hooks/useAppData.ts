@@ -10,7 +10,9 @@ import type {
   RecoveryStatus,
   StartupStatus
 } from '../types'
-import { isStaleRevision, mergeAccountSnapshot, mergeIncomingState } from '../utils/stateMerge'
+import {
+  applyServerAccountOrder, isStaleRevision, mergeAccountSnapshot, mergeAccountUpdates, mergeIncomingState
+} from '../utils/stateMerge'
 
 export type AppDataUpdater = AppData | ((current: AppData) => AppData)
 
@@ -21,13 +23,14 @@ type StartupState = {
   loading: boolean
 }
 
-function applySettingsPatches(
+function pendingSettingsOverlay(
   base: AppSettings,
-  patches: Iterable<SettingsPatch>
-): AppSettings {
-  let result = base
-  for (const patch of patches) result = { ...result, ...patch }
-  return result
+  patches: ReadonlyMap<number, SettingsPatch>
+): AppSettings | null {
+  if (patches.size === 0) return null
+  const overlay = { ...base }
+  for (const patch of patches.values()) Object.assign(overlay, patch)
+  return overlay
 }
 
 function nextState(
@@ -54,7 +57,6 @@ export function useAppData() {
   const accountReloadsRef = useRef<Map<string, Promise<void>>>(new Map())
   const settingsQueueRef = useRef<Promise<AppData | null>>(Promise.resolve(null))
   const settingsVersionRef = useRef(0)
-  const settingsPendingRef = useRef(0)
   const latestSettingsRef = useRef<AppSettings | null>(null)
   const authoritativeSettingsRef = useRef<AppSettings | null>(null)
   const pendingSettingsPatchesRef = useRef<Map<number, SettingsPatch>>(new Map())
@@ -68,27 +70,27 @@ export function useAppData() {
     })
   }, [])
 
+  const publishData = useCallback((next: AppData): AppData => {
+    dataRef.current = next
+    setDataState(next)
+    return next
+  }, [])
+
   const setData = useCallback((next: AppDataUpdater): AppData | null => {
     const current = dataRef.current
     if (typeof next === 'function') {
       if (!current) return null
-      const resolved = next(current)
-      dataRef.current = resolved
-      setDataState(resolved)
-      return resolved
+      return publishData(next(current))
     }
     authoritativeSettingsRef.current = next.appSettings
-    const resolved = nextState(
+    return publishData(nextState(
       current,
       next,
-      settingsPendingRef.current > 0 || settingsNeedsReconcileRef.current
+      pendingSettingsPatchesRef.current.size > 0 || settingsNeedsReconcileRef.current
         ? latestSettingsRef.current
         : null
-    )
-    dataRef.current = resolved
-    setDataState(resolved)
-    return resolved
-  }, [])
+    ))
+  }, [publishData])
 
   const getData = useCallback(() => dataRef.current, [])
 
@@ -104,9 +106,9 @@ export function useAppData() {
     }
   }, [setData, setStartupState])
 
-  const restoreStateBackup = useCallback(async (): Promise<StartupStatus> => {
+  const runRecoveryCommand = useCallback(async (command: () => Promise<StartupStatus>) => {
     try {
-      const status = await api.restoreStateBackup()
+      const status = await command()
       reconcileStartupState(status)
       return status
     } catch (err) {
@@ -115,16 +117,8 @@ export function useAppData() {
     }
   }, [reconcileStartupState])
 
-  const startFresh = useCallback(async (): Promise<StartupStatus> => {
-    try {
-      const status = await api.startFresh()
-      reconcileStartupState(status)
-      return status
-    } catch (err) {
-      setError(describeIpcError(err))
-      throw err
-    }
-  }, [reconcileStartupState])
+  const restoreStateBackup = useCallback(() => runRecoveryCommand(api.restoreStateBackup), [runRecoveryCommand])
+  const startFresh = useCallback(() => runRecoveryCommand(api.startFresh), [runRecoveryCommand])
 
   const openRecoveryDataDirectory = useCallback(async () => {
     try {
@@ -144,7 +138,6 @@ export function useAppData() {
       ?? settings
     const patch = settingsPatch(previous, settings)
     pendingSettingsPatchesRef.current.set(version, patch)
-    settingsPendingRef.current = pendingSettingsPatchesRef.current.size
     latestSettingsRef.current = settings
     setData((current) => current ? { ...current, appSettings: settings } : current)
 
@@ -157,60 +150,37 @@ export function useAppData() {
         const state = await api.setAppSettings(requestedSettings)
         authoritativeSettingsRef.current = state.appSettings
         pendingSettingsPatchesRef.current.delete(version)
-        settingsPendingRef.current = pendingSettingsPatchesRef.current.size
-        const overlay = settingsPendingRef.current > 0
-          ? applySettingsPatches(state.appSettings, pendingSettingsPatchesRef.current.values())
-          : null
+        const overlay = pendingSettingsOverlay(state.appSettings, pendingSettingsPatchesRef.current)
         latestSettingsRef.current = overlay
         settingsNeedsReconcileRef.current = false
         const current = dataRef.current
         if (!current) {
-          const resolved = overlay ? { ...state, appSettings: overlay } : state
-          dataRef.current = resolved
-          setDataState(resolved)
-          return resolved
+          return publishData(overlay ? { ...state, appSettings: overlay } : state)
         }
-        const resolved = mergeIncomingState(current, state, overlay)
-        dataRef.current = resolved
-        setDataState(resolved)
-        return dataRef.current
+        return publishData(mergeIncomingState(current, state, overlay))
       } catch (err) {
         setError(describeIpcError(err))
         pendingSettingsPatchesRef.current.delete(version)
-        settingsPendingRef.current = pendingSettingsPatchesRef.current.size
         try {
           const authoritative = await api.getState()
           authoritativeSettingsRef.current = authoritative.appSettings
           settingsNeedsReconcileRef.current = false
-          const overlay = settingsPendingRef.current > 0
-            ? applySettingsPatches(
-                authoritative.appSettings,
-                pendingSettingsPatchesRef.current.values()
-              )
-            : null
+          const overlay = pendingSettingsOverlay(authoritative.appSettings, pendingSettingsPatchesRef.current)
           latestSettingsRef.current = overlay
           const current = dataRef.current
           if (current) {
-            const resolved = mergeIncomingState(current, authoritative, overlay)
-            dataRef.current = resolved
-            setDataState(resolved)
+            publishData(mergeIncomingState(current, authoritative, overlay))
           }
         } catch {
           settingsNeedsReconcileRef.current = true
           const base = authoritativeSettingsRef.current
             ?? dataRef.current?.appSettings
             ?? settings
-          const overlay = settingsPendingRef.current > 0
-            ? applySettingsPatches(base, pendingSettingsPatchesRef.current.values())
-            : null
+          const overlay = pendingSettingsOverlay(base, pendingSettingsPatchesRef.current)
           latestSettingsRef.current = overlay
-          if (overlay) {
-            const current = dataRef.current
-            if (current) {
-              const resolved = { ...current, appSettings: overlay }
-              dataRef.current = resolved
-              setDataState(resolved)
-            }
+          const current = dataRef.current
+          if (overlay && current) {
+            publishData({ ...current, appSettings: overlay })
           }
         }
         throw err
@@ -220,7 +190,7 @@ export function useAppData() {
     const task = settingsQueueRef.current.then(run, run)
     settingsQueueRef.current = task.catch(() => dataRef.current)
     return task
-  }, [setData])
+  }, [publishData, setData])
 
   const clearError = useCallback(() => setError(null), [])
 
@@ -257,15 +227,7 @@ export function useAppData() {
       if (!shouldApply()) return
       setData((latest) => {
         if (!shouldApply()) return latest
-        if (isStaleRevision(state.revision, latest.revision)) return latest
-        const latestById = new Map(latest.accounts.map((account) => [account.id, account]))
-        const serverIds = new Set(state.accounts.map((account) => account.id))
-        const ordered = state.accounts.flatMap((account) => {
-          const current = latestById.get(account.id)
-          return current ? [mergeAccountSnapshot(current, account)] : []
-        })
-        const remaining = latest.accounts.filter((account) => !serverIds.has(account.id))
-        return { ...latest, accounts: [...ordered, ...remaining], revision: state.revision }
+        return applyServerAccountOrder(latest, state, mergeAccountSnapshot)
       })
     } catch (err) {
       setError(describeIpcError(err))
@@ -287,14 +249,7 @@ export function useAppData() {
           if (isStaleRevision(snapshot.revision, latest.revision)) {
             return latest
           }
-          return {
-            ...latest,
-            accounts: latest.accounts.map((candidate) =>
-              candidate.id === snapshot.account.id
-                ? mergeAccountSnapshot(candidate, snapshot.account)
-                : candidate
-            )
-          }
+          return mergeAccountUpdates(latest, [snapshot.account])
         })
         if (!resolved || !resolved.accounts.some((candidate) => candidate.id === snapshot.account.id)) {
           await reload()
@@ -321,23 +276,35 @@ export function useAppData() {
     let unlisten: UnlistenFn | undefined
     let unlistenAccount: UnlistenFn | undefined
     let fallbackTimer: number | undefined
+    let accountBatchTimer: number | undefined
+    const pendingAccounts: Account[] = []
 
-    void listen<Account>('account-updated', ({ payload }) => {
-      if (disposeRef.current) return
-      setData((latest) => {
-        if (!latest) return latest
-        const index = latest.accounts.findIndex((a) => a.id === payload.id)
-        if (index === -1) return latest
-        const accounts = [...latest.accounts]
-        accounts[index] = mergeAccountSnapshot(accounts[index], payload)
-        return { ...latest, accounts }
-      })
+    const flushAccountUpdates = () => {
+      if (accountBatchTimer !== undefined) window.clearTimeout(accountBatchTimer)
+      accountBatchTimer = undefined
+      if (disposed || disposeRef.current || pendingAccounts.length === 0) return
+      const updates = pendingAccounts.splice(0)
+      setData((current) => mergeAccountUpdates(current, updates))
+    }
+
+    void listen<{ accounts: Account[] }>('accounts-updated', ({ payload }) => {
+      if (disposed || disposeRef.current || !dataRef.current) return
+      for (const account of payload.accounts) pendingAccounts.push(account)
+      if (accountBatchTimer === undefined) {
+        accountBatchTimer = window.setTimeout(flushAccountUpdates, 32)
+      }
     }).then((dispose) => {
       if (disposed) dispose()
       else unlistenAccount = dispose
-    })
+    }).catch(() => undefined)
 
     void listen<AppStateChangedEvent>('app-state-changed', ({ payload }) => {
+      if (disposed || disposeRef.current) return
+      if (payload.state) {
+        flushAccountUpdates()
+        setData(payload.state)
+        return
+      }
       if (payload.scope === 'account' && payload.accountIds.length === 1) {
         void reloadAccount(payload.accountIds[0])
         return
@@ -359,6 +326,7 @@ export function useAppData() {
       unlisten?.()
       unlistenAccount?.()
       if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer)
+      if (accountBatchTimer !== undefined) window.clearTimeout(accountBatchTimer)
     }
   }, [reload, reloadAccount, setData])
 

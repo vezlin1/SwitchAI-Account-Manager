@@ -29,8 +29,6 @@ pub trait KeyringBackend: Send + Sync {
         username: &str,
         password: &str,
     ) -> Result<(), keyring::Error>;
-    #[allow(dead_code)]
-    fn delete_password(&self, service: &str, username: &str) -> Result<(), keyring::Error>;
 }
 
 pub struct OsKeyring;
@@ -47,10 +45,6 @@ impl KeyringBackend for OsKeyring {
         password: &str,
     ) -> Result<(), keyring::Error> {
         Entry::new(service, username)?.set_password(password)
-    }
-
-    fn delete_password(&self, service: &str, username: &str) -> Result<(), keyring::Error> {
-        Entry::new(service, username)?.delete_credential()
     }
 }
 
@@ -93,20 +87,6 @@ impl KeyringBackend for InMemoryKeyring {
             password.to_string(),
         );
         Ok(())
-    }
-
-    fn delete_password(&self, service: &str, username: &str) -> Result<(), keyring::Error> {
-        let mut entries = self.entries.lock().map_err(|_| {
-            keyring::Error::PlatformFailure(std::io::Error::other("lock poisoned").into())
-        })?;
-        if entries
-            .remove(&(service.to_string(), username.to_string()))
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err(keyring::Error::NoEntry)
-        }
     }
 }
 
@@ -201,12 +181,12 @@ impl<B: KeyringBackend> SecretStore<B> {
         }
     }
 
-    fn cipher(&self, key: &[u8; KEY_BYTES]) -> AppResult<Aes256Gcm> {
+    fn cipher(key: &[u8; KEY_BYTES]) -> AppResult<Aes256Gcm> {
         Aes256Gcm::new_from_slice(key)
             .map_err(|_| AppError::msg("Failed to initialize protected token vault"))
     }
 
-    fn decrypt_vault(&self, path: &Path, key: &[u8; KEY_BYTES]) -> AppResult<TokenVault> {
+    fn decrypt_vault(path: &Path, key: &[u8; KEY_BYTES]) -> AppResult<TokenVault> {
         let text = fs::read_to_string(path).map_err(|source| AppError::Io {
             context: "Failed to read protected token vault",
             source,
@@ -231,8 +211,7 @@ impl<B: KeyringBackend> SecretStore<B> {
         let ciphertext = STANDARD.decode(envelope.ciphertext).map_err(|error| {
             AppError::msg(format!("Protected vault ciphertext is invalid: {error}"))
         })?;
-        let plaintext = self
-            .cipher(key)?
+        let plaintext = Self::cipher(key)?
             .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
             .map_err(|_| {
                 AppError::msg(
@@ -252,11 +231,11 @@ impl<B: KeyringBackend> SecretStore<B> {
         let key = self.load_master_key(false)?.ok_or_else(|| {
             AppError::msg("Protected token vault exists, but its operating-system key is missing")
         })?;
-        match self.decrypt_vault(&self.vault_path, &key) {
+        match Self::decrypt_vault(&self.vault_path, &key) {
             Ok(vault) => Ok(vault),
             Err(primary_error) => {
                 let backup = backup_path(&self.vault_path)?;
-                let restored = self.decrypt_vault(&backup, &key).map_err(|backup_error| {
+                let restored = Self::decrypt_vault(&backup, &key).map_err(|backup_error| {
                     AppError::msg(format!(
                         "Protected vault recovery failed. Main file: {}; backup: {}",
                         primary_error.user_message(),
@@ -284,8 +263,7 @@ impl<B: KeyringBackend> SecretStore<B> {
         })?;
         let mut nonce = [0_u8; NONCE_BYTES];
         rand::rng().fill_bytes(&mut nonce);
-        let ciphertext = self
-            .cipher(&key)?
+        let ciphertext = Self::cipher(&key)?
             .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
             .map_err(|_| AppError::msg("Failed to encrypt protected token vault"))?;
         let envelope = VaultEnvelope {

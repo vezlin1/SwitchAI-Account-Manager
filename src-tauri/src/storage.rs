@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,17 +14,16 @@ const APP_STORAGE_DIR_NAME: &str = "VGCodexAccountManager";
 const LEGACY_STORAGE_DIR_NAME: &str = "CodexAccountManagerLite";
 const STATE_FILE_NAME: &str = "state.json";
 
+#[cfg(test)]
 fn base_data_dir() -> AppResult<PathBuf> {
-    #[cfg(test)]
-    {
-        return Ok(std::env::temp_dir().join("switchai-test-app-data"));
-    }
-    #[allow(unreachable_code)]
-    {
-        dirs::data_local_dir()
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| AppError::msg("Cannot determine data directory"))
-    }
+    Ok(std::env::temp_dir().join("switchai-test-app-data"))
+}
+
+#[cfg(not(test))]
+fn base_data_dir() -> AppResult<PathBuf> {
+    dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::msg("Cannot determine data directory"))
 }
 
 pub fn app_storage_dir() -> AppResult<PathBuf> {
@@ -88,13 +88,14 @@ fn read_persisted_state(path: &Path) -> AppResult<(PersistedAppData, String)> {
         context: "Failed to read state file",
         source,
     })?;
-    let sanitized = text.trim_start_matches('\u{feff}');
-    let parsed =
-        serde_json::from_str::<PersistedAppData>(sanitized).map_err(|source| AppError::Json {
-            context: "Failed to parse state file",
-            source,
-        })?;
-    Ok((parsed, text))
+    Ok((parse_persisted_state(&text)?, text))
+}
+
+fn parse_persisted_state(text: &str) -> AppResult<PersistedAppData> {
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|source| AppError::Json {
+        context: "Failed to parse state file",
+        source,
+    })
 }
 
 fn quarantine_path_with_marker(path: &Path, marker: &str) -> AppResult<PathBuf> {
@@ -125,21 +126,46 @@ fn quarantine_file_if_exists(path: &Path, marker: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn load_app_data_from(path: &Path) -> AppResult<AppData> {
+struct LoadedState {
+    data: AppData,
+    schema_needs_upgrade: bool,
+    had_legacy_quota_history: bool,
+}
+
+impl From<PersistedAppData> for LoadedState {
+    fn from(persisted: PersistedAppData) -> Self {
+        let schema_needs_upgrade = persisted.schema_version < crate::models::APP_SCHEMA_VERSION;
+        let had_legacy_quota_history = persisted
+            .accounts
+            .iter()
+            .any(|account| account.had_legacy_quota_history);
+        Self {
+            data: AppData::from(persisted).normalize_legacy(),
+            schema_needs_upgrade,
+            had_legacy_quota_history,
+        }
+    }
+}
+
+fn load_state_from(path: &Path) -> AppResult<LoadedState> {
     if !path.exists() {
         let backup = backup_path(path)?;
         if !backup.exists() {
-            return Ok(AppData::default());
+            return Ok(LoadedState {
+                data: AppData::default(),
+                schema_needs_upgrade: false,
+                had_legacy_quota_history: false,
+            });
         }
 
         let (restored, backup_text) = read_persisted_state(&backup)?;
         write_atomic(path, backup_text.as_bytes(), true)?;
         log::warn!("Restored missing state file from {}", backup.display());
-        return Ok(AppData::from(restored).normalize_legacy());
+        return Ok(restored.into());
     }
 
     match read_persisted_state(path) {
-        Ok((data, _)) => Ok(AppData::from(data).normalize_legacy()),
+        Ok((data, _)) => Ok(data.into()),
         Err(primary_error) => {
             let backup = backup_path(path)?;
             let (restored, backup_text) =
@@ -161,9 +187,14 @@ fn load_app_data_from(path: &Path) -> AppResult<AppData> {
                 backup.display(),
                 quarantined.display()
             );
-            Ok(AppData::from(restored).normalize_legacy())
+            Ok(restored.into())
         }
     }
+}
+
+#[cfg(test)]
+fn load_app_data_from(path: &Path) -> AppResult<AppData> {
+    Ok(load_state_from(path)?.data)
 }
 
 fn tokens_present(tokens: &Tokens) -> bool {
@@ -172,27 +203,9 @@ fn tokens_present(tokens: &Tokens) -> bool {
         || !tokens.refresh_token.trim().is_empty()
 }
 
-fn contains_legacy_quota_history(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .is_some_and(|value| {
-            value
-                .get("accounts")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|accounts| {
-                    accounts
-                        .iter()
-                        .any(|account| account.get("quotaHistory").is_some())
-                })
-        })
-}
-
-fn contains_legacy_plaintext_tokens(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .is_some_and(|value| {
+fn contains_legacy_plaintext_tokens(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')).is_ok_and(
+        |value| {
             value
                 .get("accounts")
                 .and_then(serde_json::Value::as_array)
@@ -210,30 +223,39 @@ fn contains_legacy_plaintext_tokens(path: &Path) -> bool {
                             })
                     })
                 })
-        })
+        },
+    )
 }
 
-fn recover_legacy_tokens_from_backup(path: &Path, data: &mut AppData) -> AppResult<bool> {
-    if !contains_legacy_plaintext_tokens(path) {
-        return Ok(false);
+fn read_legacy_backup(path: &Path) -> AppResult<Option<PersistedAppData>> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    if contains_legacy_plaintext_tokens(&text) {
+        parse_persisted_state(&text).map(Some)
+    } else {
+        Ok(None)
     }
-    let (persisted, _) = read_persisted_state(path)?;
-    let backup_data = AppData::from(persisted);
+}
+
+fn recover_legacy_tokens_from_backup(backup: PersistedAppData, data: &mut AppData) -> bool {
+    let mut backup_tokens = HashMap::new();
+    for account in AppData::from(backup).accounts {
+        if tokens_present(&account.tokens) {
+            backup_tokens.entry(account.id).or_insert(account.tokens);
+        }
+    }
     let mut recovered = false;
     for account in &mut data.accounts {
         if tokens_present(&account.tokens) {
             continue;
         }
-        if let Some(backup_account) = backup_data
-            .accounts
-            .iter()
-            .find(|candidate| candidate.id == account.id && tokens_present(&candidate.tokens))
-        {
-            account.tokens = backup_account.tokens.clone();
+        if let Some(tokens) = backup_tokens.get(&account.id) {
+            account.tokens = tokens.clone();
             recovered = true;
         }
     }
-    Ok(recovered)
+    recovered
 }
 
 fn hydrate_protected_tokens(data: &mut AppData) -> AppResult<bool> {
@@ -280,14 +302,14 @@ fn hydrate_protected_tokens(data: &mut AppData) -> AppResult<bool> {
 
 fn write_serialized_state(path: &Path, data: &AppData, with_backup: bool) -> AppResult<()> {
     let persisted = PersistedAppData::from(data);
-    let text = serde_json::to_string_pretty(&persisted).map_err(|source| AppError::Json {
+    let bytes = serde_json::to_vec(&persisted).map_err(|source| AppError::Json {
         context: "Failed to serialize state",
         source,
     })?;
     if with_backup {
-        write_atomic_with_backup(path, text.as_bytes(), true)
+        write_atomic_with_backup(path, &bytes, true)
     } else {
-        write_atomic(path, text.as_bytes(), true)
+        write_atomic(path, &bytes, true)
     }
 }
 
@@ -295,20 +317,16 @@ pub fn load_app_data() -> AppResult<AppData> {
     let path = app_storage_file()?;
     let base = base_data_dir()?;
     let migrated_from_legacy = migrated_legacy_source_at(&path, &base);
-    let mut data = load_app_data_from(&path)?;
-    let schema_needs_upgrade = fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| {
-            value
-                .get("schemaVersion")
-                .and_then(serde_json::Value::as_u64)
-        })
-        .is_some_and(|version| version < u64::from(crate::models::APP_SCHEMA_VERSION));
-    let had_legacy_quota_history = contains_legacy_quota_history(&path);
+    let LoadedState {
+        mut data,
+        schema_needs_upgrade,
+        had_legacy_quota_history,
+    } = load_state_from(&path)?;
     let backup = backup_path(&path)?;
-    let backup_had_plaintext_tokens = contains_legacy_plaintext_tokens(&backup);
-    let recovered_backup_tokens = recover_legacy_tokens_from_backup(&backup, &mut data)?;
+    let legacy_backup = read_legacy_backup(&backup)?;
+    let backup_had_plaintext_tokens = legacy_backup.is_some();
+    let recovered_backup_tokens =
+        legacy_backup.is_some_and(|backup| recover_legacy_tokens_from_backup(backup, &mut data));
     let migrated_tokens = hydrate_protected_tokens(&mut data)? || recovered_backup_tokens;
     // Reaching this point means the authoritative state parsed and its protected
     // credentials hydrated successfully. A leftover legacy source can therefore
@@ -406,17 +424,31 @@ fn with_rollback_error(primary: AppError, failures: Vec<String>) -> AppError {
 
 pub(crate) fn persist_app_data_at(current: &AppData, next: &AppData, path: &Path) -> AppResult<()> {
     let mut changed_secrets: Vec<(String, Option<Tokens>)> = Vec::new();
+    let same_order = current.accounts.len() == next.accounts.len()
+        && current
+            .accounts
+            .iter()
+            .zip(&next.accounts)
+            .all(|(left, right)| left.id == right.id);
+    let current_by_id = (!same_order).then(|| {
+        let mut accounts = HashMap::with_capacity(current.accounts.len());
+        for account in &current.accounts {
+            accounts
+                .entry(account.id.as_str())
+                .or_insert(&account.tokens);
+        }
+        accounts
+    });
 
-    for next_account in &next.accounts {
+    for (index, next_account) in next.accounts.iter().enumerate() {
         if !tokens_present(&next_account.tokens) {
             continue;
         }
-        let previous = current
-            .accounts
-            .iter()
-            .find(|account| account.id == next_account.id)
-            .map(|account| account.tokens.clone());
-        if previous.as_ref() == Some(&next_account.tokens) {
+        let previous = match &current_by_id {
+            Some(accounts) => accounts.get(next_account.id.as_str()).copied(),
+            None => Some(&current.accounts[index].tokens),
+        };
+        if previous == Some(&next_account.tokens) {
             continue;
         }
 
@@ -424,7 +456,7 @@ pub(crate) fn persist_app_data_at(current: &AppData, next: &AppData, path: &Path
             let failures = rollback_secrets(&changed_secrets);
             return Err(with_rollback_error(error, failures));
         }
-        changed_secrets.push((next_account.id.clone(), previous));
+        changed_secrets.push((next_account.id.clone(), previous.cloned()));
     }
 
     if let Err(error) = write_serialized_state(path, next, true) {
@@ -432,12 +464,19 @@ pub(crate) fn persist_app_data_at(current: &AppData, next: &AppData, path: &Path
         return Err(with_rollback_error(error, failures));
     }
 
-    for removed in current.accounts.iter().filter(|account| {
-        !next
-            .accounts
-            .iter()
-            .any(|candidate| candidate.id == account.id)
-    }) {
+    if same_order {
+        return Ok(());
+    }
+    let next_ids: HashSet<_> = next
+        .accounts
+        .iter()
+        .map(|account| account.id.as_str())
+        .collect();
+    for removed in current
+        .accounts
+        .iter()
+        .filter(|account| !next_ids.contains(account.id.as_str()))
+    {
         if let Err(error) = secret_store::delete_tokens(&removed.id) {
             // The state no longer references this credential. An orphan is safer than
             // rolling back a successfully committed account deletion.
@@ -467,7 +506,7 @@ pub fn commit_app_data(current: &mut AppData, next: AppData) -> AppResult<()> {
 
 pub(crate) fn commit_state_data_at(
     state: &std::sync::Arc<crate::app_state::SharedState>,
-    mut current: std::sync::MutexGuard<'_, AppData>,
+    mut current: crate::app_state::DataUpdateGuard<'_>,
     next: AppData,
     path: &Path,
 ) -> AppResult<AppData> {
@@ -481,11 +520,11 @@ pub(crate) fn commit_state_data_at(
     Ok(next)
 }
 
-// Keep the data guard used to create `next` through persistence and publication.
-// Refresh and OAuth writers use this same mutex; a separate commit lock is insufficient.
+// Keep the writer guard used to create `next` through persistence and publication.
+// Readers retain the previous durable snapshot while this transaction performs I/O.
 pub fn commit_state_data(
     state: &std::sync::Arc<crate::app_state::SharedState>,
-    current: std::sync::MutexGuard<'_, AppData>,
+    current: crate::app_state::DataUpdateGuard<'_>,
     next: AppData,
 ) -> AppResult<AppData> {
     let path = app_storage_file()?;
@@ -556,9 +595,8 @@ mod tests {
 
     use super::{
         LEGACY_STORAGE_DIR_NAME, STATE_FILE_NAME, app_storage_dir_at, app_storage_file_at,
-        contains_legacy_plaintext_tokens, contains_legacy_quota_history, finalize_legacy_migration,
-        load_app_data_from, quarantine_file_if_exists, restore_app_data_backup_from,
-        write_serialized_state,
+        finalize_legacy_migration, load_app_data_from, load_state_from, quarantine_file_if_exists,
+        read_legacy_backup, restore_app_data_backup_from, write_serialized_state,
     };
     use crate::atomic_file::backup_path;
     use crate::errors::AppResult;
@@ -684,22 +722,22 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "accounts": [{ "id": "account-1", "quotaHistory": [{ "fetchedAt": 1 }] }]
+                "accounts": [{ "id": "account-1", "createdAt": 1, "lastLoginAt": 1, "quotaHistory": [{ "fetchedAt": 1 }] }]
             })
             .to_string(),
         )
         .expect("write legacy quota history");
-        assert!(contains_legacy_quota_history(&path));
+        assert!(load_state_from(&path).unwrap().had_legacy_quota_history);
 
         fs::write(
             &path,
             json!({
-                "accounts": [{ "id": "account-1", "lastError": "quotaHistory" }]
+                "accounts": [{ "id": "account-1", "createdAt": 1, "lastLoginAt": 1, "lastError": "quotaHistory" }]
             })
             .to_string(),
         )
         .expect("write state without quota history field");
-        assert!(!contains_legacy_quota_history(&path));
+        assert!(!load_state_from(&path).unwrap().had_legacy_quota_history);
         fs::remove_dir_all(dir).expect("remove test directory");
     }
 
@@ -712,6 +750,8 @@ mod tests {
             json!({
                 "accounts": [{
                     "id": "account-1",
+                    "createdAt": 1,
+                    "lastLoginAt": 1,
                     "tokens": {
                         "idToken": "",
                         "accessToken": "legacy-access",
@@ -722,14 +762,14 @@ mod tests {
             .to_string(),
         )
         .expect("write legacy token backup");
-        assert!(contains_legacy_plaintext_tokens(&path));
+        assert!(read_legacy_backup(&path).unwrap().is_some());
 
         fs::write(
             &path,
             json!({ "accounts": [{ "id": "account-1" }] }).to_string(),
         )
         .expect("write token-free backup");
-        assert!(!contains_legacy_plaintext_tokens(&path));
+        assert!(read_legacy_backup(&path).unwrap().is_none());
         fs::remove_dir_all(dir).expect("remove test directory");
     }
 
@@ -995,17 +1035,17 @@ mod tests {
             )
             .unwrap(),
         );
-        // A token refresh holds the same data mutex as the settings transaction.
-        let mut data = crate::app_state::lock_data(&state).unwrap();
+        // Refresh and settings transactions serialize without excluding readers.
+        let mut data = crate::app_state::lock_data_for_update(&state).unwrap();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (saved_tx, saved_rx) = std::sync::mpsc::channel();
         let writer_state = state.clone();
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            let current = crate::app_state::lock_data(&writer_state).unwrap();
+            let current = crate::app_state::lock_data_for_update(&writer_state).unwrap();
             let mut settings = current.clone();
-            settings.app_settings.auto_check_updates = false;
+            settings.app_settings.auto_refresh_enabled = false;
             super::commit_state_data_at(&writer_state, current, settings, &writer_path).unwrap();
             saved_tx.send(()).unwrap();
         });
@@ -1016,7 +1056,7 @@ mod tests {
         ));
         let mut refreshed = data.clone();
         refreshed.accounts[0].tokens.refresh_token = "rotated-token".into();
-        // Exercise the existing refresh writer protocol (data mutex, no separate gate).
+        // Exercise the refresh writer protocol before the settings transaction.
         super::persist_app_data_at(&data, &refreshed, &path).unwrap();
         refreshed.revision += 1;
         *data = refreshed;
@@ -1025,13 +1065,13 @@ mod tests {
 
         let data = crate::app_state::lock_data(&state).unwrap();
         assert_eq!(data.accounts[0].tokens.refresh_token, "rotated-token");
-        assert!(!data.app_settings.auto_check_updates);
+        assert!(!data.app_settings.auto_refresh_enabled);
         assert_eq!(data.revision, 2);
         let stored = crate::secret_store::load_all_tokens().unwrap();
         assert_eq!(stored[&data.accounts[0].id].refresh_token, "rotated-token");
         let (_, persisted) = super::read_persisted_state(&path).unwrap();
         let persisted: serde_json::Value = serde_json::from_str(&persisted).unwrap();
-        assert_eq!(persisted["appSettings"]["autoCheckUpdates"], false);
+        assert_eq!(persisted["appSettings"]["autoRefreshEnabled"], false);
         crate::secret_store::delete_tokens(&data.accounts[0].id).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1048,19 +1088,49 @@ mod tests {
             crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
         );
 
-        let current = crate::app_state::lock_data(&state).unwrap();
+        let current = crate::app_state::lock_data_for_update(&state).unwrap();
         let mut next = current.clone();
-        next.app_settings.auto_check_updates = false;
+        next.app_settings.auto_refresh_enabled = false;
 
         let committed =
             super::commit_state_data_at(&state, current, next, &path).expect("commit state data");
         assert_eq!(committed.revision, 4);
-        assert!(!committed.app_settings.auto_check_updates);
+        assert!(!committed.app_settings.auto_refresh_enabled);
 
         let in_state = crate::app_state::lock_data(&state).unwrap().clone();
         assert_eq!(in_state.revision, 4);
-        assert!(!in_state.app_settings.auto_check_updates);
+        assert!(!in_state.app_settings.auto_refresh_enabled);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_state_commit_keeps_the_published_snapshot_and_writer_state() {
+        let dir = test_dir();
+        let blocked_parent = dir.join("not-a-directory");
+        fs::write(&blocked_parent, b"block persistence").unwrap();
+        let path = blocked_parent.join("state.json");
+        let initial = AppData {
+            revision: 3,
+            ..AppData::default()
+        };
+        let state = std::sync::Arc::new(
+            crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
+        );
+        let current = crate::app_state::lock_data_for_update(&state).unwrap();
+        let mut next = current.clone();
+        next.app_settings.privacy_mode = true;
+        assert!(super::commit_state_data_at(&state, current, next, &path).is_err());
+
+        let published = crate::app_state::lock_data(&state).unwrap().clone();
+        assert_eq!(published.revision, 3);
+        assert!(!published.app_settings.privacy_mode);
+        let writer = crate::app_state::lock_data_for_update(&state).unwrap();
+        assert_eq!(writer.revision, published.revision);
+        assert_eq!(
+            writer.app_settings.privacy_mode,
+            published.app_settings.privacy_mode
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1072,7 +1142,7 @@ mod tests {
             crate::app_state::SharedState::new_with_startup_error(initial, None).unwrap(),
         );
 
-        let current = crate::app_state::lock_data(&state).unwrap();
+        let current = crate::app_state::lock_data_for_update(&state).unwrap();
         let mut next = current.clone();
         next.app_settings.privacy_mode = true;
 

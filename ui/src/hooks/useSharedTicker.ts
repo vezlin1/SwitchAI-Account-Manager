@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 
 const listeners = new Set<() => void>()
 let intervalId: ReturnType<typeof setInterval> | null = null
@@ -40,24 +40,17 @@ if (typeof document !== 'undefined') {
   })
 }
 
-export function useSharedTicker(enabled: boolean = true): number {
-  const [tick, setTick] = useState(0)
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener)
+  startTimer()
+  return () => {
+    listeners.delete(listener)
+    stopTimer()
+  }
+}
 
-  useEffect(() => {
-    if (!enabled) return
+const subscribeNoop = () => () => undefined
 
-    const listener = () => {
-      setTick((t) => (t + 1) % 10000)
-    }
-
-    listeners.add(listener)
-    startTimer()
-
-    return () => {
-      listeners.delete(listener)
-      stopTimer()
-    }
-  }, [enabled])
-
-  return tick
+export function useSharedTicker(getSnapshot: () => string, enabled: boolean): string {
+  return useSyncExternalStore(enabled ? subscribe : subscribeNoop, getSnapshot, getSnapshot)
 }

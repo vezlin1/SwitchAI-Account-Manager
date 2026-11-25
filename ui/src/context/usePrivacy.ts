@@ -7,7 +7,6 @@ export function usePrivacy(): PrivacyContextType {
     return {
       privacyMode: false,
       setPrivacyMode: () => undefined,
-      togglePrivacyMode: () => undefined,
       maskEmail: (e) => e ?? '',
       maskAccountId: (id) => id ?? ''
     }

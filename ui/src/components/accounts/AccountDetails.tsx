@@ -110,12 +110,7 @@ export function AccountDetails({
     refreshingAll ||
     autoRefreshing ||
     refreshingQuota ||
-    detectingSubscription ||
-    busyKeys.has('refresh') ||
-    busyKeys.has('refresh-all') ||
-    busyKeys.has(`relogin:${account.id}`) ||
-    busyKeys.has(`account:${account.id}:quota`) ||
-    busyKeys.has(`account:${account.id}:subscription`)
+    detectingSubscription
   const status = statusDetails(account, isRefreshingAccount)
   const busy = isRefreshingAccount
     || busyKeys.has(`switch:${account.id}`)
@@ -175,7 +170,7 @@ export function AccountDetails({
   }
 
   return (
-    <article className="account-details page-fade" aria-labelledby="account-details-title">
+    <article className="account-details" aria-labelledby="account-details-title">
       <header className="account-details-header">
         <button type="button" className="account-details-back" onClick={onBack}>
           <ArrowLeft size={17} aria-hidden="true" />
@@ -349,7 +344,7 @@ export function AccountDetails({
           </section>
 
           {status.tone !== 'healthy' && (
-            <section className={`account-detail-sidebar-section account-detail-health account-detail-health-${status.tone}`}>
+            <section className={`account-detail-sidebar-section account-detail-health${status.tone === 'danger' ? ' account-detail-health-danger' : ''}`}>
               <div className="flex items-center justify-between gap-2 mb-1">
                 <h2>Connection status</h2>
                 {status.message && (

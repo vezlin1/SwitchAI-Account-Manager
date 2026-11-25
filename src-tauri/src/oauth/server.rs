@@ -12,7 +12,7 @@ use crate::errors::{AppError, AppResult};
 use crate::models::now_ts;
 use crate::providers::chatgpt::oauth::{OauthFlowStatus, complete_oauth_code, prune_oauth_flows};
 
-pub const CALLBACK_ADDR: &str = "127.0.0.1:1455";
+const CALLBACK_ADDR: &str = "127.0.0.1:1455";
 pub const OAUTH_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 
 const CALLBACK_IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,11 +80,11 @@ pub(crate) fn bind_callback_listener() -> AppResult<TcpListener> {
     })
 }
 
-pub fn write_http_response(stream: &mut TcpStream, status: &str, body: &str) -> AppResult<()> {
+fn write_http_response(stream: &mut TcpStream, status: &str, body: &str) -> AppResult<()> {
     write_http_response_with_limit(stream, status, body, MAX_OAUTH_SUCCESS_BODY_BYTES)
 }
 
-pub fn write_error_http_response(
+fn write_error_http_response(
     stream: &mut TcpStream,
     status: &str,
     title: &str,
@@ -99,7 +99,7 @@ pub fn write_error_http_response(
     write_http_response_with_limit(stream, status, &body, MAX_OAUTH_ERROR_BODY_BYTES)
 }
 
-pub fn write_http_response_with_limit(
+fn write_http_response_with_limit(
     stream: &mut TcpStream,
     status: &str,
     body: &str,
@@ -123,7 +123,7 @@ pub fn write_http_response_with_limit(
         })
 }
 
-pub fn html_escape(value: &str) -> String {
+fn html_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -138,7 +138,7 @@ pub fn html_escape(value: &str) -> String {
     escaped
 }
 
-pub fn html_message(title: &str, message: &str) -> String {
+fn html_message(title: &str, message: &str) -> String {
     let title = html_escape(title);
     let message = html_escape(message);
     format!(
@@ -176,7 +176,7 @@ pub(crate) fn read_callback_request(stream: &mut TcpStream) -> AppResult<Vec<u8>
     Ok(request)
 }
 
-pub fn parse_callback_target(request: &[u8]) -> AppResult<String> {
+fn parse_callback_target(request: &[u8]) -> AppResult<String> {
     let request = String::from_utf8_lossy(request);
     let first_line = request.lines().next().unwrap_or_default();
     let mut parts = first_line.split_whitespace();
@@ -232,7 +232,7 @@ pub fn parse_callback_target(request: &[u8]) -> AppResult<String> {
     Ok(path_with_query.to_string())
 }
 
-pub fn handle_callback_stream(mut stream: TcpStream, shared: &Arc<SharedState>) -> AppResult<()> {
+fn handle_callback_stream(mut stream: TcpStream, shared: &Arc<SharedState>) -> AppResult<()> {
     let _connection = CallbackConnectionGuard::acquire()?;
 
     stream

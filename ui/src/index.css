@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ag-bg: rgb(var(--ag-bg));
   --color-ag-card: rgb(var(--ag-card));
   --color-ag-surface: rgb(var(--ag-surface));
   --color-ag-border: rgb(var(--ag-border));
@@ -9,14 +8,11 @@
   --color-ag-muted: rgb(var(--ag-muted));
   --color-ag-primary: rgb(var(--ag-primary));
   --color-ag-success: rgb(var(--ag-success));
-  --color-ag-danger: rgb(var(--ag-danger));
-  --color-ag-warning: rgb(var(--ag-warning));
   --shadow-ag: 0 4px 24px rgba(0, 0, 0, 0.45);
   --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
 :root {
-  --ag-bg: 10 11 15;
   --ag-card: 17 19 26;
   --ag-surface: 24 27 37;
   --ag-border: 38 42 56;
@@ -71,7 +67,6 @@ option {
 
 /* Numeric & Tabular Alignment */
 .account-row-quota,
-.quota-cell-value,
 .account-filter-count,
 .provider-tab-count,
 .tabular-nums {

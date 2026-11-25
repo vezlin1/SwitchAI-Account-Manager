@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import { computeAccountStatusFlags } from './useAccountRowState'
 import {
   closestCenter,
@@ -119,7 +119,7 @@ function AccountsEmptyState({
               ) : (
                 <ArrowDownToLine size={14} aria-hidden="true" />
               )}
-              {isGoogle ? 'Import active session' : 'Import active session'}
+              Import active session
             </button>
           )}
         </div>
@@ -162,7 +162,9 @@ function AccountsEmptyState({
   )
 }
 
-export function AccountsTable({
+const ACCOUNT_PAGE_SIZE = 40
+
+export const AccountsTable = memo(function AccountsTable({
   accounts,
   provider = 'codex',
   activeAccountId,
@@ -188,6 +190,12 @@ export function AccountsTable({
   onShowHiddenAccounts
 }: AccountsTableProps) {
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  const [visibleCount, setVisibleCount] = useState(ACCOUNT_PAGE_SIZE)
+  const loadMoreRef = useRef<HTMLButtonElement>(null)
+  const visibleAccounts = useMemo(() => accounts.slice(0, visibleCount), [accounts, visibleCount])
+  const canLoadMore = visibleCount < accounts.length
+  const hiddenIds = useMemo(() => new Set(hiddenAccountIds), [hiddenAccountIds])
+  const loadMore = useCallback(() => setVisibleCount((count) => count + ACCOUNT_PAGE_SIZE), [])
   const [contextMenu, setContextMenu] = useState<{
     accountId: string
     x: number
@@ -195,8 +203,12 @@ export function AccountsTable({
     opener: HTMLElement
     keyboardTriggered: boolean
   } | null>(null)
-  const accountIds = useMemo(() => accounts.map((account) => account.id), [accounts])
-  const quotaColumns = useMemo(() => quotaColumnsForAccounts(accounts), [accounts])
+  // These small schemas depend on ids/window kinds, not the changing quota
+  // values. Scalar dependencies keep SortableContext and unchanged rows stable.
+  const accountIdsJson = useMemo(() => JSON.stringify(visibleAccounts.map((account) => account.id)), [visibleAccounts])
+  const accountIds = useMemo(() => JSON.parse(accountIdsJson) as string[], [accountIdsJson])
+  const quotaColumnsJson = useMemo(() => JSON.stringify(quotaColumnsForAccounts(accounts)), [accounts])
+  const quotaColumns = useMemo(() => JSON.parse(quotaColumnsJson) as QuotaColumn[], [quotaColumnsJson])
   const activeDragAccount = activeDragId
     ? accounts.find((account) => account.id === activeDragId) ?? null
     : null
@@ -213,6 +225,19 @@ export function AccountsTable({
   const [isMobileView, setIsMobileView] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(max-width: 860px)').matches : false
   )
+
+  useEffect(() => {
+    const button = loadMoreRef.current
+    if (!button || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting && document.activeElement !== button) {
+        observer.disconnect()
+        loadMore()
+      }
+    }, { root: button.closest('main'), rootMargin: '0px 0px 480px' })
+    observer.observe(button)
+    return () => observer.disconnect()
+  }, [canLoadMore, isMobileView, loadMore, visibleCount])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -256,6 +281,21 @@ export function AccountsTable({
     })
   }, [])
 
+  const loadMoreButton = canLoadMore && (
+    <button
+      ref={loadMoreRef}
+      type="button"
+      className="account-detail-action mx-auto my-2"
+      onClick={() => {
+        const lastAccount = loadMoreRef.current?.closest('[data-load-more]')?.previousElementSibling
+        loadMore()
+        requestAnimationFrame(() => lastAccount?.nextElementSibling?.querySelector('button')?.focus())
+      }}
+    >
+      Show more accounts
+    </button>
+  )
+
   return (
     <div className="accounts-table-shell">
       {accounts.length === 0 ? (
@@ -284,7 +324,11 @@ export function AccountsTable({
             onDragCancel={() => setActiveDragId(null)}
             onDragEnd={handleDragEnd}
           >
-            <table className="accounts-table" aria-busy={orderBusy || refreshingAll || autoRefreshing}>
+            <table
+              className="accounts-table"
+              aria-busy={orderBusy || refreshingAll || autoRefreshing}
+              aria-rowcount={canLoadMore ? accounts.length + 1 : undefined}
+            >
               <caption className="visually-hidden">Accounts with quota, status, and subscription details</caption>
               <thead>
                 <tr>
@@ -300,7 +344,7 @@ export function AccountsTable({
               </thead>
               <SortableContext items={accountIds} strategy={verticalListSortingStrategy}>
                 <tbody>
-                  {accounts.map((account) => {
+                  {visibleAccounts.map((account) => {
                     const statusFlags = computeAccountStatusFlags(
                       account.id,
                       busyKeys,
@@ -314,9 +358,8 @@ export function AccountsTable({
                         isActive={activeAccountId === account.id}
                         isSwitching={statusFlags.isSwitching}
                         isRemoving={statusFlags.isRemoving}
-                        isRelogining={statusFlags.isRelogining}
                         isRefreshing={statusFlags.isRefreshing}
-                        hiddenFromAll={hiddenAccountIds.includes(account.id)}
+                        hiddenFromAll={hiddenIds.has(account.id)}
                         quotaColumns={quotaColumns}
                         orderBusy={orderBusy || isSearching}
                         onOpenDetails={onOpenDetails}
@@ -327,6 +370,11 @@ export function AccountsTable({
                       />
                     )
                   })}
+                  {canLoadMore && (
+                    <tr data-load-more>
+                      <td colSpan={quotaColumns.length + 5}>{loadMoreButton}</td>
+                    </tr>
+                  )}
                 </tbody>
               </SortableContext>
             </table>
@@ -353,7 +401,7 @@ export function AccountsTable({
       ) : (
         <div className="accounts-mobile-view">
           <ul className="account-card-list">
-            {accounts.map((account) => {
+            {visibleAccounts.map((account) => {
               const statusFlags = computeAccountStatusFlags(
                 account.id,
                 busyKeys,
@@ -367,10 +415,9 @@ export function AccountsTable({
                     isActive={activeAccountId === account.id}
                     isSwitching={statusFlags.isSwitching}
                     isRemoving={statusFlags.isRemoving}
-                    isRelogining={statusFlags.isRelogining}
                     isRefreshing={statusFlags.isRefreshing}
                     quotaColumns={quotaColumns}
-                    hiddenFromAll={hiddenAccountIds.includes(account.id)}
+                    hiddenFromAll={hiddenIds.has(account.id)}
                     onOpenDetails={onOpenDetails}
                     onSwitch={onSwitch}
                     onRelogin={onRelogin}
@@ -380,6 +427,7 @@ export function AccountsTable({
                 </li>
               )
             })}
+            {canLoadMore && <li data-load-more>{loadMoreButton}</li>}
           </ul>
         </div>
       )}
@@ -387,7 +435,7 @@ export function AccountsTable({
       {contextMenu && contextAccount && (
         <AccountContextMenu
           account={contextAccount}
-          hiddenFromAll={hiddenAccountIds.includes(contextAccount.id)}
+          hiddenFromAll={hiddenIds.has(contextAccount.id)}
           x={contextMenu.x}
           y={contextMenu.y}
           opener={contextMenu.opener}
@@ -398,14 +446,13 @@ export function AccountsTable({
       )}
     </div>
   )
-}
+})
 
 type SortableAccountRowProps = {
   account: Account
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
-  isRelogining: boolean
   isRefreshing: boolean
   hiddenFromAll: boolean
   quotaColumns: QuotaColumn[]
@@ -422,7 +469,6 @@ const SortableAccountRow = memo(function SortableAccountRow({
   isActive,
   isSwitching,
   isRemoving,
-  isRelogining,
   isRefreshing,
   hiddenFromAll,
   quotaColumns,
@@ -460,7 +506,6 @@ const SortableAccountRow = memo(function SortableAccountRow({
       isActive={isActive}
       isSwitching={isSwitching}
       isRemoving={isRemoving}
-      isRelogining={isRelogining}
       isRefreshing={isRefreshing}
       hiddenFromAll={hiddenFromAll}
       quotaColumns={quotaColumns}

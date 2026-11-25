@@ -1,4 +1,4 @@
-export function clampPercent(value: number | null | undefined): number {
+function clampPercent(value: number | null | undefined): number {
   if (value == null || Number.isNaN(value)) return 0
   if (value < 0) return 0
   if (value > 100) return 100
@@ -8,12 +8,6 @@ export function clampPercent(value: number | null | undefined): number {
 export function remainingPercent(value: number | null | undefined): number | null {
   if (value == null || Number.isNaN(value)) return null
   return clampPercent(100 - clampPercent(value))
-}
-
-export function formatRemainingPercent(value: number | null | undefined): string {
-  const remaining = remainingPercent(value)
-  if (remaining == null) return '-'
-  return `${Math.round(remaining)}%`
 }
 
 export function formatTimeUntil(unixTsSeconds: number | null | undefined): string {

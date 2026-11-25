@@ -191,6 +191,7 @@ pub async fn refresh_access_token(client: &reqwest::Client, tokens: &Tokens) -> 
         })?;
 
     let status = response.status();
+    let retry_after_seconds = parse_retry_after(response.headers());
     let body = if status.is_success() {
         read_bounded_body(
             response,
@@ -204,10 +205,12 @@ pub async fn refresh_access_token(client: &reqwest::Client, tokens: &Tokens) -> 
     let body = String::from_utf8_lossy(&body).into_owned();
 
     if !status.is_success() {
-        return Err(AppError::msg(format!(
-            "OAuth refresh failed ({status}): {}",
-            sanitize_remote_message(&body, 240)
-        )));
+        return Err(AppError::RemoteHttp {
+            context: "OAuth refresh failed",
+            status: status.as_u16(),
+            retry_after_seconds,
+            details: sanitize_remote_message(&body, 240),
+        });
     }
 
     let payload: Value = serde_json::from_str(&body).map_err(|source| AppError::Json {
@@ -257,9 +260,7 @@ pub async fn refresh_quota_with_token_refresh(
             Err(refresh_err) => {
                 let message = refresh_err.user_message();
                 return QuotaRefreshUpdate {
-                    quota_result: Err(AppError::msg(format!(
-                        "Token refresh failed before quota request: {message}"
-                    ))),
+                    quota_result: Err(refresh_err),
                     refreshed_tokens: None,
                     token_health: Some(classify_refresh_error(&message)),
                 };
@@ -287,9 +288,7 @@ pub async fn refresh_quota_with_token_refresh(
             }
             Err(refresh_err) => {
                 let message = refresh_err.user_message();
-                quota_result = Err(AppError::msg(format!(
-                    "Quota request failed due to auth and token refresh failed: {message}"
-                )));
+                quota_result = Err(refresh_err);
                 token_health = Some(classify_refresh_error(&message));
             }
         }
@@ -400,9 +399,30 @@ pub(crate) fn classify_refresh_error(message: &str) -> TokenHealth {
 mod tests {
     use super::{
         classify_refresh_error, is_quota_auth_error, is_refresh_token_reuse_error,
-        is_unsupported_region_error,
+        is_unsupported_region_error, parse_retry_after,
     };
     use crate::models::TokenHealthStatus;
+
+    #[test]
+    fn retry_after_accepts_server_delay_and_http_date() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(120));
+
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(180);
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            deadline.to_rfc2822().parse().unwrap(),
+        );
+        assert!(matches!(parse_retry_after(&headers), Some(178..=180)));
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(0));
+        headers.insert(reqwest::header::RETRY_AFTER, "invalid".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), None);
+    }
 
     #[test]
     fn detects_refresh_token_reuse_errors() {

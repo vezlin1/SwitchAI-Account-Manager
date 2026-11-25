@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { usePlatform } from './usePlatform'
+import { isMac } from '../utils/platform'
 
 export type ShortcutHandler = (event: KeyboardEvent) => void
 
@@ -7,8 +7,6 @@ export function useKeyboardShortcuts(
   shortcuts: Record<string, ShortcutHandler>,
   enabled = true
 ) {
-  const { isMac } = usePlatform()
-
   useEffect(() => {
     if (!enabled) return
 
@@ -45,5 +43,5 @@ export function useKeyboardShortcuts(
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [shortcuts, enabled, isMac])
+  }, [shortcuts, enabled])
 }

@@ -4,10 +4,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::app_state::{SharedState, lock_data};
+use crate::app_state::{DataUpdateGuard, SharedState, lock_data, lock_data_for_update};
 use crate::auto_refresh;
 use crate::codex::{reconcile_codex_auth, restart_codex_process};
-use crate::commands::{command_result, warning};
+use crate::commands::{command_result, run_blocking, warning};
 use crate::dto::{
     AccountDto, AccountSnapshotDto, AntigravitySurfaceDto, AppDataDto, StateResultDto,
 };
@@ -33,7 +33,7 @@ fn account_for_selection(data: &AppData, account_id: Option<&str>) -> Option<Acc
 
 fn commit_active_selection_changes(
     state: &Arc<SharedState>,
-    mut current: std::sync::MutexGuard<'_, AppData>,
+    mut current: DataUpdateGuard<'_>,
     next: AppData,
     codex_changed: bool,
     gemini_changed: bool,
@@ -139,53 +139,56 @@ pub(crate) fn remove_account_from_data(
 }
 
 #[tauri::command]
-pub fn get_account(
+pub async fn get_account(
     account_id: String,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AccountSnapshotDto, IpcErrorDto> {
-    command_result((|| {
-        let data = lock_data(state.inner())?;
-        let account = data
-            .accounts
-            .iter()
-            .find(|account| account.id == account_id)
-            .map(AccountDto::from)
-            .ok_or_else(|| AppError::msg("Account not found"))?;
-        Ok(AccountSnapshotDto {
-            revision: data.revision,
-            account,
+    let state = Arc::clone(state.inner());
+    command_result(
+        run_blocking(move || {
+            let data = lock_data(&state)?;
+            let account = data
+                .accounts
+                .iter()
+                .find(|account| account.id == account_id)
+                .map(AccountDto::from)
+                .ok_or_else(|| AppError::msg("Account not found"))?;
+            Ok(AccountSnapshotDto {
+                revision: data.revision,
+                account,
+            })
         })
-    })())
+        .await,
+    )
 }
 
 #[tauri::command]
-pub fn remove_account(
+pub async fn remove_account(
     account_id: String,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AppDataDto, IpcErrorDto> {
-    command_result((|| {
-        let (data, codex_changed, gemini_changed, next) = {
-            let data = lock_data(state.inner())?;
-            let mut next = data.clone();
-            let _ = reconcile_codex_auth(&mut next)?;
-            let (codex_changed, gemini_changed) = remove_account_from_data(&mut next, &account_id)?;
-            (data, codex_changed, gemini_changed, next)
-        };
+    let state = Arc::clone(state.inner());
+    command_result(
+        run_blocking(move || {
+            let (data, codex_changed, gemini_changed, next) = {
+                let data = lock_data_for_update(&state)?;
+                let mut next = data.clone();
+                let _ = reconcile_codex_auth(&mut next)?;
+                let (codex_changed, gemini_changed) =
+                    remove_account_from_data(&mut next, &account_id)?;
+                (data, codex_changed, gemini_changed, next)
+            };
 
-        let result = if codex_changed || gemini_changed {
-            commit_active_selection_changes(
-                state.inner(),
-                data,
-                next,
-                codex_changed,
-                gemini_changed,
-            )?
-        } else {
-            commit_state_data(state.inner(), data, next)?
-        };
+            let result = if codex_changed || gemini_changed {
+                commit_active_selection_changes(&state, data, next, codex_changed, gemini_changed)?
+            } else {
+                commit_state_data(&state, data, next)?
+            };
 
-        Ok(AppDataDto::from(&result))
-    })())
+            Ok(AppDataDto::from(&result))
+        })
+        .await,
+    )
 }
 
 pub(crate) fn set_active_account_data(
@@ -194,7 +197,7 @@ pub(crate) fn set_active_account_data(
 ) -> AppResult<AppData> {
     let (data, next) =
         {
-            let data = lock_data(state)?;
+            let data = lock_data_for_update(state)?;
             let mut next = data.clone();
             let _ = reconcile_codex_auth(&mut next)?;
             if !next.accounts.iter().any(|account| {
@@ -213,24 +216,24 @@ pub(crate) fn set_active_account_data(
 }
 
 #[tauri::command]
-pub fn switch_active_account_and_restart_codex(
+pub async fn switch_active_account_and_restart_codex(
     account_id: String,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<SwitchAccountRestartResponse, IpcErrorDto> {
-    command_result((|| {
-        let state_data = set_active_account_data(&account_id, state.inner())?;
-        crate::tray_dashboard::emit_state_changed(
-            state.inner(),
-            "accounts",
-            vec![account_id.clone()],
-        );
-        let restart_warning = restart_codex_process().err().map(|err| err.user_message());
+    let state = Arc::clone(state.inner());
+    command_result(
+        run_blocking(move || {
+            let state_data = set_active_account_data(&account_id, &state)?;
+            crate::tray_dashboard::emit_state_changed(&state, "accounts", vec![account_id.clone()]);
+            let restart_warning = restart_codex_process().err().map(|err| err.user_message());
 
-        Ok(SwitchAccountRestartResponse {
-            state: AppDataDto::from(&state_data),
-            restart_warning,
+            Ok(SwitchAccountRestartResponse {
+                state: AppDataDto::from(&state_data),
+                restart_warning,
+            })
         })
-    })())
+        .await,
+    )
 }
 
 pub(crate) async fn set_active_gemini_account_data(
@@ -254,38 +257,43 @@ pub(crate) async fn set_active_gemini_account_data(
     )
     .await?;
 
-    let (data, next) = {
-        let data = lock_data(state)?;
-        let current = data
-            .accounts
-            .iter()
-            .find(|account| account.id == account_id)
-            .ok_or_else(|| AppError::msg("Antigravity account disappeared during switch"))?;
-        if current.tokens != snapshot.tokens
-            || current.tokens_updated_at != snapshot.tokens_updated_at
-        {
-            return Err(AppError::msg(
-                "Antigravity credentials changed during the switch. Try again.",
-            ));
-        }
-        let mut next = data.clone();
-        let selected = next
-            .accounts
-            .iter_mut()
-            .find(|account| account.id == account_id)
-            .ok_or_else(|| AppError::msg("Antigravity account disappeared during switch"))?;
-        if selected.tokens != token_set.tokens
-            || selected.token_expires_at != Some(token_set.expires_at)
-        {
-            selected.tokens = token_set.tokens;
-            selected.token_expires_at = Some(token_set.expires_at);
-            selected.tokens_updated_at = Some(now_ts());
-            selected.token_health = TokenHealth::refreshed();
-        }
-        next.active_gemini_account_id = Some(account_id.to_string());
-        (data, next)
-    };
-    let result = commit_active_selection_changes(state, data, next, false, true)?;
+    let commit_state = Arc::clone(state);
+    let commit_account_id = account_id.to_string();
+    let result = run_blocking(move || {
+        let (data, next) = {
+            let data = lock_data_for_update(&commit_state)?;
+            let current = data
+                .accounts
+                .iter()
+                .find(|account| account.id == commit_account_id)
+                .ok_or_else(|| AppError::msg("Antigravity account disappeared during switch"))?;
+            if current.tokens != snapshot.tokens
+                || current.tokens_updated_at != snapshot.tokens_updated_at
+            {
+                return Err(AppError::msg(
+                    "Antigravity credentials changed during the switch. Try again.",
+                ));
+            }
+            let mut next = data.clone();
+            let selected = next
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == commit_account_id)
+                .ok_or_else(|| AppError::msg("Antigravity account disappeared during switch"))?;
+            if selected.tokens != token_set.tokens
+                || selected.token_expires_at != Some(token_set.expires_at)
+            {
+                selected.tokens = token_set.tokens;
+                selected.token_expires_at = Some(token_set.expires_at);
+                selected.tokens_updated_at = Some(now_ts());
+                selected.token_health = TokenHealth::refreshed();
+            }
+            next.active_gemini_account_id = Some(commit_account_id.clone());
+            (data, next)
+        };
+        commit_active_selection_changes(&commit_state, data, next, false, true)
+    })
+    .await?;
     auto_refresh::request_account_refresh_if_stale(state, account_id.to_string());
     Ok(result)
 }
@@ -300,38 +308,41 @@ pub async fn switch_active_gemini_account_and_restart_antigravity(
             let state_data = set_active_gemini_account_data(&account_id, state.inner()).await?;
             crate::tray_dashboard::emit_state_changed(state.inner(), "accounts", vec![account_id]);
 
-            let targets = &state_data.app_settings.gemini_switch_targets;
-            let mut warnings = Vec::new();
+            run_blocking(move || {
+                let targets = &state_data.app_settings.gemini_switch_targets;
+                let mut warnings = Vec::new();
 
-            if targets.iter().any(|t| t == "antigravity")
-                && let Err(err) = crate::gemini::restart_antigravity_process()
-            {
-                warnings.push(format!("Antigravity: {}", err.user_message()));
-            }
-            if targets.iter().any(|t| t == "ide")
-                && let Err(err) = crate::gemini::restart_antigravity_ide_process()
-            {
-                warnings.push(format!("Antigravity IDE: {}", err.user_message()));
-            }
+                if targets.iter().any(|t| t == "antigravity")
+                    && let Err(err) = crate::gemini::restart_antigravity_process()
+                {
+                    warnings.push(format!("Antigravity: {}", err.user_message()));
+                }
+                if targets.iter().any(|t| t == "ide")
+                    && let Err(err) = crate::gemini::restart_antigravity_ide_process()
+                {
+                    warnings.push(format!("Antigravity IDE: {}", err.user_message()));
+                }
 
-            let restart_warning = if warnings.is_empty() {
-                None
-            } else {
-                Some(warnings.join("; "))
-            };
+                let restart_warning = if warnings.is_empty() {
+                    None
+                } else {
+                    Some(warnings.join("; "))
+                };
 
-            Ok(SwitchAccountRestartResponse {
-                state: AppDataDto::from(&state_data),
-                restart_warning,
+                Ok(SwitchAccountRestartResponse {
+                    state: AppDataDto::from(&state_data),
+                    restart_warning,
+                })
             })
+            .await
         }
         .await,
     )
 }
 
 #[tauri::command]
-pub fn get_antigravity_surfaces() -> Vec<AntigravitySurfaceDto> {
-    crate::gemini::get_antigravity_surfaces()
+pub async fn get_antigravity_surfaces() -> Result<Vec<AntigravitySurfaceDto>, IpcErrorDto> {
+    command_result(run_blocking(|| Ok(crate::gemini::get_antigravity_surfaces())).await)
 }
 
 #[tauri::command]
@@ -340,7 +351,7 @@ pub async fn import_antigravity_account(
 ) -> Result<StateResultDto, IpcErrorDto> {
     command_result(
         async {
-            let external = crate::gemini::read_antigravity_auth()?.ok_or_else(|| {
+            let external = run_blocking(crate::gemini::read_antigravity_auth).await?.ok_or_else(|| {
                 let storage_name = if cfg!(target_os = "macos") {
                     "macOS Keychain"
                 } else {
@@ -372,9 +383,11 @@ pub async fn import_antigravity_account(
                 .ok()
                 .and_then(|result| result.project_id.clone());
 
+            let commit_state = Arc::clone(state.inner());
+            let (result, imported_id, warnings) = run_blocking(move || {
             let mut warnings = Vec::new();
             let (data, imported_id, next) = {
-                let data = lock_data(state.inner())?;
+                let data = lock_data_for_update(&commit_state)?;
                 let mut next = data.clone();
                 let account = crate::providers::gemini::oauth::save_authenticated_gemini_account(
                     &mut next,
@@ -417,7 +430,9 @@ pub async fn import_antigravity_account(
                 (data, account.id, next)
             };
 
-            let result = commit_active_selection_changes(state.inner(), data, next, false, true)?;
+            let result = commit_active_selection_changes(&commit_state, data, next, false, true)?;
+            Ok((result, imported_id, warnings))
+            }).await?;
             crate::tray_dashboard::emit_state_changed(
                 state.inner(),
                 "accounts",
@@ -439,7 +454,7 @@ pub async fn import_codex_account(
 ) -> Result<StateResultDto, IpcErrorDto> {
     command_result(
         async {
-            let external = crate::codex::read_codex_auth()?.ok_or_else(|| {
+            let external = run_blocking(crate::codex::read_codex_auth).await?.ok_or_else(|| {
                 AppError::msg(
                     "No active ChatGPT session was found in ~/.codex/auth.json. Sign in to ChatGPT or use Sign in with ChatGPT."
                 )
@@ -449,8 +464,10 @@ pub async fn import_codex_account(
             let account_id = external.account_id;
             let email = external.email;
 
+            let commit_state = Arc::clone(state.inner());
+            let saved_id = run_blocking(move || {
             let (data, saved_id, next) = {
-                let data = lock_data(state.inner())?;
+                let data = lock_data_for_update(&commit_state)?;
                 let mut next = data.clone();
                 let account = crate::oauth::save_authenticated_account(
                     &mut next,
@@ -463,7 +480,9 @@ pub async fn import_codex_account(
                 next.active_account_id = Some(account.id.clone());
                 (data, account.id, next)
             };
-            commit_active_selection_changes(state.inner(), data, next, true, false)?;
+            commit_active_selection_changes(&commit_state, data, next, true, false)?;
+            Ok(saved_id)
+            }).await?;
 
             let refresh_result = RefreshService::new(Arc::clone(state.inner()))
                 .refresh_account_subscription(&saved_id)
@@ -511,56 +530,60 @@ pub async fn import_codex_account(
 }
 
 #[tauri::command]
-pub fn set_account_order(
+pub async fn set_account_order(
     account_ids: Vec<String>,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AppDataDto, IpcErrorDto> {
-    command_result((|| {
-        let (data, next) = {
-            let data = lock_data(state.inner())?;
+    let state = Arc::clone(state.inner());
+    command_result(
+        run_blocking(move || {
+            let (data, next) = {
+                let data = lock_data_for_update(&state)?;
 
-            if account_ids.len() != data.accounts.len() {
-                return Err(AppError::msg(
-                    "Account order must include every account exactly once",
-                ));
-            }
-
-            let existing_ids: HashSet<String> = data
-                .accounts
-                .iter()
-                .map(|account| account.id.clone())
-                .collect();
-            let mut seen = HashSet::with_capacity(account_ids.len());
-
-            for account_id in &account_ids {
-                if !seen.insert(account_id.as_str()) {
+                if account_ids.len() != data.accounts.len() {
                     return Err(AppError::msg(
-                        "Account order contains a duplicate account id",
+                        "Account order must include every account exactly once",
                     ));
                 }
-                if !existing_ids.contains(account_id) {
-                    return Err(AppError::msg(
-                        "Account order contains an unknown account id",
-                    ));
+
+                let existing_ids: HashSet<String> = data
+                    .accounts
+                    .iter()
+                    .map(|account| account.id.clone())
+                    .collect();
+                let mut seen = HashSet::with_capacity(account_ids.len());
+
+                for account_id in &account_ids {
+                    if !seen.insert(account_id.as_str()) {
+                        return Err(AppError::msg(
+                            "Account order contains a duplicate account id",
+                        ));
+                    }
+                    if !existing_ids.contains(account_id) {
+                        return Err(AppError::msg(
+                            "Account order contains an unknown account id",
+                        ));
+                    }
                 }
-            }
 
-            let mut next = data.clone();
-            let mut by_id: HashMap<String, Account> = next
-                .accounts
-                .drain(..)
-                .map(|account| (account.id.clone(), account))
-                .collect();
+                let mut next = data.clone();
+                let mut by_id: HashMap<String, Account> = next
+                    .accounts
+                    .drain(..)
+                    .map(|account| (account.id.clone(), account))
+                    .collect();
 
-            next.accounts = account_ids
-                .into_iter()
-                .filter_map(|account_id| by_id.remove(&account_id))
-                .collect();
+                next.accounts = account_ids
+                    .into_iter()
+                    .filter_map(|account_id| by_id.remove(&account_id))
+                    .collect();
 
-            (data, next)
-        };
+                (data, next)
+            };
 
-        let result = commit_state_data(state.inner(), data, next)?;
-        Ok(AppDataDto::from(&result))
-    })())
+            let result = commit_state_data(&state, data, next)?;
+            Ok(AppDataDto::from(&result))
+        })
+        .await,
+    )
 }

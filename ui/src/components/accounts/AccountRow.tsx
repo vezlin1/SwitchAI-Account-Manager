@@ -15,7 +15,6 @@ type AccountRowProps = {
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
-  isRelogining: boolean
   isRefreshing: boolean
   quotaColumns: QuotaColumn[]
   hiddenFromAll: boolean
@@ -37,7 +36,6 @@ export const AccountRow = memo(function AccountRow({
   isActive,
   isSwitching,
   isRemoving,
-  isRelogining,
   isRefreshing,
   quotaColumns,
   hiddenFromAll,
@@ -58,11 +56,10 @@ export const AccountRow = memo(function AccountRow({
   const {
     isSwitching: switching,
     isRemoving: removing,
-    isRelogining: relogining,
     isRefreshing: isAccountRefreshing,
     needsRelogin,
     detectedSubscriptionDate
-  } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  } = useAccountRowState(account, { isSwitching, isRemoving, isRefreshing })
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
@@ -72,7 +69,7 @@ export const AccountRow = memo(function AccountRow({
       style={rowStyle}
       onContextMenu={onOpenContextMenu ? (event) => onOpenContextMenu(event, account) : undefined}
     >
-      <td className="account-row-order" data-label="Order">
+      <td className="account-row-order">
         <button
           type="button"
           ref={setDragHandleRef}
@@ -86,7 +83,7 @@ export const AccountRow = memo(function AccountRow({
           <GripVertical size={14} aria-hidden="true" />
         </button>
       </td>
-      <th scope="row" className="account-row-identity" data-label="Account">
+      <th scope="row">
         <button
           type="button"
           className="account-identity-button flex items-center justify-between w-full text-left"
@@ -123,20 +120,19 @@ export const AccountRow = memo(function AccountRow({
       {quotaColumns.map((column) => {
         const window = quotaWindowForColumn(quota, column)
         return (
-          <td key={column.key} className="account-row-quota" data-label={column.label}>
+          <td key={column.key} className="account-row-quota">
             <QuotaCell
               value={window?.usedPercent}
               resetAt={window?.resetAt}
               title={column.cellTitle}
-              isRefreshing={isAccountRefreshing}
             />
           </td>
         )
       })}
-      <td className="account-row-status" data-label="Status">
+      <td>
         <AccountStatus account={account} isRefreshing={isAccountRefreshing} />
       </td>
-      <td className="account-row-subscription" data-label="Subscription">
+      <td>
         <SubscriptionDateControl
           key={`${account.id}:${detectedSubscriptionDate ?? 'empty'}`}
           value={detectedSubscriptionDate}
@@ -144,7 +140,7 @@ export const AccountRow = memo(function AccountRow({
           provider={account.provider}
         />
       </td>
-      <td className="account-row-actions" data-label="Actions">
+      <td>
         <div className="account-actions">
           <button
             type="button"
@@ -170,13 +166,11 @@ export const AccountRow = memo(function AccountRow({
               type="button"
               className="account-action account-action-relogin"
               onClick={() => onRelogin(account)}
-              disabled={relogining || switching || removing || isAccountRefreshing || orderBusy}
+              disabled={switching || removing || isAccountRefreshing || orderBusy}
               title="Re-login account"
               aria-label={`Re-login ${accountLabel}`}
             >
-              {relogining
-                ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-                : <KeyRound size={14} aria-hidden="true" />}
+              <KeyRound size={14} aria-hidden="true" />
             </button>
           )}
 
