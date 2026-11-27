@@ -37,7 +37,7 @@ test('a saved percentage and bar remain visible an hour after the check', () => 
   assert.match(markup, /72% left/)
   assert.match(markup, /aria-valuenow="72"/)
   assert.match(markup, /Last checked:/)
-  assert.match(markup, /Reset in /)
+  assert.match(markup, /Resets in /)
   assert.doesNotMatch(markup, /quota-fill-projected/)
 })
 
@@ -48,15 +48,15 @@ test('a window whose reset has passed is projected as full until a check confirm
   assert.match(markup, /quota-fill-projected/)
   assert.match(markup, /waiting for confirmation/)
   assert.match(markup, /Reset · not confirmed yet/)
-  assert.doesNotMatch(markup, /Reset in /)
+  assert.doesNotMatch(markup, /Resets in /)
 })
 
 test('zero and full saved balances are distinct from absent or invalid readings', () => {
-  assert.match(renderQuota(100, null), /0% left/)
+  assert.match(renderQuota(100, null), /Used up/)
   assert.match(renderQuota(0, null), /100% left/)
   for (const value of [null, NaN, Infinity, -1, 101]) {
     const markup = renderQuota(value, null)
-    assert.match(markup, /Not available/)
+    assert.match(markup, /No data yet/)
     assert.doesNotMatch(markup, /progressbar/)
   }
 })
@@ -74,32 +74,47 @@ function renderStatuses(tokenStatus, { quota = savedQuota, isRefreshing = false,
   ]
 }
 
-test('saved local health survives quota age, reset and absence in both account views', () => {
+test('a healthy account says nothing in the list and stays healthy in details', () => {
   for (const tokenStatus of ['healthy', 'refreshed']) {
     for (const quota of [savedQuota, null]) {
-      for (const view of renderStatuses(tokenStatus, { quota })) {
-        assert.match(view, />Healthy</)
-        assert.match(view, /last recorded connection check succeeded/)
-        assert.doesNotMatch(view, /Refresh quota|Saved quota/)
-      }
+      const [listView, detailsView] = renderStatuses(tokenStatus, { quota })
+      assert.equal(listView, '')
+      assert.match(detailsView, />Healthy</)
+      assert.match(detailsView, /last recorded connection check succeeded/)
+      assert.doesNotMatch(detailsView, /Refresh quota|Saved quota/)
     }
   }
+})
+
+test('a used-up window says when it is back instead of 0% left', () => {
+  const markup = renderQuota(100, now + 40 * 60)
+  assert.match(markup, /Used up/)
+  assert.match(markup, /Back in 3\dm|Back in 40m/)
+  assert.doesNotMatch(markup, /0% left/)
+})
+
+test('a weekly reset counts down in days', () => {
+  const markup = renderQuota(10, now + 3 * 86400 + 5 * 3600 + 120)
+  assert.match(markup, /Resets in 3d 5h/)
 })
 
 test('unknown, pending and failed checks cannot be mistaken for healthy in either view', () => {
   for (const [tokenStatus, options, label] of [
     ['unknown', {}, 'Not checked'],
-    ['unknown', { quota: null }, 'No quota yet'],
     ['healthy', { isRefreshing: true }, 'Checking'],
-    ['healthy', { issues: { quota: 'timeout' } }, 'Quota refresh failed'],
-    ['healthy', { issues: { subscription: 'timeout' } }, 'Plan refresh failed'],
-    ['needs_relogin', {}, 'Sign-in required'],
-    ['network_error', {}, 'Quota refresh failed'],
-    ['server_error', {}, 'Quota refresh failed']
+    ['healthy', { issues: { quota: 'timeout' } }, 'Couldn’t check limits'],
+    ['healthy', { issues: { subscription: 'timeout' } }, 'Couldn’t check the plan'],
+    ['needs_relogin', {}, 'Signed out'],
+    ['network_error', {}, 'Couldn’t check limits'],
+    ['server_error', {}, 'Couldn’t check limits']
   ]) {
     for (const view of renderStatuses(tokenStatus, options)) {
       assert.ok(view.includes(label), label)
       assert.doesNotMatch(view, />Healthy</)
     }
   }
+  // Missing quota is already said by the quota cells, so the list stays quiet.
+  const [listView, detailsView] = renderStatuses('unknown', { quota: null })
+  assert.equal(listView, '')
+  assert.ok(detailsView.includes('No quota yet'))
 })

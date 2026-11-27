@@ -57,7 +57,7 @@ test('weekly-only primary window is not labeled as 5h', () => {
   const weekly = quota(window(7 * 24 * 60 * 60))
   const columns = quotaColumnsForAccounts([account('weekly', weekly)])
 
-  assert.deepEqual(columns.map((column) => column.label), ['Weekly quota'])
+  assert.deepEqual(columns.map((column) => column.label), ['Weekly limit'])
   assert.equal(quotaWindowForColumn(weekly, columns[0]), weekly.primary)
 })
 
@@ -65,14 +65,14 @@ test('standard account keeps separate 5h and weekly columns', () => {
   const standard = quota(window(5 * 60 * 60), window(7 * 24 * 60 * 60))
   const columns = quotaColumnsForAccounts([account('standard', standard)])
 
-  assert.deepEqual(columns.map((column) => column.label), ['5h quota', 'Weekly quota'])
+  assert.deepEqual(columns.map((column) => column.label), ['5-hour limit', 'Weekly limit'])
 })
 
 test('monthly-only account does not create a 5h column', () => {
   const monthly = quota(window(30 * 24 * 60 * 60))
   const columns = quotaColumnsForAccounts([account('free', monthly)])
 
-  assert.deepEqual(columns.map((column) => column.label), ['Monthly quota'])
+  assert.deepEqual(columns.map((column) => column.label), ['Monthly limit'])
 })
 
 test('mixed account types share only their actual quota columns', () => {
@@ -85,7 +85,7 @@ test('mixed account types share only their actual quota columns', () => {
 
   assert.deepEqual(
     columns.map((column) => column.label),
-    ['5h quota', 'Weekly quota', 'Monthly quota']
+    ['5-hour limit', 'Weekly limit', 'Monthly limit']
   )
   assert.equal(quotaWindowForColumn(monthly, columns[0]), null)
   assert.equal(quotaWindowForColumn(monthly, columns[2]), monthly.primary)
@@ -95,7 +95,7 @@ test('legacy windows without duration keep neutral primary and secondary labels'
   const legacy = quota(window(null), window(null, 50))
   const columns = quotaColumnsForAccounts([account('legacy', legacy)])
 
-  assert.deepEqual(columns.map((column) => column.label), ['Primary quota', 'Secondary quota'])
+  assert.deepEqual(columns.map((column) => column.label), ['Primary limit', 'Secondary limit'])
 })
 
 test('metadata-only windows are hidden when every value is unavailable', () => {

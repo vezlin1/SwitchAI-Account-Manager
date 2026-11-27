@@ -52,18 +52,6 @@ a {
   color: rgb(var(--ag-text));
 }
 
-.app-version {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 500;
-  color: rgb(var(--ag-muted));
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
 /* Provider Tabs Segmented Control */
 .provider-tabs-nav {
   display: inline-flex;
@@ -71,7 +59,7 @@ a {
   gap: 2px;
   background: rgba(0, 0, 0, 0.4);
   padding: 2.5px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.07);
 }
 
@@ -257,7 +245,7 @@ a {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid rgb(var(--ag-border));
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
@@ -275,7 +263,7 @@ a {
   min-height: 36px;
   font-size: 13px;
   font-weight: 550;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
   transition: all 0.12s ease;
 }
@@ -326,7 +314,7 @@ a {
   align-items: center;
   gap: 6px;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 7px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.02);
   color: rgb(var(--ag-muted));
   padding: 4px 10px;
@@ -362,7 +350,7 @@ a {
   width: 100% !important;
   padding-left: 32px !important;
   padding-right: 30px !important;
-  border-radius: 8px !important;
+  border-radius: 10px !important;
   background: rgb(var(--ag-surface) / 0.85) !important;
   border: 1px solid rgb(var(--ag-border)) !important;
   color: rgb(var(--ag-text)) !important;
@@ -476,7 +464,7 @@ a {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 10.5px;
   font-weight: 600;
   background: rgba(255, 255, 255, 0.06);
@@ -493,7 +481,7 @@ a {
 .accounts-desktop-view {
   overflow: hidden;
   border: 1px solid rgb(var(--ag-border));
-  border-radius: 12px;
+  border-radius: 10px;
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
 }
@@ -511,18 +499,12 @@ a {
   z-index: 5;
   border-block-end: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(0, 0, 0, 0.25);
-  color: #6b7280;
+  color: rgb(var(--ag-muted));
   padding: 10px 14px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
+  font-size: 11.5px;
+  font-weight: 500;
   text-align: start;
-  text-transform: uppercase;
   white-space: nowrap;
-}
-
-.accounts-th-order {
-  width: 48px;
 }
 
 .accounts-th-actions {
@@ -542,54 +524,53 @@ a {
   background: rgba(255, 255, 255, 0.015);
 }
 
-.account-row-active {
-  background: rgba(59, 130, 246, 0.03);
+/* A used-up account keeps its place but steps back until it resets. */
+.account-row-exhausted .account-identity-copy,
+.account-row-exhausted .account-row-quota,
+.account-row-exhausted .account-row-subscription {
+  opacity: 0.5;
 }
 
-.account-row-active:hover {
-  background: rgba(59, 130, 246, 0.045);
-}
 
 .account-row td {
   padding: 12px 14px;
   vertical-align: middle;
 }
 
-.account-row-order {
-  width: 48px;
+/* Account Identity Column */
+.account-row-identity {
+  position: relative;
+  padding: 12px 14px 12px 26px;
+  font-weight: inherit;
+  text-align: start;
+  vertical-align: middle;
 }
 
-.account-drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: #4b5563;
-  cursor: grab;
-  touch-action: none;
-  transition: all 0.12s ease;
+.account-row-identity .account-status,
+.account-row-identity .account-status-feedback {
+  margin-top: 6px;
 }
 
-.account-drag-handle:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.05);
-  color: rgb(var(--ag-text));
-  border-color: rgba(255, 255, 255, 0.08);
+/* The whole row drags; the grip only says so on hover. */
+.account-row-grip {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  translate: 0 -50%;
+  color: rgb(var(--ag-muted));
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
 }
 
-.account-drag-handle:active {
+.account-row-draggable:hover .account-row-grip {
+  opacity: 0.6;
+}
+
+.account-row-draggable:active {
   cursor: grabbing;
 }
 
-.account-drag-handle-disabled {
-  cursor: not-allowed;
-  opacity: 0.3;
-}
-
-/* Account Identity Column */
 .account-identity-button {
   width: 100%;
   min-width: 0;
@@ -692,58 +673,23 @@ a {
   line-height: 1.3;
 }
 
-.plan-badge-plus {
-  background: rgba(99, 102, 241, 0.12);
-  color: #818cf8;
-  border: 1px solid rgba(99, 102, 241, 0.25);
-}
-
-.plan-badge-pro {
-  background: rgba(139, 92, 246, 0.12);
-  color: #a78bfa;
-  border: 1px solid rgba(139, 92, 246, 0.25);
-}
-
-.plan-badge-ultra {
-  background: rgba(236, 72, 153, 0.12);
-  color: #f472b6;
-  border: 1px solid rgba(236, 72, 153, 0.25);
-}
-
-.plan-badge-dev {
-  background: rgba(20, 184, 166, 0.12);
-  color: #2dd4bf;
-  border: 1px solid rgba(20, 184, 166, 0.25);
-}
-
-.plan-badge-premium {
-  background: rgba(14, 165, 233, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(14, 165, 233, 0.25);
+.plan-badge-plus,
+.plan-badge-pro,
+.plan-badge-ultra,
+.plan-badge-dev,
+.plan-badge-premium,
+.plan-badge-enterprise,
+.plan-badge-team,
+.plan-badge-default {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgb(var(--ag-text));
+  border: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 .plan-badge-free {
-  background: rgba(255, 255, 255, 0.05);
-  color: #94a3b8;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.plan-badge-enterprise {
-  background: rgba(168, 85, 247, 0.12);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.25);
-}
-
-.plan-badge-team {
-  background: rgba(14, 165, 233, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(14, 165, 233, 0.25);
-}
-
-.plan-badge-default {
-  background: rgba(255, 255, 255, 0.04);
-  color: #94a3b8;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: rgb(var(--ag-muted));
+  border: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 /* Quota Progress Bar */
@@ -835,10 +781,6 @@ a {
   color: #60a5fa;
 }
 
-.account-status-healthy {
-  color: rgb(var(--ag-success));
-}
-
 .account-status-warning {
   color: rgb(var(--ag-warning));
 }
@@ -866,7 +808,7 @@ a {
   justify-content: center;
   min-block-size: 24px;
   min-inline-size: 24px;
-  border-radius: 5px;
+  border-radius: 6px;
   color: rgb(var(--ag-muted));
   cursor: pointer;
 }
@@ -903,7 +845,7 @@ a {
   width: 30px;
   height: 30px;
   border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 7px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.02);
   color: rgb(var(--ag-muted));
   cursor: pointer;
@@ -985,7 +927,7 @@ a {
   justify-content: space-between;
   gap: 16px;
   padding: 16px 20px;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid rgb(var(--ag-border));
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
@@ -997,7 +939,7 @@ a {
   align-items: center;
   gap: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
   color: rgb(var(--ag-muted));
   padding: 6px 12px;
@@ -1072,7 +1014,7 @@ a {
   align-items: center;
   gap: 6px;
   padding: 7px 13px;
-  border-radius: 8px;
+  border-radius: 10px;
   font-size: 12.5px;
   font-weight: 550;
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -1148,7 +1090,7 @@ a {
 
 .account-detail-section {
   padding: 16px 20px;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid rgb(var(--ag-border));
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
@@ -1201,7 +1143,7 @@ a {
 
 .account-detail-quota-row {
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.035);
   background: rgba(0, 0, 0, 0.2);
 }
@@ -1226,7 +1168,7 @@ a {
   min-width: 0;
   overflow-wrap: anywhere;
   padding: 16px;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid rgb(var(--ag-border));
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
@@ -1255,7 +1197,7 @@ a {
   justify-content: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
   color: rgb(var(--ag-text));
@@ -1472,7 +1414,7 @@ a {
 }
 .tag-picker, .tag-name, .tag-options {
   border: 1px solid rgb(var(--ag-border));
-  border-radius: 9px;
+  border-radius: 10px;
   background: rgb(var(--ag-surface));
 }
 .tag-name { min-width: 0; padding: 10px 12px; color: rgb(var(--ag-text)); font-size: 14px; }
@@ -1482,7 +1424,7 @@ a {
   cursor: pointer;
   font-size: 13px;
 }
-.tag-picker-trigger { width: 100%; text-align: start; border-radius: 8px; user-select: none; }
+.tag-picker-trigger { width: 100%; text-align: start; border-radius: 10px; user-select: none; }
 .tag-picker-trigger svg {
   flex-shrink: 0;
   color: rgb(var(--ag-muted));
@@ -1509,7 +1451,7 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 2px 7px;
-  border-radius: 5px;
+  border-radius: 6px;
   background: rgb(var(--ag-primary) / 0.16);
   color: #a1c6ff;
   font-size: 12px;
@@ -1541,7 +1483,7 @@ a {
   flex: 0 0 auto;
   margin: 0;
   border: 1.5px solid #667285;
-  border-radius: 5px;
+  border-radius: 6px;
   background: rgb(var(--ag-card));
   color: white;
   cursor: pointer;
@@ -1594,7 +1536,7 @@ a {
 .settings-card {
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(0, 0, 0, 0.22);
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 12px 14px;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
@@ -1702,7 +1644,7 @@ a {
   align-items: stretch;
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
+  border-radius: 6px;
   overflow: hidden;
   height: 28px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -1795,7 +1737,7 @@ a {
   height: 22px;
   flex-shrink: 0;
   padding: 0;
-  border-radius: 9999px;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.12);
   border: 1px solid rgba(255, 255, 255, 0.1);
   cursor: pointer;
@@ -1844,7 +1786,7 @@ a {
   top: 2px;
   width: 16px;
   height: 16px;
-  border-radius: 9999px;
+  border-radius: 999px;
   background: #ffffff;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.2);
   transform: translateX(0);
@@ -1870,7 +1812,7 @@ a {
 
 .settings-error {
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.08);
   color: rgb(var(--ag-danger));
@@ -1895,7 +1837,7 @@ a {
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 12.5px;
   font-weight: 500;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1928,7 +1870,7 @@ a {
   align-items: center;
   gap: 6px;
   padding: 6px 16px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 12.5px;
   font-weight: 550;
   background: rgb(var(--ag-primary));
@@ -1958,7 +1900,7 @@ a {
   align-items: center;
   gap: 6px;
   padding: 6px 16px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 12.5px;
   font-weight: 550;
   background: #dc2626;
@@ -2030,7 +1972,7 @@ a {
   min-width: 0;
   padding: 0;
   border: 1px solid rgb(var(--ag-border));
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgba(0, 0, 0, 0.16);
   color: rgb(var(--ag-text));
   text-align: left;
@@ -2101,7 +2043,7 @@ a {
   max-width: min(230px, 60vw);
   padding: 8px 10px;
   border: 1px solid rgb(var(--ag-border));
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
   font-size: 11px;
@@ -2135,7 +2077,7 @@ a {
 
 .recovery-error {
   padding: 8px 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.08);
   color: rgb(var(--ag-danger));
@@ -2220,7 +2162,7 @@ a {
   display: grid;
   gap: 12px;
   border: 1px solid rgb(var(--ag-border));
-  border-radius: 12px;
+  border-radius: 10px;
   background: rgb(var(--ag-card));
   box-shadow: var(--shadow-soft);
   padding: 14px;
@@ -2294,7 +2236,7 @@ a {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.02);
   color: rgb(var(--ag-muted));
@@ -2342,7 +2284,6 @@ a {
   color: rgb(var(--ag-danger));
 }
 
-.account-card-status,
 .account-card-quota,
 .account-card-subscription {
   display: flex;
@@ -2386,7 +2327,7 @@ a {
   font-size: 11px;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Segoe UI", sans-serif;
   font-weight: 550;
-  border-radius: 4px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: rgb(var(--ag-muted));
@@ -2508,3 +2449,180 @@ a {
 }
 
 
+
+/* ==========================================================================
+   Quota cell
+   ========================================================================== */
+.quota-cell-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 12px;
+  color: rgb(var(--ag-muted));
+}
+
+.quota-cell-head-untitled {
+  justify-content: flex-start;
+}
+
+.quota-cell-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--ag-muted));
+}
+
+.quota-cell-value-known {
+  color: rgb(var(--ag-text));
+}
+
+.quota-cell-reset {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: rgb(var(--ag-muted));
+}
+
+.quota-cell-exhausted .quota-cell-value {
+  color: rgb(var(--ag-danger));
+}
+
+/* ==========================================================================
+   Best account right now
+   ========================================================================== */
+.best-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.07);
+}
+
+.best-account-current,
+.best-account-empty {
+  border-color: rgb(var(--ag-border));
+  background: rgb(var(--ag-card));
+}
+
+.best-account-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.best-account-kicker {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgb(var(--ag-muted));
+}
+
+.best-account-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 14px;
+  color: rgb(var(--ag-text));
+}
+
+.best-account-line strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.best-account-meta {
+  font-size: 12.5px;
+  color: rgb(var(--ag-muted));
+  font-variant-numeric: tabular-nums;
+}
+
+.best-account-meta + .best-account-meta::before {
+  content: '·';
+  margin-right: 10px;
+}
+
+.best-account-reason {
+  font-size: 12px;
+  color: rgb(var(--ag-muted));
+}
+
+.best-account-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 10px;
+  background: rgb(var(--ag-primary));
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s ease, transform 0.08s ease;
+}
+
+.best-account-switch:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.best-account-switch:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.best-account-switch:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.best-account-switch:focus-visible {
+  outline: 2px solid rgb(var(--ag-primary));
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .best-account {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* A header button that also says what it does. */
+.header-icon-btn:has(.header-icon-btn-label) {
+  width: auto;
+  gap: 6px;
+  padding: 0 9px;
+}
+
+.header-icon-btn-label {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .header-icon-btn-label {
+    display: none;
+  }
+}
+
+.settings-version {
+  margin-right: auto;
+  font-size: 11.5px;
+  color: rgb(var(--ag-muted));
+}
+
+/* Cards follow the table: a used-up account steps back until it resets. */
+.account-card-exhausted .account-card-identity-copy,
+.account-card-exhausted .account-card-quota,
+.account-card-exhausted .account-card-subscription {
+  opacity: 0.5;
+}

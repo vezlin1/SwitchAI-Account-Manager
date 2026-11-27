@@ -10,6 +10,13 @@
   --color-ag-success: rgb(var(--ag-success));
   --shadow-ag: 0 4px 24px rgba(0, 0, 0, 0.45);
   --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.3);
+  /* One radius scale for the whole app: small controls, cards, dialogs. */
+  --radius-xs: 6px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 10px;
+  --radius-2xl: 16px;
 }
 
 :root {

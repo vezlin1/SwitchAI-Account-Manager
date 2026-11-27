@@ -1,10 +1,11 @@
-import { memo } from 'react'
+import { memo, useCallback } from 'react'
 import { ChevronRight, Eye, EyeOff, Loader2, Trash2, UserCheck } from 'lucide-react'
 import type { Account } from '../../types'
 import { accountAttention, quotaUpdateBlocked, type AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
-import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
+import { accountBackAt, quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
+import { useTimeValue } from '../../hooks/useSharedTicker'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { usePrivacy } from '../../context/usePrivacy'
 
@@ -60,9 +61,10 @@ export const AccountCard = memo(function AccountCard({
   const attention = accountAttention(account, refreshNotice)
   const updateBlocked = quotaUpdateBlocked(attention)
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
+  const exhausted = useTimeValue(useCallback(() => accountBackAt(account) !== null, [account]))
 
   return (
-    <article className={`account-card${isActive ? ' account-card-active' : ''}${isAccountRefreshing ? ' account-card-refreshing' : ''}`}>
+    <article className={`account-card${isActive ? ' account-card-active' : ''}${exhausted && !isActive ? ' account-card-exhausted' : ''}${isAccountRefreshing ? ' account-card-refreshing' : ''}`}>
       <header className="account-card-header">
         <button
           type="button"
@@ -78,7 +80,7 @@ export const AccountCard = memo(function AccountCard({
               {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unknown email')}
             </span>
             <span className="account-card-subline">
-              {isActive ? 'Active' : ''}
+              {isActive ? 'In use' : ''}
               {hiddenFromAll ? (isActive ? ' · Hidden' : 'Hidden') : ''}
             </span>
             {tagNames && <span className="account-tag-label" title={tagNames}>{tagNames}</span>}
@@ -95,7 +97,7 @@ export const AccountCard = memo(function AccountCard({
               isActive
                 ? (account.provider === 'gemini' ? 'Currently active in Antigravity / Gemini' : 'Currently active in Codex / ChatGPT')
                 : needsRelogin
-                  ? 'Re-login required before switching'
+                  ? 'Sign in again before switching'
                   : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
             }
             aria-label={`Switch to ${accountLabel}`}
@@ -129,18 +131,15 @@ export const AccountCard = memo(function AccountCard({
         </div>
       </header>
 
-      <div className="account-card-status">
-        <span className="account-card-label">Status</span>
-        <AccountStatus
-          account={account}
-          attention={attention}
-          isRefreshing={isAccountRefreshing}
-          actionDisabled={switching || removing || isAccountRefreshing}
-          onRelogin={onRelogin}
-          onRefreshQuota={onRefreshQuota}
-          onDetectSubscription={onDetectSubscription}
-        />
-      </div>
+      <AccountStatus
+        account={account}
+        attention={attention}
+        isRefreshing={isAccountRefreshing}
+        actionDisabled={switching || removing || isAccountRefreshing}
+        onRelogin={onRelogin}
+        onRefreshQuota={onRefreshQuota}
+        onDetectSubscription={onDetectSubscription}
+      />
 
       {quotaColumns.length > 0 && (
         <div className="account-card-quota">

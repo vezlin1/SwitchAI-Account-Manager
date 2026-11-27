@@ -1,5 +1,5 @@
 import { memo, useId, useState } from 'react'
-import { Check, CircleAlert, CircleCheck, Copy, Loader2 } from 'lucide-react'
+import { Check, CircleAlert, Copy, Loader2 } from 'lucide-react'
 import type { Account } from '../../types'
 import { recordedAccountStatus, type AccountAttention } from '../../utils/accountFeedback'
 import { readableStatusError } from '../../utils/dateUtils'
@@ -31,13 +31,13 @@ export const AccountStatus = memo(function AccountStatus({
   if (attention) {
     const { kind, message: rawMessage } = attention
     const label = kind === 'verify' ? 'Verify in Antigravity'
-      : kind === 'relogin' ? 'Sign-in required'
-      : kind === 'subscription' ? 'Plan refresh failed'
-      : kind === 'quota' ? 'Quota refresh failed'
+      : kind === 'relogin' ? 'Signed out'
+      : kind === 'subscription' ? 'Couldn’t check the plan'
+      : kind === 'quota' ? 'Couldn’t check limits'
       : 'Refresh warning'
-    const action = kind === 'relogin' ? 'Re-login'
-      : kind === 'subscription' ? 'Retry plan'
-      : 'Retry quota'
+    const action = kind === 'relogin' ? 'Sign in again'
+      : kind === 'subscription' ? 'Check plan again'
+      : 'Check again'
     const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
     return (
@@ -93,11 +93,12 @@ export const AccountStatus = memo(function AccountStatus({
     )
   }
 
+  // A healthy account says nothing: status only earns space when something
+  // needs the user. Missing quota is already said by the quota cells.
   const status = recordedAccountStatus(account)
-  const healthy = status.tone === 'healthy'
+  if (status.tone === 'healthy' || !account.quota) return null
   return (
-    <span className={`account-status ${healthy ? 'account-status-healthy' : 'text-ag-muted'}`} title={status.message}>
-      {healthy && <CircleCheck size={14} className="account-status-icon" aria-hidden="true" />}
+    <span className="account-status text-ag-muted" title={status.message}>
       {status.label}
     </span>
   )

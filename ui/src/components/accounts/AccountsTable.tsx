@@ -139,7 +139,7 @@ function AccountsEmptyState({
         <h3 className="text-sm font-semibold text-ag-text mb-1">No accounts match your search</h3>
         <p className="text-xs text-ag-muted mb-4">Check the spelling or clear the search query to view all accounts.</p>
         <button type="button" className="h-8 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface transition-all cursor-pointer" onClick={onClearFilter}>
-          Clear search & filters
+          Clear search and filters
         </button>
       </div>
     )
@@ -180,6 +180,21 @@ function AccountsEmptyState({
 }
 
 const ACCOUNT_PAGE_SIZE = 40
+
+/**
+ * Rows are dragged by their whole surface. A drag never starts from a field the
+ * user types or picks in, so editing a subscription date stays editing.
+ */
+class RowPointerSensor extends PointerSensor {
+  static activators = [{
+    eventName: 'onPointerDown' as const,
+    handler: ({ nativeEvent }: { nativeEvent: PointerEvent }) => {
+      if (!nativeEvent.isPrimary || nativeEvent.button !== 0) return false
+      const target = nativeEvent.target
+      return !(target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], [data-no-drag]'))
+    }
+  }]
+}
 
 export const AccountsTable = memo(function AccountsTable({
   accounts,
@@ -251,7 +266,7 @@ export const AccountsTable = memo(function AccountsTable({
   const { privacyMode, maskEmail } = usePrivacy()
   const orderBusy = busyKeys.has('order')
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    useSensor(RowPointerSensor, {
       activationConstraint: { distance: 6 }
     })
   )
@@ -365,14 +380,12 @@ export const AccountsTable = memo(function AccountsTable({
               <caption className="visually-hidden">Accounts with quota, status, and subscription details</caption>
               <thead>
                 <tr>
-                  <th scope="col" className="accounts-th-order">Order</th>
                   <th scope="col">Account</th>
                   {quotaColumns.map((column) => (
                     <th key={column.key} scope="col">{column.label}</th>
                   ))}
-                  <th scope="col">Status</th>
-                  <th scope="col">Subscription</th>
-                  <th scope="col" className="accounts-th-actions">Actions</th>
+                  <th scope="col">Plan</th>
+                  <th scope="col" className="accounts-th-actions"><span className="visually-hidden">Actions</span></th>
                 </tr>
               </thead>
               <SortableContext items={accountIds} strategy={verticalListSortingStrategy}>
@@ -408,7 +421,7 @@ export const AccountsTable = memo(function AccountsTable({
                   })}
                   {canLoadMore && (
                     <tr data-load-more>
-                      <td colSpan={quotaColumns.length + 5}>{loadMoreButton}</td>
+                      <td colSpan={quotaColumns.length + 3}>{loadMoreButton}</td>
                     </tr>
                   )}
                 </tbody>
@@ -530,7 +543,6 @@ const SortableAccountRow = memo(function SortableAccountRow({
   onOpenContextMenu
 }: SortableAccountRowProps) {
   const {
-    attributes,
     listeners,
     setActivatorNodeRef,
     setNodeRef,
@@ -565,7 +577,6 @@ const SortableAccountRow = memo(function SortableAccountRow({
       orderBusy={orderBusy}
       rowStyle={style}
       rowRef={setNodeRef}
-      dragHandleAttributes={attributes}
       dragHandleListeners={listeners}
       setDragHandleRef={setActivatorNodeRef}
       onOpenDetails={onOpenDetails}

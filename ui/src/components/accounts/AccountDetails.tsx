@@ -37,9 +37,9 @@ type AccountDetailsProps = {
 
 function recommendationLabel(recommendation: Recommendation): string {
   switch (recommendation.reason) {
-    case 'resets_soon': return 'Best reserve · resets soon'
-    case 'larger_plan': return 'Best reserve · larger plan'
-    default: return 'Best reserve'
+    case 'resets_soon': return 'Best right now · resets soon'
+    case 'larger_plan': return 'Best right now · bigger plan'
+    default: return 'Best right now'
   }
 }
 
@@ -67,10 +67,10 @@ function statusDetails(
     }
   }
   if (attention) {
-    const label = attention.kind === 'relogin' ? 'Sign-in required'
-      : attention.kind === 'subscription' ? 'Plan refresh failed'
+    const label = attention.kind === 'relogin' ? 'Signed out'
+      : attention.kind === 'subscription' ? 'Couldn’t check the plan'
       : attention.kind === 'notice' ? 'Refresh warning'
-      : 'Quota refresh failed'
+      : 'Couldn’t check limits'
     return {
       label,
       tone: 'warning',
@@ -208,7 +208,7 @@ export function AccountDetails({
             )}
             {isActive && (
               <span className="account-detail-badge">
-                {account.provider === 'gemini' ? 'Active in Antigravity' : 'Active in Codex'}
+                {account.provider === 'gemini' ? 'In use in Antigravity' : 'In use in Codex'}
               </span>
             )}
             {recommendation && !updateBlocked && (
@@ -233,7 +233,7 @@ export function AccountDetails({
               disabled={busy}
             >
               {refreshingQuota ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-              Retry quota
+              Check limits again
             </button>
           )}
           {account.tokenHealth.status === 'needs_relogin' ? (
@@ -243,7 +243,7 @@ export function AccountDetails({
               onClick={() => onRelogin(account)}
               disabled={busy}
             >
-              <KeyRound size={16} /> Re-login
+              <KeyRound size={16} /> Sign in again
             </button>
           ) : (
             <button

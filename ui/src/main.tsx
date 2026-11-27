@@ -53,7 +53,7 @@ class ErrorBoundary extends Component<Props, State> {
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)'
           }}>
             <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#f87171', margin: '0 0 8px 0' }}>
-              Application Render Error
+              Something went wrong
             </h2>
             <p style={{ fontSize: '13px', color: '#9ca3af', margin: '0 0 16px 0', lineHeight: 1.5 }}>
               An unexpected error occurred while rendering the interface.
@@ -86,7 +86,7 @@ class ErrorBoundary extends Component<Props, State> {
                 cursor: 'pointer'
               }}
             >
-              Reload Application
+              Reload
             </button>
           </div>
         </div>

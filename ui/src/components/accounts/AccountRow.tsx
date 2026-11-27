@@ -1,11 +1,12 @@
-import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
-import { memo, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import type { DraggableSyntheticListeners } from '@dnd-kit/core'
+import { memo, useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import { ChevronRight, EyeOff, GripVertical, Loader2, Trash2, UserCheck } from 'lucide-react'
 import type { Account } from '../../types'
 import { accountAttention, quotaUpdateBlocked, type AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
-import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
+import { accountBackAt, quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
+import { useTimeValue } from '../../hooks/useSharedTicker'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { usePrivacy } from '../../context/usePrivacy'
 
@@ -24,7 +25,6 @@ type AccountRowProps = {
   orderBusy?: boolean
   rowStyle?: CSSProperties
   rowRef?: (element: HTMLTableRowElement | null) => void
-  dragHandleAttributes?: DraggableAttributes
   dragHandleListeners?: DraggableSyntheticListeners
   setDragHandleRef?: (element: HTMLElement | null) => void
   onOpenDetails: (account: Account, opener: HTMLElement) => void
@@ -50,7 +50,6 @@ export const AccountRow = memo(function AccountRow({
   orderBusy = false,
   rowStyle,
   rowRef,
-  dragHandleAttributes,
   dragHandleListeners,
   setDragHandleRef,
   onOpenDetails,
@@ -74,29 +73,24 @@ export const AccountRow = memo(function AccountRow({
   const attention = accountAttention(account, refreshNotice)
   const updateBlocked = quotaUpdateBlocked(attention)
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
+  // A used-up account stays in its place but steps back until it resets.
+  const exhausted = useTimeValue(useCallback(() => accountBackAt(account) !== null, [account]))
+  const setRowRef = useCallback((element: HTMLTableRowElement | null) => {
+    rowRef?.(element)
+    setDragHandleRef?.(element)
+  }, [rowRef, setDragHandleRef])
+  const canDrag = Boolean(dragHandleListeners) && !orderBusy
 
   return (
     <tr
-      ref={rowRef}
-      className={`account-row group${isActive ? ' account-row-active' : ''}${isAccountRefreshing ? ' account-row-refreshing' : ''}`}
+      ref={setRowRef}
+      className={`account-row group${isActive ? ' account-row-active' : ''}${exhausted && !isActive ? ' account-row-exhausted' : ''}${isAccountRefreshing ? ' account-row-refreshing' : ''}${canDrag ? ' account-row-draggable' : ''}`}
       style={rowStyle}
       onContextMenu={onOpenContextMenu ? (event) => onOpenContextMenu(event, account) : undefined}
+      {...(canDrag ? dragHandleListeners : undefined)}
     >
-      <td className="account-row-order" data-label="Order">
-        <button
-          type="button"
-          ref={setDragHandleRef}
-          className={`account-drag-handle${orderBusy ? ' account-drag-handle-disabled' : ''}`}
-          title="Drag to reorder"
-          aria-label={`Reorder ${privacyMode ? 'account' : (account.email ?? 'account')}`}
-          disabled={orderBusy}
-          {...dragHandleAttributes}
-          {...dragHandleListeners}
-        >
-          <GripVertical size={14} aria-hidden="true" />
-        </button>
-      </td>
       <th scope="row" className="account-row-identity" data-label="Account">
+        {canDrag && <GripVertical size={13} className="account-row-grip" aria-hidden="true" />}
         <button
           type="button"
           className="account-identity-button flex items-center justify-between w-full text-left"
@@ -117,7 +111,7 @@ export const AccountRow = memo(function AccountRow({
               </span>
               {isActive && (
                 <span className="account-active-badge">
-                  Active
+                  In use
                 </span>
               )}
             </div>
@@ -130,21 +124,6 @@ export const AccountRow = memo(function AccountRow({
           </div>
           <ChevronRight size={14} className="account-identity-arrow text-ag-muted opacity-40 group-hover:opacity-100 flex-shrink-0" aria-hidden="true" />
         </button>
-      </th>
-      {quotaCellsForAccount(quota, quotaColumns, account.provider === 'gemini').map(({ column, window, colSpan }) => {
-        return (
-          <td key={column.key} colSpan={colSpan} className="account-row-quota" data-label={column.label}>
-            <QuotaCell
-              window={window}
-              fetchedAt={account.quota?.fetchedAt ?? null}
-              updateBlocked={updateBlocked}
-              title={column.cellTitle}
-              isRefreshing={isAccountRefreshing}
-            />
-          </td>
-        )
-      })}
-      <td className="account-row-status" data-label="Status">
         <AccountStatus
           account={account}
           attention={attention}
@@ -154,7 +133,21 @@ export const AccountRow = memo(function AccountRow({
           onRefreshQuota={onRefreshQuota}
           onDetectSubscription={onDetectSubscription}
         />
-      </td>
+      </th>
+      {quotaCellsForAccount(quota, quotaColumns, account.provider === 'gemini').map(({ column, window, colSpan }) => {
+        return (
+          <td key={column.key} colSpan={colSpan} className="account-row-quota" data-label={column.label}>
+            <QuotaCell
+              window={window}
+              fetchedAt={account.quota?.fetchedAt ?? null}
+              updateBlocked={updateBlocked}
+              title={column.cellTitle}
+              showTitle={false}
+              isRefreshing={isAccountRefreshing}
+            />
+          </td>
+        )
+      })}
       <td className="account-row-subscription" data-label="Subscription">
         <SubscriptionDateControl
           key={`${account.id}:${detectedSubscriptionDate ?? 'empty'}`}
@@ -174,7 +167,7 @@ export const AccountRow = memo(function AccountRow({
               isActive
                 ? (account.provider === 'gemini' ? 'Currently active in Antigravity / Gemini' : 'Currently active in Codex / ChatGPT')
                 : needsRelogin
-                  ? 'Re-login required before switching'
+                  ? 'Sign in again before switching'
                   : (account.provider === 'gemini' ? 'Switch active Gemini account' : 'Switch active ChatGPT account')
             }
             aria-label={`Switch to ${accountLabel}`}

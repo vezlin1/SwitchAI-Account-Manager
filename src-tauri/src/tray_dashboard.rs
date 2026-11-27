@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
+use tauri::menu::{CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder};
 use tauri::{Emitter, Manager, Runtime};
 #[cfg(not(test))]
 use tauri_plugin_notification::NotificationExt;
@@ -167,44 +167,29 @@ pub fn remaining_percent(account: &Account, focus: QuotaFocus) -> Option<f64> {
 
 pub fn quota_suffix(account: &Account, focus: QuotaFocus) -> String {
     if account.token_health.status == TokenHealthStatus::NeedsRelogin {
-        " · re-login required".to_string()
+        " · signed out".to_string()
     } else if let Some(remaining) = remaining_percent(account, focus) {
         format!(" · {remaining:.0}% left")
     } else {
-        " · quota unavailable".to_string()
+        " · no data yet".to_string()
     }
 }
 
+/// A tray line for one account. The account in use is shown by the menu's own
+/// check mark, so the text carries no symbols.
 pub fn account_menu_label(
     account: &Account,
     focus: QuotaFocus,
-    is_active: bool,
     is_recommended: bool,
     privacy_mode: bool,
 ) -> String {
     let name = account_label(account, privacy_mode);
-    let rec_suffix = if is_recommended { " (recommended)" } else { "" };
-
-    if account.token_health.status == TokenHealthStatus::NeedsRelogin {
-        let prefix = if is_active {
-            "✓ ⚠️ "
-        } else if is_recommended {
-            "★ ⚠️ "
-        } else {
-            "⚠️ "
-        };
-        format!("{prefix}{name} (re-login required){rec_suffix}")
+    let best = if is_recommended {
+        " · best right now"
     } else {
-        let prefix = if is_active {
-            "✓ "
-        } else if is_recommended {
-            "★ "
-        } else {
-            "• "
-        };
-        let quota = quota_suffix(account, focus);
-        format!("{prefix}{name}{quota}{rec_suffix}")
-    }
+        ""
+    };
+    format!("{name}{}{best}", quota_suffix(account, focus))
 }
 
 pub fn sort_accounts_for_provider<'a>(
@@ -327,7 +312,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 let item = if is_active {
                     MenuItemBuilder::with_id(
                         "quick-codex-active",
-                        format!("⚡ Best Codex: {label} ({quota_str}) (active)"),
+                        format!("Codex is on the best account: {label} · {quota_str}"),
                     )
                     .enabled(false)
                     .build(app)
@@ -337,7 +322,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 } else {
                     MenuItemBuilder::with_id(
                         format!("{QUICK_SWITCH_CODEX_PREFIX}{}", best.id),
-                        format!("⚡ Switch to Best Codex: {label} ({quota_str})"),
+                        format!("Switch Codex to {label} · {quota_str}"),
                     )
                     .enabled(true)
                     .build(app)
@@ -349,7 +334,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             } else {
                 let item = MenuItemBuilder::with_id(
                     "quick-codex-none",
-                    "⚡ No Codex recommendation available",
+                    "Codex: no account to recommend yet",
                 )
                 .enabled(false)
                 .build(app)
@@ -369,7 +354,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 let item = if is_active {
                     MenuItemBuilder::with_id(
                         "quick-gemini-active",
-                        format!("⚡ Best Antigravity: {label} ({quota_str}) (active)"),
+                        format!("Antigravity is on the best account: {label} · {quota_str}"),
                     )
                     .enabled(false)
                     .build(app)
@@ -379,7 +364,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 } else {
                     MenuItemBuilder::with_id(
                         format!("{QUICK_SWITCH_GEMINI_PREFIX}{}", best.id),
-                        format!("⚡ Switch to Best Antigravity: {label} ({quota_str})"),
+                        format!("Switch Antigravity to {label} · {quota_str}"),
                     )
                     .enabled(true)
                     .build(app)
@@ -391,7 +376,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             } else {
                 let item = MenuItemBuilder::with_id(
                     "quick-gemini-none",
-                    "⚡ No Antigravity recommendation available",
+                    "Antigravity: no account to recommend yet",
                 )
                 .enabled(false)
                 .build(app)
@@ -402,7 +387,7 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             }
         }
     } else {
-        let empty_item = MenuItemBuilder::with_id("no-accounts", "No accounts added")
+        let empty_item = MenuItemBuilder::with_id("no-accounts", "No accounts yet")
             .enabled(false)
             .build(app)
             .map_err(|error| AppError::msg(format!("Failed to build tray summary: {error}")))?;
@@ -413,14 +398,14 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
 
     // 2. Sectioned accounts by provider
     if codex_enabled {
-        let header_codex = MenuItemBuilder::with_id("header-codex", "── Codex ──")
+        let header_codex = MenuItemBuilder::with_id("header-codex", "Codex")
             .enabled(false)
             .build(app)
             .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
         builder = builder.item(&header_codex);
 
         if codex_accounts.is_empty() {
-            let item = MenuItemBuilder::with_id("empty-codex", "   No Codex accounts added")
+            let item = MenuItemBuilder::with_id("empty-codex", "No Codex accounts yet")
                 .enabled(false)
                 .build(app)
                 .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
@@ -441,15 +426,15 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 let label = account_menu_label(
                     account,
                     quota_focus(&data.app_settings, AccountProvider::Codex),
-                    is_active,
-                    is_recommended,
+                    is_recommended && !is_active,
                     privacy_mode,
                 );
 
-                let item = MenuItemBuilder::with_id(
+                let item = CheckMenuItemBuilder::with_id(
                     format!("{SWITCH_CODEX_ACCOUNT_PREFIX}{}", account.id),
                     label,
                 )
+                .checked(is_active)
                 .enabled(!is_active && !needs_relogin)
                 .build(app)
                 .map_err(|error| {
@@ -465,14 +450,14 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
     }
 
     if gemini_enabled {
-        let header_gemini = MenuItemBuilder::with_id("header-antigravity", "── Antigravity ──")
+        let header_gemini = MenuItemBuilder::with_id("header-antigravity", "Antigravity")
             .enabled(false)
             .build(app)
             .map_err(|error| AppError::msg(format!("Failed to build header: {error}")))?;
         builder = builder.item(&header_gemini);
 
         if gemini_accounts.is_empty() {
-            let item = MenuItemBuilder::with_id("empty-gemini", "   No Antigravity accounts added")
+            let item = MenuItemBuilder::with_id("empty-gemini", "No Antigravity accounts yet")
                 .enabled(false)
                 .build(app)
                 .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
@@ -494,15 +479,15 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 let label = account_menu_label(
                     account,
                     quota_focus(&data.app_settings, AccountProvider::Gemini),
-                    is_active,
-                    is_recommended,
+                    is_recommended && !is_active,
                     privacy_mode,
                 );
 
-                let item = MenuItemBuilder::with_id(
+                let item = CheckMenuItemBuilder::with_id(
                     format!("{SWITCH_GEMINI_ACCOUNT_PREFIX}{}", account.id),
                     label,
                 )
+                .checked(is_active)
                 .enabled(!is_active && !needs_relogin)
                 .build(app)
                 .map_err(|error| {
@@ -515,8 +500,8 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
 
     let menu = builder
         .separator()
-        .text("show", "Show account manager")
-        .text("refresh", "Refresh quotas now")
+        .text("show", "Open SwitchAI")
+        .text("refresh", "Refresh limits now")
         .separator()
         .text("quit", "Quit")
         .build()
@@ -985,50 +970,40 @@ mod tests {
         let no_quota = make_account("4", "u@test.com", AccountProvider::Codex, None);
         assert_eq!(
             quota_suffix(&no_quota, QuotaFocus::Primary),
-            " · quota unavailable"
+            " · no data yet"
         );
 
         let mut relogin = make_account("5", "u@test.com", AccountProvider::Codex, Some(10.0));
         relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
-        assert_eq!(
-            quota_suffix(&relogin, QuotaFocus::Primary),
-            " · re-login required"
-        );
+        assert_eq!(quota_suffix(&relogin, QuotaFocus::Primary), " · signed out");
     }
 
     #[test]
     fn test_account_menu_label() {
         let account = make_account("1", "user@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
+        assert_eq!(
+            account_menu_label(&account, QuotaFocus::Primary, false, false),
+            "user@test.com · 90% left"
+        );
+        assert_eq!(
+            account_menu_label(&account, QuotaFocus::Primary, true, false),
+            "user@test.com · 90% left · best right now"
+        );
 
-        // Active
-        let label_active = account_menu_label(&account, QuotaFocus::Primary, true, false, false);
-        assert_eq!(label_active, "✓ user@test.com · 90% left");
-
-        // Active & Recommended
-        let label_active_rec = account_menu_label(&account, QuotaFocus::Primary, true, true, false);
-        assert_eq!(label_active_rec, "✓ user@test.com · 90% left (recommended)");
-
-        // Inactive & Recommended
-        let label_rec = account_menu_label(&account, QuotaFocus::Primary, false, true, false);
-        assert_eq!(label_rec, "★ user@test.com · 90% left (recommended)");
-
-        // Inactive normal
-        let label_normal = account_menu_label(&account, QuotaFocus::Primary, false, false, false);
-        assert_eq!(label_normal, "• user@test.com · 90% left");
-
-        // Needs relogin
         let mut relogin = make_account("2", "relogin@test.com", AccountProvider::Codex, Some(10.0));
         relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
-
-        let label_relogin = account_menu_label(&relogin, QuotaFocus::Primary, false, false, false);
-        assert_eq!(label_relogin, "⚠️ relogin@test.com (re-login required)");
-
-        let label_relogin_active =
-            account_menu_label(&relogin, QuotaFocus::Primary, true, false, false);
         assert_eq!(
-            label_relogin_active,
-            "✓ ⚠️ relogin@test.com (re-login required)"
+            account_menu_label(&relogin, QuotaFocus::Primary, false, false),
+            "relogin@test.com · signed out"
         );
+
+        // The menu's own check mark shows the account in use; no symbols.
+        for label in [
+            account_menu_label(&account, QuotaFocus::Primary, true, false),
+            account_menu_label(&relogin, QuotaFocus::Primary, true, false),
+        ] {
+            assert!(!label.contains(['✓', '★', '⚠', '•', '⚡']), "{label}");
+        }
     }
 
     #[test]

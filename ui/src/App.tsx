@@ -223,6 +223,7 @@ function App() {
             onClose={() => setSettingsOpen(false)}
             onSave={saveAppSettings}
             onRefreshStatus={autoRefresh.refreshStatus}
+            appVersion={appVersion}
           />
         </Suspense>
       )}
@@ -232,7 +233,6 @@ function App() {
       <div className="app-shell h-full w-full flex flex-col">
         <AppTitleBar
           isMac={isMac}
-          appVersion={appVersion}
           enabledProviders={enabledProviders}
           activeProvider={activeProvider}
           accountCounts={{

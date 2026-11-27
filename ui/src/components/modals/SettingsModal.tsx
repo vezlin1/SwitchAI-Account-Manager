@@ -10,6 +10,7 @@ type SettingsModalProps = {
   onClose: () => void
   onSave: (settings: AppSettings) => Promise<AppData | null>
   onRefreshStatus: () => Promise<AutoRefreshStatus>
+  appVersion?: string | null
 }
 
 const geminiQuotaFocusOptions: Array<{ value: GeminiQuotaFocus; label: string; title: string }> = [
@@ -31,7 +32,8 @@ export function SettingsModal({
   accounts = [],
   onClose,
   onSave,
-  onRefreshStatus
+  onRefreshStatus,
+  appVersion
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<AppSettings>(() => ({
     ...settings,
@@ -362,6 +364,7 @@ export function SettingsModal({
         </div>
 
         <div className="settings-dialog-footer">
+          {appVersion && <span className="settings-version">SwitchAI {appVersion}</span>}
           <button
             type="button"
             className="settings-cancel"

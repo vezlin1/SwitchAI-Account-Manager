@@ -10,6 +10,7 @@ import { ErrorBanner } from '../common'
 import { AccountsTable } from './AccountsTable'
 import { AccountsToolbar } from './AccountsToolbar'
 import { GeminiSwitchTargetsBar } from './GeminiSwitchTargetsBar'
+import { BestAccountBar } from './BestAccountBar'
 import {
   reorderFilteredAccounts,
   filterAccountsBySubscription,
@@ -155,16 +156,19 @@ export function AccountsTab({
   // disagree. Re-ask when the data changes and once a minute, because quota
   // freshness and passed resets change with time alone.
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null)
-  const recommendationMinute = useSharedTicker(detailsAccountId != null)
+  const recommendationMinute = useSharedTicker()
   const geminiQuotaFocus = data.appSettings.geminiQuotaFocus
   useEffect(() => {
-    if (!detailsAccountId) return
     let cancelled = false
     api.getRecommendedAccount(currentProvider)
       .then((next) => { if (!cancelled) setRecommendation(next) })
       .catch(() => { if (!cancelled) setRecommendation(null) })
     return () => { cancelled = true }
-  }, [accounts, currentProvider, detailsAccountId, geminiQuotaFocus, hiddenAccountIds, recommendationMinute])
+  }, [accounts, currentProvider, geminiQuotaFocus, hiddenAccountIds, recommendationMinute])
+  const bestBarAccounts = useMemo(
+    () => accounts.filter((account) => !hiddenAccountIds.includes(account.id)),
+    [accounts, hiddenAccountIds]
+  )
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
        (autoRefreshError.toLowerCase().includes('chatgpt') && currentProvider === 'codex') ||
@@ -288,18 +292,14 @@ export function AccountsTab({
       {pendingSwitch && (
         <Suspense fallback={null}>
           <ConfirmDialog
-            title="Switch active account?"
+            title={`Switch to ${
+              privacyMode && pendingSwitch.email
+                ? maskEmail(pendingSwitch.email)
+                : (pendingSwitch.email ?? 'this account')
+            }?`}
             message={pendingSwitch.provider === 'gemini'
-              ? `Switch active session to ${
-                  privacyMode && pendingSwitch.email
-                    ? maskEmail(pendingSwitch.email)
-                    : (pendingSwitch.email ?? 'this account')
-                }? Antigravity will restart with this account.`
-              : `Switch active session to ${
-                  privacyMode && pendingSwitch.email
-                    ? maskEmail(pendingSwitch.email)
-                    : (pendingSwitch.email ?? 'this account')
-                }? Codex will restart with this account.`}
+              ? 'The Antigravity apps you picked close and reopen with this account.'
+              : 'ChatGPT closes and reopens with this account if it is open.'}
             confirmLabel="Switch"
             busy={actions.busyKeys.has(`switch:${pendingSwitch.id}`)}
             onCancel={() => {
@@ -379,6 +379,15 @@ export function AccountsTab({
               onDismiss={handleDismissError}
             />
           )}
+
+          <BestAccountBar
+            provider={currentProvider}
+            accounts={bestBarAccounts}
+            activeAccountId={activeAccountId}
+            recommendation={recommendation}
+            switchingAccountId={recommendation && actions.busyKeys.has(`switch:${recommendation.accountId}`) ? recommendation.accountId : null}
+            onSwitch={handleSwitch}
+          />
 
           {showSubscriptionFilters && (
             <nav className="account-filter-bar" aria-label="Filter accounts">

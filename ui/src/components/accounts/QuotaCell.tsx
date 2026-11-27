@@ -5,6 +5,8 @@ import { formatEventTime } from '../../utils/eventTime'
 import { quotaResetTime } from '../../utils/quotaWindows'
 import { useTimeValue } from '../../hooks/useSharedTicker'
 
+const EXHAUSTED_REMAINING_PERCENT = 0.5
+
 function quotaClass(remaining: number): string {
   if (remaining <= 10) return 'quota-fill-danger'
   if (remaining <= 30) return 'quota-fill-warn'
@@ -15,12 +17,14 @@ type QuotaCellProps = {
   window: QuotaWindow | null
   fetchedAt: number | null
   title: string
+  /** Off in the table, where the column header already names the window. */
+  showTitle?: boolean
   updateBlocked?: boolean
   isRefreshing?: boolean
 }
 
 export const QuotaCell = memo(function QuotaCell({
-  window, fetchedAt, title, updateBlocked = false, isRefreshing = false
+  window, fetchedAt, title, showTitle = true, updateBlocked = false, isRefreshing = false
 }: QuotaCellProps) {
   const resetAt = quotaResetTime(window, fetchedAt)
   const reported = updateBlocked ? null : remainingPercent(window?.usedPercent)
@@ -32,6 +36,7 @@ export const QuotaCell = memo(function QuotaCell({
   )
   const projected = reported != null && resetPassed
   const remaining = projected ? 100 : reported
+  const exhausted = remaining != null && !projected && remaining < EXHAUSTED_REMAINING_PERCENT
   const checkedAt = window?.fetchedAt ?? fetchedAt
   const checkedTime = useMemo(() => formatEventTime(checkedAt)?.exact, [checkedAt])
   const checkedTitle = remaining == null || !checkedTime
@@ -40,18 +45,25 @@ export const QuotaCell = memo(function QuotaCell({
       ? `Limit reset after the last check (${checkedTime}); waiting for confirmation`
       : `Last checked: ${checkedTime}`
   const resetText = useTimeValue(useCallback(() => {
-    if (resetAt == null) return 'Reset time unavailable'
+    if (resetAt == null) return exhausted ? 'Reset time unknown' : ''
     const now = Date.now()
-    return resetAt > now / 1000 ? `Reset ${formatTimeUntil(resetAt, now)}` : 'Reset · not confirmed yet'
-  }, [resetAt]), remaining != null && resetAt != null)
+    if (resetAt <= now / 1000) return 'Reset · not confirmed yet'
+    return `${exhausted ? 'Back' : 'Resets'} ${formatTimeUntil(resetAt, now)}`
+  }, [exhausted, resetAt]), remaining != null && resetAt != null)
   const roundedPercent = remaining == null ? undefined : Math.round(remaining)
+  const valueText = remaining == null
+    ? (updateBlocked ? '—' : 'No data yet')
+    : exhausted
+      ? 'Used up'
+      : `${projected ? '~' : ''}${roundedPercent}% left`
+  const valueTitle = remaining == null && updateBlocked ? 'Sign in again to see this limit' : checkedTitle
 
   return (
-    <div className="min-w-[160px]">
-      <div className="flex items-center justify-between text-xs text-ag-muted mb-1">
-        <span>{title}</span>
-        <span title={checkedTitle} className={`font-semibold tabular-nums ${remaining != null ? 'text-ag-text' : 'text-ag-muted'}`}>
-          {remaining != null ? `${projected ? '~' : ''}${roundedPercent}% left` : 'Not available'}
+    <div className={`quota-cell min-w-[150px]${exhausted ? ' quota-cell-exhausted' : ''}`}>
+      <div className={`quota-cell-head${showTitle ? '' : ' quota-cell-head-untitled'}`}>
+        {showTitle && <span>{title}</span>}
+        <span title={valueTitle} className={`quota-cell-value${remaining != null && !exhausted ? ' quota-cell-value-known' : ''}`}>
+          {valueText}
         </span>
       </div>
       {remaining != null && (
@@ -70,7 +82,7 @@ export const QuotaCell = memo(function QuotaCell({
               style={{ transform: `scaleX(${remaining / 100})` }}
             />
           </div>
-          {resetText && <div className="text-xs text-ag-muted mt-1">{resetText}</div>}
+          {resetText && <div className="quota-cell-reset">{resetText}</div>}
         </>
       )}
     </div>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ChevronDown, Loader2, LogIn, RefreshCw, Search, UserPlus, X } from 'lucide-react'
 import type { AccountProvider, AppSettings, AutoRefreshStatus } from '../../types'
+import { useSharedTicker } from '../../hooks/useSharedTicker'
+import { formatAgo, formatTimeUntil } from '../../utils/format'
 
 type AccountsToolbarProps = {
   accountCount: number
@@ -20,10 +22,14 @@ type AccountsToolbarProps = {
   onRefreshAll: () => void
 }
 
-function autoRefreshLabel(settings: AppSettings, status: AutoRefreshStatus | null): string {
-  if (!settings.autoRefreshEnabled) return 'off'
-  if (status?.inFlight) return 'updating…'
-  return `active (${settings.autoRefreshIntervalMinutes}m)`
+function refreshStatusText(settings: AppSettings, status: AutoRefreshStatus | null, now: number): string {
+  if (status?.inFlight) return 'Updating limits…'
+  const updated = status?.lastFinishedAt ? `Updated ${formatAgo(status.lastFinishedAt, now)}` : null
+  if (!settings.autoRefreshEnabled) return updated ? `${updated} · auto-refresh off` : 'Auto-refresh off'
+  const next = status?.nextRunAt && status.nextRunAt * 1000 > now
+    ? `next ${formatTimeUntil(status.nextRunAt, now)}`
+    : null
+  return [updated, next].filter(Boolean).join(' · ') || 'Auto-refresh on'
 }
 
 export function AccountsToolbar({
@@ -44,6 +50,7 @@ export function AccountsToolbar({
   onRefreshAll
 }: AccountsToolbarProps) {
   const isGoogle = provider === 'gemini'
+  const minute = useSharedTicker()
   const isImporting = importingSession ?? importingAntigravity
   const accountActionBusy = addingAccount || isImporting
   const progress = autoRefreshStatus?.progress?.find((run) => run.provider === (provider ?? 'codex'))
@@ -104,7 +111,7 @@ export function AccountsToolbar({
                   ? (isGoogle ? 'Waiting for Google…' : 'Waiting for sign-in…')
                   : isImporting
                     ? 'Importing session…'
-                    : 'Add Account'}
+                    : 'Add account'}
               </span>
               {!accountActionBusy && (
                 <ChevronDown
@@ -263,8 +270,7 @@ export function AccountsToolbar({
                   : 'bg-ag-success'
             }`}
           />
-          <span className="text-ag-muted">Auto-refresh:</span>
-          <span className="text-ag-text font-medium">{autoRefreshLabel(appSettings, autoRefreshStatus)}</span>
+          <span className="text-ag-muted">{refreshStatusText(appSettings, autoRefreshStatus, minute * 60_000)}</span>
         </div>
       </div>
     </div>

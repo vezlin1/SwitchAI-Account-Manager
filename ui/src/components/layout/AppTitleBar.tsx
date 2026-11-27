@@ -8,7 +8,6 @@ const appWindow = getCurrentWindow()
 
 export type AppTitleBarProps = {
   isMac: boolean
-  appVersion: string | null
   enabledProviders: AccountProvider[]
   activeProvider: AccountProvider
   accountCounts: { codex: number; gemini: number }
@@ -21,7 +20,6 @@ export type AppTitleBarProps = {
 
 export const AppTitleBar = memo(function AppTitleBar({
   isMac,
-  appVersion,
   enabledProviders,
   activeProvider,
   accountCounts,
@@ -110,11 +108,6 @@ export const AppTitleBar = memo(function AppTitleBar({
         <h1 className="app-title font-semibold text-xs tracking-tight text-ag-text truncate" data-tauri-drag-region>
           SwitchAI
         </h1>
-        {appVersion !== undefined && (
-          <span className="app-version hidden sm:inline-flex" data-tauri-drag-region>
-            {appVersion ? `v${appVersion}` : 'v1.0.0'}
-          </span>
-        )}
       </div>
 
       {/* Center: Tabs */}
@@ -173,16 +166,16 @@ export const AppTitleBar = memo(function AppTitleBar({
           title={
             privacyMode
               ? isMac
-                ? 'Privacy Mode: ON (Click to reveal sensitive data · ⇧⌘P)'
-                : 'Privacy Mode: ON (Click to reveal sensitive data · Ctrl+Shift+P)'
+                ? 'Show emails and account IDs (⇧⌘P)'
+                : 'Show emails and account IDs (Ctrl+Shift+P)'
               : isMac
-                ? 'Privacy Mode: OFF (Click to hide sensitive data · ⇧⌘P)'
-                : 'Privacy Mode: OFF (Click to hide sensitive data · Ctrl+Shift+P)'
+                ? 'Hide emails and account IDs, for screen sharing (⇧⌘P)'
+                : 'Hide emails and account IDs, for screen sharing (Ctrl+Shift+P)'
           }
-          aria-label={privacyMode ? 'Disable privacy mode' : 'Enable privacy mode'}
           aria-pressed={privacyMode}
         >
-          {privacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
+          {privacyMode ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
+          <span className="header-icon-btn-label">{privacyMode ? 'Emails hidden' : 'Hide emails'}</span>
         </button>
 
         <button

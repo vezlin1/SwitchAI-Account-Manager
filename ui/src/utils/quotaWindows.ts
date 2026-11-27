@@ -59,7 +59,7 @@ function describeKnownDuration(seconds: number): Pick<QuotaColumn, 'key' | 'labe
   if (isNear(seconds, FIVE_HOURS_SECONDS, 5 * 60)) {
     return {
       key: '5h',
-      label: '5h quota',
+      label: '5-hour limit',
       cellTitle: '5h',
       sortSeconds: FIVE_HOURS_SECONDS,
       source: null
@@ -69,7 +69,7 @@ function describeKnownDuration(seconds: number): Pick<QuotaColumn, 'key' | 'labe
   if (isNear(seconds, WEEK_SECONDS, HOUR_SECONDS)) {
     return {
       key: 'weekly',
-      label: 'Weekly quota',
+      label: 'Weekly limit',
       cellTitle: 'Weekly',
       sortSeconds: WEEK_SECONDS,
       source: null
@@ -79,7 +79,7 @@ function describeKnownDuration(seconds: number): Pick<QuotaColumn, 'key' | 'labe
   if (seconds >= MIN_MONTH_SECONDS && seconds <= MAX_MONTH_SECONDS) {
     return {
       key: 'monthly',
-      label: 'Monthly quota',
+      label: 'Monthly limit',
       cellTitle: 'Monthly',
       sortSeconds: 30 * DAY_SECONDS,
       source: null
@@ -95,7 +95,7 @@ function describeKnownDuration(seconds: number): Pick<QuotaColumn, 'key' | 'labe
 
   return {
     key: `duration:${roundedSeconds}`,
-    label: `${durationLabel} quota`,
+    label: `${durationLabel} limit`,
     cellTitle: durationLabel,
     sortSeconds: roundedSeconds,
     source: null
@@ -111,7 +111,7 @@ function describeWindow(window: QuotaWindow, source: QuotaWindowSource): QuotaCo
   const cellTitle = source === 'primary' ? 'Primary' : 'Secondary'
   return {
     key: `unknown:${source}`,
-    label: `${cellTitle} quota`,
+    label: `${cellTitle} limit`,
     cellTitle,
     sortSeconds: Number.MAX_SAFE_INTEGER + (source === 'secondary' ? 1 : 0),
     source
@@ -204,4 +204,32 @@ export function detailQuotaGroups(account: Account) {
   }
   const cells = quotaCellsForAccount(account.quota, quotaColumnsForAccounts([account]))
   return cells.length ? [{ title: null, cells }] : []
+}
+
+const EXHAUSTED_USED_PERCENT = 99.5
+
+/** The window is used up and its reset is still ahead. */
+export function quotaWindowExhausted(
+  window: QuotaWindow | null,
+  fetchedAt: number | null,
+  now = Date.now() / 1000
+): boolean {
+  if (window?.usedPercent == null || !Number.isFinite(window.usedPercent)) return false
+  const resetAt = quotaResetTime(window, fetchedAt)
+  return window.usedPercent >= EXHAUSTED_USED_PERCENT && resetAt !== null && resetAt > now
+}
+
+/**
+ * When a used-up account can work again: the latest reset among its used-up
+ * windows, because every one of them has to come back. Null while it still has
+ * quota (or nothing is known).
+ */
+export function accountBackAt(account: Account, now = Date.now() / 1000): number | null {
+  const quota = account.quota
+  if (!quota) return null
+  const resets = [quota.primary, quota.secondary]
+    .filter((window) => quotaWindowExhausted(window, quota.fetchedAt, now))
+    .map((window) => quotaResetTime(window, quota.fetchedAt))
+    .filter((resetAt): resetAt is number => resetAt !== null)
+  return resets.length ? Math.max(...resets) : null
 }

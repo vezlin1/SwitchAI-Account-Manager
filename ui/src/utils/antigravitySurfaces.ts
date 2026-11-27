@@ -4,8 +4,8 @@ import type { AntigravitySurface } from '../types'
 const ANTIGRAVITY_SURFACES_CACHE_KEY = 'switchai.antigravity_surfaces_cache'
 
 const DEFAULT_SURFACES: AntigravitySurface[] = [
-  { id: 'antigravity', name: 'Antigravity', description: 'Desktop App', installed: true, running: false, path: null },
-  { id: 'ide', name: 'Antigravity IDE', description: 'AI Code Editor', installed: true, running: false, path: null },
+  { id: 'antigravity', name: 'Antigravity', description: 'Desktop app', installed: true, running: false, path: null },
+  { id: 'ide', name: 'Antigravity IDE', description: 'Code editor', installed: true, running: false, path: null },
   { id: 'cli', name: 'Antigravity CLI', description: 'agy command-line', installed: true, running: false, path: null }
 ]
 

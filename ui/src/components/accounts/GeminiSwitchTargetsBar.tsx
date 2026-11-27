@@ -133,8 +133,8 @@ export function GeminiSwitchTargetsBar({
               <Icon size={13} className={isActive ? 'text-blue-400' : 'text-ag-muted'} aria-hidden="true" />
               <span>{surface.name}</span>
               {surface.running && (
-                <span className="text-[10px] uppercase font-semibold tracking-wider text-emerald-400/90 bg-emerald-500/10 px-1 py-0.5 rounded">
-                  running
+                <span className="text-[11px] font-medium text-emerald-400/90 bg-emerald-500/10 px-1.5 py-0.5 rounded-md">
+                  Running
                 </span>
               )}
             </button>
