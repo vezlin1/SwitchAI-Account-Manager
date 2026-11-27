@@ -63,6 +63,9 @@ export function AccountsToolbar({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDropdownOpen(false)
+        if (dropdownRef.current?.contains(document.activeElement)) {
+          dropdownRef.current.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.focus()
+        }
       }
     }
 
@@ -88,7 +91,7 @@ export function AccountsToolbar({
               }}
               disabled={accountActionBusy}
               aria-haspopup="menu"
-              aria-expanded={dropdownOpen}
+              aria-expanded={dropdownOpen && !accountActionBusy}
               title={isGoogle ? 'Add a Gemini account' : 'Add a ChatGPT account'}
             >
               {accountActionBusy ? (
@@ -112,58 +115,57 @@ export function AccountsToolbar({
               )}
             </button>
 
-            {dropdownOpen && !accountActionBusy && (
-              <div
-                className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 origin-top-left animate-in fade-in-0 zoom-in-95 duration-100"
-                role="menu"
+            <div
+              className="account-add-menu absolute left-0 top-[calc(100%+6px)] z-50 min-w-[270px] rounded-xl border border-white/[0.08] bg-[#0c1017]/95 backdrop-blur-md shadow-2xl p-1.5 flex flex-col gap-1 origin-top-left"
+              role="menu"
+              inert={!dropdownOpen || accountActionBusy}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
+                onClick={() => {
+                  setDropdownOpen(false)
+                  onAddAccount()
+                }}
               >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
-                  onClick={() => {
-                    setDropdownOpen(false)
-                    onAddAccount()
-                  }}
-                >
-                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 group-hover:text-blue-300 transition-colors mt-0.5 shrink-0">
-                    <LogIn size={15} />
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
-                      {isGoogle ? 'Sign in with Google' : 'Sign in with ChatGPT'}
-                    </span>
-                    <span className="text-[11px] text-ag-muted leading-snug">
-                      Authorize account via browser OAuth
-                    </span>
-                  </div>
-                </button>
+                <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20 group-hover:text-blue-300 transition-colors mt-0.5 shrink-0">
+                  <LogIn size={15} />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                    {isGoogle ? 'Sign in with Google' : 'Sign in with ChatGPT'}
+                  </span>
+                  <span className="text-[11px] text-ag-muted leading-snug">
+                    Authorize account via browser OAuth
+                  </span>
+                </div>
+              </button>
 
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
-                  onClick={() => {
-                    setDropdownOpen(false)
-                    handleImport()
-                  }}
-                >
-                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300 transition-colors mt-0.5 shrink-0">
-                    <ArrowDownToLine size={15} />
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-xs font-semibold text-ag-text group-hover:text-white">
-                      Import current session
-                    </span>
-                    <span className="text-[11px] text-ag-muted leading-snug">
-                      {isGoogle
-                        ? 'Import active Antigravity credentials'
-                        : 'Import active session from ~/.codex/auth.json'}
-                    </span>
-                  </div>
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                role="menuitem"
+                className="flex items-start gap-2.5 p-2 rounded-lg text-left hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none active:bg-white/[0.12] active:scale-[0.99] transition-all cursor-pointer group select-none"
+                onClick={() => {
+                  setDropdownOpen(false)
+                  handleImport()
+                }}
+              >
+                <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300 transition-colors mt-0.5 shrink-0">
+                  <ArrowDownToLine size={15} />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-semibold text-ag-text group-hover:text-white">
+                    Import current session
+                  </span>
+                  <span className="text-[11px] text-ag-muted leading-snug">
+                    {isGoogle
+                      ? 'Import active Antigravity credentials'
+                      : 'Import active session from ~/.codex/auth.json'}
+                  </span>
+                </div>
+              </button>
+            </div>
           </div>
         ) : (
           <button

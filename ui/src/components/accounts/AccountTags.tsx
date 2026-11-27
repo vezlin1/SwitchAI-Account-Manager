@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Plus, Tag, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Plus, Tag, Trash2, X } from 'lucide-react'
 import type { Account, AccountTag } from '../../types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { usePrivacy } from '../../context/usePrivacy'
@@ -11,14 +11,13 @@ const ConfirmDialog = lazy(() => import('../common/ConfirmDialog').then(module =
 type TagOptions = Pick<AccountTag, 'showInAll' | 'refreshOnlyInTab'>
 const defaultOptions: TagOptions = { showInAll: true, refreshOnlyInTab: false }
 
-export function TagPreferences({ value, onChange, legend }: {
+function TagPreferences({ value, onChange }: {
   value: TagOptions
   onChange: (options: TagOptions) => void
-  legend?: ReactNode
 }) {
   return (
     <fieldset className="tag-preferences">
-      <legend className={legend ? 'tag-group-title' : 'visually-hidden'}>{legend ?? 'Tag settings'}</legend>
+      <legend className="visually-hidden">Tag settings</legend>
       <div className="tag-options">
         <label className="tag-option">
           <span>Show accounts in other tabs</span>
@@ -35,23 +34,28 @@ export function TagPreferences({ value, onChange, legend }: {
   )
 }
 
-function TagEditorFrame({ title, busy, onClose, children }: {
+function TagEditorFrame({ title, accountLabel, busy, onClose, onBack, children }: {
   title: string
+  accountLabel?: string
   busy: boolean
   onClose: () => void
+  onBack?: () => void
   children: ReactNode
 }) {
   const dialog = useRef<HTMLDivElement>(null)
   const titleId = useId()
-  useDialogFocus(dialog, onClose, !busy)
+  useDialogFocus(dialog, onBack ?? onClose, !busy)
   return (
     <div className="settings-backdrop" onClick={event => {
       if (event.target === event.currentTarget && !busy) onClose()
     }}>
       <div ref={dialog} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="settings-dialog-header">
-          <h2 id={titleId} className="settings-dialog-title"><Tag size={16} aria-hidden="true" />{title}</h2>
-          <button type="button" className="settings-close" onClick={onClose} disabled={busy} aria-label="Close"><X size={16} /></button>
+          <div className="tag-dialog-heading">
+            <h2 id={titleId} className="settings-dialog-title"><Tag size={16} aria-hidden="true" />{title}</h2>
+            {accountLabel && <p className="tag-account-email">{accountLabel}</p>}
+          </div>
+          {!onBack && <button type="button" className="settings-close" onClick={onClose} disabled={busy} aria-label="Close"><X size={16} /></button>}
         </div>
         {children}
       </div>
@@ -83,9 +87,11 @@ export function AccountTagsDialog({ target, tags, onSave, onClose }: {
   const [error, setError] = useState('')
   const [nameError, setNameError] = useState('')
   const [busy, setBusy] = useState(false)
-  const picker = useRef<HTMLDetailsElement>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerTrigger = useRef<HTMLButtonElement>(null)
   const nameInput = useRef<HTMLInputElement>(null)
   const pickerLabel = useId()
+  const pickerPanelId = useId()
   const selectionLabel = useId()
   const nameId = useId()
   const nameErrorId = useId()
@@ -94,7 +100,14 @@ export function AccountTagsDialog({ target, tags, onSave, onClose }: {
 
   useEffect(() => {
     if (creating) nameInput.current?.focus()
+    else pickerTrigger.current?.focus()
   }, [creating])
+
+  const backToTags = () => {
+    setCreating(false)
+    setNameError('')
+    setError('')
+  }
 
   const toggleAssignment = (id: AccountTag['id'], checked: boolean) => {
     setSelected(previous => {
@@ -158,57 +171,54 @@ export function AccountTagsDialog({ target, tags, onSave, onClose }: {
   }
 
   return createPortal(
-    <TagEditorFrame title={group ? 'Tag settings' : 'Account tags'} busy={busy} onClose={onClose}>
+    <TagEditorFrame title={creating ? 'Create tag' : group ? 'Tag settings' : 'Account tags'}
+      accountLabel={account ? (privacyMode ? maskEmail(account.email) : account.email ?? 'Unnamed account') : undefined}
+      busy={busy} onClose={onClose} onBack={creating ? backToTags : undefined}>
       <form className="tag-form" onSubmit={save}>
         <div className="settings-dialog-body tag-editor-body">
-          {account && <>
-            <strong className="tag-account-email">{privacyMode ? maskEmail(account.email) : (account.email ?? 'Unnamed account')}</strong>
+          {account && !creating && (
             <div className="tag-field">
               <span id={pickerLabel} className="tag-field-label">Assigned tags</span>
-              <details ref={picker} className="tag-picker"
+              <div className="tag-picker"
                 onKeyDown={e => {
-                  if (e.key === 'Escape' && e.currentTarget.open) {
+                  if (e.key === 'Escape' && pickerOpen) {
                     e.stopPropagation()
                     e.preventDefault()
-                    e.currentTarget.open = false
-                    e.currentTarget.querySelector('summary')?.focus()
+                    setPickerOpen(false)
+                    pickerTrigger.current?.focus()
                   }
                 }}>
-                <summary data-autofocus tabIndex={0} aria-labelledby={`${pickerLabel} ${selectionLabel}`}>
+                <button type="button" className="tag-picker-trigger" ref={pickerTrigger} data-autofocus
+                  aria-labelledby={`${pickerLabel} ${selectionLabel}`} aria-expanded={pickerOpen}
+                  aria-controls={pickerPanelId} onClick={() => setPickerOpen(open => !open)}>
                   <span id={selectionLabel} className="tag-picker-value">
                     {selectedNames.length
                       ? selectedNames.map(label => <span key={label} className="tag-selected" title={label}>{label}</span>)
                       : 'Choose tags'}
                   </span>
                   <ChevronDown size={16} aria-hidden="true" />
-                </summary>
-                <div className="tag-picker-list">
-                  {choices.map(tag => <label key={tag.id} className="tag-choice">
-                    <input type="checkbox" className="tag-check" checked={selected.has(tag.id)}
-                      onChange={e => toggleAssignment(tag.id, e.target.checked)} />
-                    <span>{tag.name}</span>
-                  </label>)}
-                  <button type="button" className="tag-create" onClick={() => {
-                    if (picker.current) picker.current.open = false
-                    setCreating(true)
-                    nameInput.current?.focus()
-                  }}><Plus size={16} aria-hidden="true" />Create new tag</button>
+                </button>
+                <div id={pickerPanelId} className="tag-picker-panel" inert={!pickerOpen}>
+                  <div className="tag-picker-clip">
+                    <div className="tag-picker-list">
+                      {choices.map(tag => <label key={tag.id} className="tag-choice">
+                        <input type="checkbox" className="tag-check" checked={selected.has(tag.id)}
+                          onChange={e => toggleAssignment(tag.id, e.target.checked)} />
+                        <span>{tag.name}</span>
+                      </label>)}
+                      <button type="button" className="tag-create" onClick={() => {
+                        setError('')
+                        setCreating(true)
+                      }}><Plus size={16} aria-hidden="true" />Create new tag</button>
+                    </div>
+                  </div>
                 </div>
-              </details>
+              </div>
             </div>
-          </>}
+          )}
           {(group || creating) && <div className="tag-edit-fields">
             <div className="tag-field">
-              <div className="tag-field-heading">
-                <label className="tag-field-label" htmlFor={nameId}>Tag name</label>
-                {creating && <button type="button" className="tag-discard" aria-label="Discard new tag" title="Discard new tag" onClick={() => {
-                  setCreating(false)
-                  setName('')
-                  setOptions(defaultOptions)
-                  setNameError('')
-                  picker.current?.querySelector('summary')?.focus()
-                }}><X size={14} aria-hidden="true" /></button>}
-              </div>
+              <label className="tag-field-label" htmlFor={nameId}>Tag name</label>
               <input id={nameId} name="tagName" ref={nameInput} className="tag-name" data-autofocus={group ? true : undefined}
                 maxLength={80} required value={name} autoComplete="off" aria-invalid={nameError ? true : undefined}
                 aria-describedby={nameError ? nameErrorId : undefined}
@@ -224,8 +234,12 @@ export function AccountTagsDialog({ target, tags, onSave, onClose }: {
             onClick={() => { setError(''); setConfirmRemoval(true) }}>
             <Trash2 size={14} aria-hidden="true" />Remove tag
           </button>}
-          <button type="button" className="settings-cancel" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="settings-save" disabled={busy}>Save</button>
+          {creating
+            ? <button type="button" className="tag-back" onClick={backToTags} disabled={busy}>
+              <ArrowLeft size={15} aria-hidden="true" />Back
+            </button>
+            : <button type="button" className="settings-cancel" onClick={onClose} disabled={busy}>Cancel</button>}
+          <button type="submit" className="settings-save" disabled={busy}>{creating ? 'Create and assign' : 'Save'}</button>
         </div>
       </form>
     </TagEditorFrame>, document.body
