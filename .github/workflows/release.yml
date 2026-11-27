@@ -154,7 +154,7 @@ jobs:
           if-no-files-found: warn
 
   verify-and-build-macos:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
