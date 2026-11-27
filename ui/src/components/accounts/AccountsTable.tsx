@@ -17,7 +17,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { ArrowDownToLine, Loader2, LogIn, Sparkles, UserPlus, Users } from 'lucide-react'
-import type { Account, AccountProvider } from '../../types'
+import type { Account, AccountProvider, AccountTag } from '../../types'
 import type { AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountCard } from './AccountCard'
 import { AccountContextMenu } from './AccountContextMenu'
@@ -29,6 +29,7 @@ import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountsTableProps = {
   accounts: Account[]
+  tags: AccountTag[]
   provider?: AccountProvider
   activeAccountId: string | null
   totalAccountCount: number
@@ -50,6 +51,7 @@ type AccountsTableProps = {
   onDetectSubscription: (accountId: string) => Promise<void>
   onRemove: (account: Account) => void
   onToggleAccountInAll: (accountId: string) => void
+  onEditTags: (account: Account) => void
   onAddAccount: () => void
   onImportSession?: () => void
   onClearFilter: () => void
@@ -143,6 +145,15 @@ function AccountsEmptyState({
     )
   }
 
+  if (activeFilter === 'all' && hiddenAccountCount < accountCount) {
+    return (
+      <div className="accounts-empty py-14 px-6 text-center" role="status">
+        <h3 className="text-sm font-semibold text-ag-text mb-1">No accounts shown in All</h3>
+        <p className="text-xs text-ag-muted">Open a tag to see its accounts or change its visibility in tag settings.</p>
+      </div>
+    )
+  }
+
   if (activeFilter === 'all' && hiddenAccountCount > 0 && hiddenAccountCount >= accountCount) {
     return (
       <div className="accounts-empty py-14 px-6 text-center flex flex-col items-center justify-center max-w-md mx-auto" role="status">
@@ -158,7 +169,9 @@ function AccountsEmptyState({
   return (
     <div className="accounts-empty py-14 px-6 text-center flex flex-col items-center justify-center max-w-md mx-auto" role="status">
       <h3 className="text-sm font-semibold text-ag-text mb-1">No accounts match this filter</h3>
-      <p className="text-xs text-ag-muted mb-4">Choose a different subscription filter or show all accounts.</p>
+      <p className="text-xs text-ag-muted mb-4">{activeFilter.startsWith('tag:')
+        ? 'Assign this tag from the account’s Edit tags menu.'
+        : 'Choose a different subscription filter or show all accounts.'}</p>
       <button type="button" className="h-8 px-3.5 rounded-lg border border-ag-border text-xs font-medium text-ag-text hover:bg-ag-surface transition-all cursor-pointer" onClick={onClearFilter}>
         Show all accounts
       </button>
@@ -170,6 +183,7 @@ const ACCOUNT_PAGE_SIZE = 40
 
 export const AccountsTable = memo(function AccountsTable({
   accounts,
+  tags,
   provider = 'codex',
   activeAccountId,
   totalAccountCount,
@@ -191,6 +205,7 @@ export const AccountsTable = memo(function AccountsTable({
   onDetectSubscription,
   onRemove,
   onToggleAccountInAll,
+  onEditTags,
   onAddAccount,
   onImportSession,
   onClearFilter,
@@ -202,6 +217,17 @@ export const AccountsTable = memo(function AccountsTable({
   const visibleAccounts = useMemo(() => accounts.slice(0, visibleCount), [accounts, visibleCount])
   const canLoadMore = visibleCount < accounts.length
   const hiddenIds = useMemo(() => new Set(hiddenAccountIds), [hiddenAccountIds])
+  const tagNamesByAccount = useMemo(() => {
+    const labels = new Map<string, string[]>()
+    for (const tag of tags) {
+      for (const id of tag.accountIds) {
+        const names = labels.get(id)
+        if (names) names.push(tag.name)
+        else labels.set(id, [tag.name])
+      }
+    }
+    return labels
+  }, [tags])
   const loadMore = useCallback(() => setVisibleCount((count) => count + ACCOUNT_PAGE_SIZE), [])
   const [contextMenu, setContextMenu] = useState<{
     accountId: string
@@ -360,6 +386,7 @@ export const AccountsTable = memo(function AccountsTable({
                       <SortableAccountRow
                         key={account.id}
                         account={account}
+                        tagNames={tagNamesByAccount.get(account.id)?.join(' · ')}
                         refreshNotice={getRefreshNotice(account)}
                         isActive={activeAccountId === account.id}
                         isSwitching={statusFlags.isSwitching}
@@ -419,6 +446,7 @@ export const AccountsTable = memo(function AccountsTable({
                 <li key={account.id}>
                   <AccountCard
                     account={account}
+                    tagNames={tagNamesByAccount.get(account.id)?.join(' · ')}
                     refreshNotice={getRefreshNotice(account)}
                     isActive={activeAccountId === account.id}
                     isSwitching={statusFlags.isSwitching}
@@ -445,6 +473,7 @@ export const AccountsTable = memo(function AccountsTable({
 
       {contextMenu && contextAccount && (
         <AccountContextMenu
+          onEditTags={onEditTags}
           account={contextAccount}
           hiddenFromAll={hiddenIds.has(contextAccount.id)}
           x={contextMenu.x}
@@ -461,6 +490,7 @@ export const AccountsTable = memo(function AccountsTable({
 
 type SortableAccountRowProps = {
   account: Account
+  tagNames?: string
   refreshNotice?: AccountRefreshNotice
   isActive: boolean
   isSwitching: boolean
@@ -481,6 +511,7 @@ type SortableAccountRowProps = {
 
 const SortableAccountRow = memo(function SortableAccountRow({
   account,
+  tagNames,
   refreshNotice,
   isActive,
   isSwitching,
@@ -522,6 +553,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
   return (
     <AccountRow
       account={account}
+      tagNames={tagNames}
       refreshNotice={refreshNotice}
       isActive={isActive}
       isSwitching={isSwitching}

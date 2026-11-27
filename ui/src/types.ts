@@ -5,10 +5,14 @@ export type QuotaWindow = {
   fetchedAt: number | null
 }
 
-export type QuotaInfo = {
-  planType: string | null
+export type QuotaWindows = {
   primary: QuotaWindow
   secondary: QuotaWindow
+}
+
+export type QuotaInfo = QuotaWindows & {
+  planType: string | null
+  claudeAndGpt?: QuotaWindows
   fetchedAt: number
 }
 
@@ -55,6 +59,15 @@ export type AccountSnapshot = {
   account: Account
 }
 
+export type AccountTag = {
+  id: `tag:${string}`
+  name: string
+  provider: AccountProvider
+  accountIds: string[]
+  showInAll: boolean
+  refreshOnlyInTab: boolean
+}
+
 export type AppSettings = {
   autoRefreshEnabled: boolean
   autoRefreshIntervalMinutes: number
@@ -62,6 +75,7 @@ export type AppSettings = {
   skipUnsupportedRegionRefresh: boolean
   hiddenSubscriptionCategories: string[]
   hiddenAccountIds: string[]
+  accountTags: AccountTag[]
   lastActiveProvider?: AccountProvider
   geminiSwitchTargets?: string[]
   enabledProviders?: AccountProvider[]

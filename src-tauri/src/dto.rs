@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    Account, AppData, AppSettings, AutoRefreshStatus, QuotaInfo, QuotaWindow, RefreshRunSummary,
-    TokenHealth, TokenHealthStatus,
+    Account, AppData, AppSettings, AutoRefreshStatus, QuotaInfo, QuotaWindow, QuotaWindows,
+    RefreshRunSummary, TokenHealth, TokenHealthStatus,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +76,8 @@ pub struct AppSettingsDto {
     pub hidden_subscription_categories: Vec<String>,
     #[serde(default)]
     pub hidden_account_ids: Vec<String>,
+    #[serde(default)]
+    pub account_tags: Vec<crate::models::AccountTag>,
     #[serde(default)]
     pub last_active_provider: Option<String>,
     #[serde(default)]
@@ -191,6 +193,8 @@ pub struct QuotaInfoDto {
     pub plan_type: Option<String>,
     pub primary: QuotaWindowDto,
     pub secondary: QuotaWindowDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_and_gpt: Option<QuotaWindows<QuotaWindowDto>>,
     pub fetched_at: i64,
 }
 
@@ -234,7 +238,13 @@ impl From<&Account> for AccountDto {
             email: account.email.clone(),
             account_id: account.account_id.clone(),
             subscription_expires_at: account.subscription_expires_at,
-            subscription_plan: account.subscription_plan.clone(),
+            subscription_plan: match account.provider {
+                crate::models::AccountProvider::Codex => crate::subscription::saved_plan_label(
+                    account.subscription_plan.as_deref(),
+                    account.quota.as_ref().and_then(|quota| quota.plan_type.as_deref()),
+                ),
+                crate::models::AccountProvider::Gemini => account.subscription_plan.clone(),
+            },
             subscription_detected_at: account.subscription_detected_at,
             subscription_checked_at: account.subscription_checked_at,
             token_health: TokenHealthDto::from(&account.token_health),
@@ -258,6 +268,7 @@ impl From<&AppSettings> for AppSettingsDto {
             skip_unsupported_region_refresh: settings.skip_unsupported_region_refresh,
             hidden_subscription_categories: settings.hidden_subscription_categories.clone(),
             hidden_account_ids: settings.hidden_account_ids.clone(),
+            account_tags: settings.account_tags.clone(),
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
@@ -276,6 +287,7 @@ impl From<AppSettingsDto> for AppSettings {
             skip_unsupported_region_refresh: settings.skip_unsupported_region_refresh,
             hidden_subscription_categories: settings.hidden_subscription_categories,
             hidden_account_ids: settings.hidden_account_ids,
+            account_tags: settings.account_tags,
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
@@ -333,6 +345,10 @@ impl From<&QuotaInfo> for QuotaInfoDto {
             plan_type: quota.plan_type.clone(),
             primary: QuotaWindowDto::from(&quota.primary),
             secondary: QuotaWindowDto::from(&quota.secondary),
+            claude_and_gpt: quota.claude_and_gpt.as_ref().map(|group| QuotaWindows {
+                primary: (&group.primary).into(),
+                secondary: (&group.secondary).into(),
+            }),
             fetched_at: quota.fetched_at,
         }
     }

@@ -13,6 +13,7 @@ import { useAccountRowState } from './useAccountRowState'
 
 type AccountRowProps = {
   account: Account
+  tagNames?: string
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
@@ -38,6 +39,7 @@ type AccountRowProps = {
 
 export const AccountRow = memo(function AccountRow({
   account,
+  tagNames,
   isActive,
   isSwitching,
   isRemoving,
@@ -119,6 +121,7 @@ export const AccountRow = memo(function AccountRow({
                 </span>
               )}
             </div>
+            {tagNames && <span className="account-tag-label" title={tagNames}>{tagNames}</span>}
             {hiddenFromAll && (
               <span className="account-hidden-badge">
                 <EyeOff size={10} aria-hidden="true" /> Hidden
@@ -128,7 +131,7 @@ export const AccountRow = memo(function AccountRow({
           <ChevronRight size={14} className="account-identity-arrow text-ag-muted opacity-40 group-hover:opacity-100 flex-shrink-0" aria-hidden="true" />
         </button>
       </th>
-      {quotaCellsForAccount(quota, quotaColumns).map(({ column, window, colSpan }) => {
+      {quotaCellsForAccount(quota, quotaColumns, account.provider === 'gemini').map(({ column, window, colSpan }) => {
         return (
           <td key={column.key} colSpan={colSpan} className="account-row-quota" data-label={column.label}>
             <QuotaCell

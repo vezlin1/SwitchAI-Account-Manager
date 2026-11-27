@@ -1,4 +1,5 @@
 import type { AppSettings } from '../types'
+import { sameValue } from './stateMerge.ts'
 
 export type SettingsPatch = Partial<AppSettings>
 
@@ -24,6 +25,7 @@ export function settingsPatch(previous: AppSettings, next: AppSettings): Setting
   if (!sameStrings(previous.hiddenAccountIds, next.hiddenAccountIds)) {
     patch.hiddenAccountIds = next.hiddenAccountIds
   }
+  if (!sameValue(previous.accountTags, next.accountTags)) patch.accountTags = next.accountTags
   if (previous.lastActiveProvider !== next.lastActiveProvider) {
     patch.lastActiveProvider = next.lastActiveProvider
   }

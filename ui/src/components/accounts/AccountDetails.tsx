@@ -14,10 +14,10 @@ import {
 } from 'lucide-react'
 import type { Account } from '../../types'
 import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUtils'
-import { accountAttention, quotaUpdateBlocked, type AccountAttention, type AccountRefreshNotice } from '../../utils/accountFeedback'
+import { accountAttention, quotaUpdateBlocked, recordedAccountStatus, type AccountAttention, type AccountRefreshNotice } from '../../utils/accountFeedback'
 import { useTimeValue } from '../../hooks/useSharedTicker'
 import { QuotaCell } from './QuotaCell'
-import { quotaColumnsForAccounts, quotaIsStale, quotaWindowForColumn } from '../../utils/quotaWindows'
+import { detailQuotaGroups, quotaIsStale } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { EventTime } from './EventTime'
 import { usePrivacy } from '../../context/usePrivacy'
@@ -29,6 +29,7 @@ type AccountDetailsProps = {
   isRecommended: boolean
   busyKeys: ReadonlySet<string>
   onBack: () => void
+  onEditTags: (account: Account) => void
   onSwitch: (account: Account) => void
   onRelogin: (account: Account) => void
   onRefreshQuota: (accountId: string) => Promise<void>
@@ -36,15 +37,8 @@ type AccountDetailsProps = {
 }
 
 function statusDetails(
-  account: Account, attention: AccountAttention | null, isRefreshing: boolean, isStale: boolean
+  account: Account, attention: AccountAttention | null, isRefreshing: boolean
 ): { label: string; tone: 'healthy' | 'loading' | 'warning' | 'neutral'; message: string } {
-  if (isRefreshing) {
-    return {
-      label: 'Checking status…',
-      tone: 'loading',
-      message: 'Checking authentication health and latest quota limits…'
-    }
-  }
   if (attention?.kind === 'verify') {
     return {
       label: 'Verification required',
@@ -63,19 +57,14 @@ function statusDetails(
       message: readableStatusError(attention.message) ?? label
     }
   }
-  if (isStale) {
-    return { label: 'Saved quota', tone: 'neutral', message: 'Refresh this account to see its current limits.' }
+  if (isRefreshing) {
+    return {
+      label: 'Checking status…',
+      tone: 'loading',
+      message: 'Checking authentication health and latest quota limits…'
+    }
   }
-  if (!account.quota) {
-    return { label: 'No quota yet', tone: 'neutral', message: 'Refresh this account to check its limits.' }
-  }
-  return {
-    label: 'Healthy',
-    tone: 'healthy',
-    message: account.provider === 'gemini'
-      ? 'Google authentication and Antigravity limit checks are working normally.'
-      : 'Authentication and quota checks are working normally.'
-  }
+  return recordedAccountStatus(account)
 }
 
 export function AccountDetails({
@@ -85,6 +74,7 @@ export function AccountDetails({
   isRecommended,
   busyKeys,
   onBack,
+  onEditTags,
   onSwitch,
   onRelogin,
   onRefreshQuota,
@@ -95,7 +85,7 @@ export function AccountDetails({
   const [copiedId, setCopiedId] = useState(false)
   const [copiedEmail, setCopiedEmail] = useState(false)
   const [copiedStatus, setCopiedStatus] = useState(false)
-  const quotaColumns = useMemo(() => quotaColumnsForAccounts([account]), [account])
+  const quotaGroups = useMemo(() => detailQuotaGroups(account), [account])
   const refreshingQuota = busyKeys.has(`quota:${account.id}`)
   const detectingSubscription = busyKeys.has(`subscription-detect:${account.id}`)
   const isRefreshingAccount =
@@ -106,8 +96,8 @@ export function AccountDetails({
     busyKeys.has(`account:${account.id}:subscription`)
   const attention = accountAttention(account, refreshNotice)
   const updateBlocked = quotaUpdateBlocked(attention)
-  const isStale = useTimeValue(useCallback(() => quotaIsStale(account.quota), [account.quota]), Boolean(account.quota))
-  const status = statusDetails(account, attention, isRefreshingAccount, isStale)
+  const isStale = useTimeValue(useCallback(() => quotaIsStale(account.quota), [account.quota]), isRecommended)
+  const status = statusDetails(account, attention, isRefreshingAccount)
   const busy = isRefreshingAccount
     || busyKeys.has(`switch:${account.id}`)
     || busyKeys.has(`delete:${account.id}`)
@@ -212,15 +202,18 @@ export function AccountDetails({
         </div>
 
         <div className="account-details-actions">
-          <button
-            type="button"
-            className="account-detail-action"
-            onClick={() => void onRefreshQuota(account.id)}
-            disabled={busy}
-          >
-            {refreshingQuota ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-            {updateBlocked ? 'Retry quota' : 'Refresh quota'}
-          </button>
+          <button type="button" className="account-detail-action" onClick={() => onEditTags(account)}>Edit tags</button>
+          {updateBlocked && (
+            <button
+              type="button"
+              className="account-detail-action"
+              onClick={() => void onRefreshQuota(account.id)}
+              disabled={busy}
+            >
+              {refreshingQuota ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+              Retry quota
+            </button>
+          )}
           {account.tokenHealth.status === 'needs_relogin' ? (
             <button
               type="button"
@@ -248,7 +241,7 @@ export function AccountDetails({
           <section className="account-detail-section" aria-labelledby="account-quota-title">
             <div className="account-detail-section-heading">
               <h2 id="account-quota-title">{isGemini ? 'Antigravity limits' : 'ChatGPT limits'}</h2>
-              <span className={`account-detail-status account-detail-status-${status.tone}`}>
+              <span className={`account-detail-status account-detail-status-${status.tone}`} title={status.message}>
                 {status.tone === 'healthy' ? (
                   <CircleCheck size={15} aria-hidden="true" />
                 ) : status.tone === 'loading' ? (
@@ -260,29 +253,29 @@ export function AccountDetails({
               </span>
             </div>
 
-            {quotaColumns.length > 0 ? (
+            {quotaGroups.length > 0 ? (
               <div className="account-detail-quota-list">
-                {quotaColumns.map((column) => {
-                  const window = quotaWindowForColumn(account.quota, column)
-                  return (
-                    <div className="account-detail-quota-row" key={column.key}>
-                      <QuotaCell
-                        window={window}
-                        fetchedAt={account.quota?.fetchedAt ?? null}
-                        updateBlocked={updateBlocked}
-                        title={column.cellTitle}
-                        isRefreshing={isRefreshingAccount}
-                      />
-                    </div>
-                  )
-                })}
+                {quotaGroups.map(({ title, cells }) => (
+                  <div key={title ?? 'limits'} className="account-detail-quota-list">
+                    {title && <h3 className="text-sm font-semibold">{title}</h3>}
+                    {cells.map(({ column, window }) => (
+                      <div className="account-detail-quota-row" key={column.key}>
+                        <QuotaCell
+                          window={window}
+                          fetchedAt={account.quota?.fetchedAt ?? null}
+                          updateBlocked={updateBlocked}
+                          title={column.cellTitle}
+                          isRefreshing={isRefreshingAccount}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ))}
               </div>
             ) : (
               <div className="account-detail-empty">
                 <BarChart3 size={18} aria-hidden="true" />
-                {isGemini
-                  ? 'Refresh this account to load the limits Google currently exposes for Antigravity.'
-                  : 'Refresh this account to collect its first quota value.'}
+                No quota data available.
               </div>
             )}
           </section>

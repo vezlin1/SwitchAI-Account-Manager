@@ -227,6 +227,11 @@ pub fn run() {
             if window.label() != "main" {
                 return;
             }
+            if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+                let visible =
+                    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+                set_refresh_window_visible(&close_state, visible);
+            }
 
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if close_state.is_quitting.load(Ordering::SeqCst) {
@@ -240,6 +245,7 @@ pub fn run() {
                 if close_to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                    set_refresh_window_visible(&close_state, false);
                 } else {
                     close_state.is_quitting.store(true, Ordering::SeqCst);
                     window.app_handle().exit(0);
@@ -255,6 +261,7 @@ pub fn run() {
             commands::get_account,
             commands::get_auto_refresh_status,
             commands::set_app_settings,
+            commands::set_open_account_tab,
             commands::migrate_privacy_mode,
             commands::start_oauth_flow,
             commands::get_oauth_flow_status,
@@ -289,12 +296,23 @@ pub fn run() {
         });
 }
 
+fn set_refresh_window_visible(state: &Arc<SharedState>, visible: bool) {
+    if let Ok(mut data) = app_state::lock_data(state)
+        && data.account_window_visible != visible
+    {
+        data.account_window_visible = visible;
+        drop(data);
+        auto_refresh::notify_schedule_changed(state);
+    }
+}
+
 pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
         if let Some(state) = app.try_state::<Arc<SharedState>>() {
+            set_refresh_window_visible(&state, true);
             tray_dashboard::emit_state_changed_forced(&state, "all", Vec::new());
         }
     }

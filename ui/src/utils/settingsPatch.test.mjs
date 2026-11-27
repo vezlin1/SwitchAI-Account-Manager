@@ -43,3 +43,12 @@ test('settings arrays are compared by ordered values', () => {
   assert.deepEqual(settingsPatch({}, { geminiSwitchTargets: [] }), { geminiSwitchTargets: [] })
 })
 
+test('an unrelated settings save preserves tag memberships and preferences', () => {
+  const previous = { accountTags: [{ id: 'tag:a', accountIds: ['one'], showInAll: true }], closeToTray: false }
+  const draft = structuredClone(previous)
+  draft.closeToTray = true
+  assert.deepEqual(settingsPatch(previous, draft), { closeToTray: true })
+  draft.accountTags[0].showInAll = false
+  assert.deepEqual(settingsPatch(previous, draft).accountTags, draft.accountTags)
+})
+

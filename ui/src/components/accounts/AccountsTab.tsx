@@ -1,4 +1,6 @@
-import { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../../api'
+import { AccountTagsDialog, type TagEditorTarget } from './AccountTags'
 import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
@@ -34,6 +36,7 @@ type AccountsTabProps = {
   autoRefreshError?: string | null
   onClearAutoRefreshError?: () => void
   activeProvider?: AccountProvider
+  settingsOpen: boolean
 }
 
 export function AccountsTab({
@@ -46,11 +49,14 @@ export function AccountsTab({
   autoRefreshStatus,
   autoRefreshError,
   onClearAutoRefreshError,
-  activeProvider = 'codex'
+  activeProvider = 'codex',
+  settingsOpen
 }: AccountsTabProps) {
   const [pendingDelete, setPendingDelete] = useState<Account | null>(null)
   const [pendingSwitch, setPendingSwitch] = useState<Account | null>(null)
   const [detailsAccountId, setDetailsAccountId] = useState<string | null>(null)
+  const [tagEditor, setTagEditor] = useState<TagEditorTarget | null>(null)
+  const editAccountTags = useCallback((account: Account) => setTagEditor({ account }), [])
   const [subscriptionFilters, setSubscriptionFilters] = useState<Record<AccountProvider, SubscriptionFilterId>>({
     codex: 'all',
     gemini: 'all'
@@ -85,8 +91,10 @@ export function AccountsTab({
   const searchTerm = searchTerms[currentProvider] ?? ''
   const setSearchTerm = (val: string) => setSearchTerms((prev) => ({ ...prev, [currentProvider]: val }))
   const subscriptionFilter = subscriptionFilters[currentProvider] ?? 'all'
-  const setSubscriptionFilter = (filter: SubscriptionFilterId) =>
+  const setSubscriptionFilter = (filter: SubscriptionFilterId) => {
+    setDetailsAccountId(null)
     setSubscriptionFilters((prev) => ({ ...prev, [currentProvider]: filter }))
+  }
 
   const accounts = useMemo(
     () => data.accounts.filter((account) => (account.provider ?? 'codex') === currentProvider),
@@ -96,20 +104,38 @@ export function AccountsTab({
     ? (data.activeGeminiAccountId ?? null)
     : data.activeAccountId
   const hiddenAccountIds = data.appSettings.hiddenAccountIds
+  const tags = useMemo(() => (data.appSettings.accountTags ?? []).filter(t => t.provider === currentProvider),
+    [data.appSettings.accountTags, currentProvider])
   const filters = useMemo(
-    () => subscriptionFiltersForAccounts(accounts, hiddenAccountIds),
-    [accounts, hiddenAccountIds]
+    () => subscriptionFiltersForAccounts(accounts, hiddenAccountIds, tags),
+    [accounts, hiddenAccountIds, tags]
   )
   const effectiveSubscriptionFilter = filters.some((filter) => filter.id === subscriptionFilter)
     ? subscriptionFilter
     : 'all'
+  const openGroup = !settingsOpen && (effectiveSubscriptionFilter === 'hidden' || effectiveSubscriptionFilter.startsWith('tag:'))
+    ? effectiveSubscriptionFilter : null
+  const tabSync = useRef<Promise<void>>(Promise.resolve())
+  useLayoutEffect(() => {
+    const publish = (tab: string | null) => {
+      tabSync.current = tabSync.current.catch(() => undefined).then(() => api.setOpenAccountTab(currentProvider, tab))
+      void tabSync.current.catch(() => undefined)
+    }
+    const sync = () => publish(document.visibilityState === 'visible' ? openGroup : null)
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => {
+      document.removeEventListener('visibilitychange', sync)
+      publish(null)
+    }
+  }, [currentProvider, openGroup])
   const filteredAccounts = useMemo(
     () => filterAccountsBySubscription(
       accounts,
       effectiveSubscriptionFilter,
-      hiddenAccountIds
+      hiddenAccountIds, tags
     ),
-    [accounts, effectiveSubscriptionFilter, hiddenAccountIds]
+    [accounts, effectiveSubscriptionFilter, hiddenAccountIds, tags]
   )
 
   const searchedAccounts = useMemo(() => {
@@ -123,7 +149,7 @@ export function AccountsTab({
     })
   }, [filteredAccounts, searchTerm])
   const detailsAccount = detailsAccountId
-    ? accounts.find((account) => account.id === detailsAccountId) ?? null
+    ? filteredAccounts.find((account) => account.id === detailsAccountId) ?? null
     : null
   const recommendation = useMemo(
     () => detailsAccountId ? recommendedAccount(accounts, hiddenAccountIds) : null,
@@ -221,10 +247,13 @@ export function AccountsTab({
 
   const specificCategoryCount = filters.filter((filter) => filter.id !== 'all' && filter.id !== 'hidden').length
   const totalHiddenCount = filters.find((f) => f.id === 'hidden')?.count ?? 0
-  const showSubscriptionFilters = specificCategoryCount > 1 || totalHiddenCount > 0
+  const showSubscriptionFilters = specificCategoryCount > 1 || totalHiddenCount > 0 || tags.length > 0
 
   return (
     <div className="page-fade h-full min-w-0 flex flex-col gap-4">
+      {tagEditor && <AccountTagsDialog target={tagEditor} tags={data.appSettings.accountTags ?? []}
+        onClose={() => setTagEditor(null)}
+        onSave={accountTags => saveAppSettings({ ...(getData()?.appSettings ?? data.appSettings), accountTags })} />}
       {pendingDelete && (
         <Suspense fallback={null}>
           <ConfirmDialog
@@ -293,6 +322,7 @@ export function AccountsTab({
               isRecommended={recommendation?.id === detailsAccount.id}
               busyKeys={accountBusyKeys}
               onBack={closeDetails}
+              onEditTags={editAccountTags}
               onSwitch={handleSwitch}
               onRelogin={handleRelogin}
               onRefreshQuota={actions.refreshAccount}
@@ -323,7 +353,7 @@ export function AccountsTab({
                 ? () => void actions.importAntigravity()
                 : () => void actions.importCodex()
             }
-            onRefreshAll={() => void actions.refreshAll(currentProvider)}
+            onRefreshAll={() => void actions.refreshAll(currentProvider, openGroup, tabSync.current)}
           />
 
           {currentProvider === 'gemini' && (
@@ -340,35 +370,47 @@ export function AccountsTab({
             />
           )}
 
-          {accounts.length > 0 && showSubscriptionFilters && (
-            <nav className="account-filter-bar" aria-label="Filter accounts by subscription">
+          {showSubscriptionFilters && (
+            <nav className="account-filter-bar" aria-label="Filter accounts">
               <div className="account-filter-summary">
                 <span>Accounts</span>
                 <span>{filteredAccounts.length} of {accounts.length}</span>
               </div>
               <div className="account-filter-options">
-                {filters.map((filter) => (
-                  <button
-                    key={filter.id}
-                    type="button"
-                    className="account-filter-button"
-                    aria-pressed={effectiveSubscriptionFilter === filter.id}
-                    onClick={() => setSubscriptionFilter(filter.id)}
-                  >
-                    <span>{filter.label}</span>
-                    <span className="account-filter-count">{filter.count}</span>
-                  </button>
-                ))}
+                {filters.map((filter) => {
+                  const tag = tags.find(t => t.id === filter.id)
+                  return (
+                    <button
+                      key={filter.id}
+                      type="button"
+                      className="account-filter-button"
+                      aria-pressed={effectiveSubscriptionFilter === filter.id}
+                      onClick={() => setSubscriptionFilter(filter.id)}
+                      title={tag ? `${tag.name} · Right-click for tag settings` : undefined}
+                      onContextMenu={tag ? event => { event.preventDefault(); setTagEditor({ tag }) } : undefined}
+                      onKeyDown={tag ? event => {
+                        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                          event.preventDefault()
+                          setTagEditor({ tag })
+                        }
+                      } : undefined}
+                    >
+                      <span>{filter.label}</span>
+                      <span className="account-filter-count">{filter.count}</span>
+                    </button>
+                  )
+                })}
               </div>
             </nav>
           )}
 
           <AccountsTable
             accounts={searchedAccounts}
+            tags={tags}
             provider={currentProvider}
             totalAccountCount={accounts.length}
             activeFilter={effectiveSubscriptionFilter}
-            hiddenAccountCount={hiddenAccountIds.length}
+            hiddenAccountCount={totalHiddenCount}
             addingAccount={oauth.isProviderBusy(currentProvider)}
             isSearching={Boolean(searchTerm.trim())}
             importingSession={
@@ -383,6 +425,7 @@ export function AccountsTab({
             hiddenAccountIds={hiddenAccountIds}
             onReorder={(activeId, overId) => void reorderAccounts(activeId, overId)}
             onOpenDetails={openDetails}
+            onEditTags={editAccountTags}
             onSwitch={handleSwitch}
             onRelogin={handleRelogin}
             getRefreshNotice={actions.getRefreshNotice}

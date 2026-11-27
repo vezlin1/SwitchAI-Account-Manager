@@ -7,13 +7,14 @@ use tauri::State;
 use crate::app_state::{SharedState, lock_data};
 use crate::auto_refresh;
 use crate::codex::{reconcile_codex_auth, restart_codex_process};
+use crate::commands::refresh::{AccountRefreshKind, refresh_account};
 use crate::commands::{command_result, run_blocking, warning};
 use crate::dto::{
     AccountDto, AccountSnapshotDto, AntigravitySurfaceDto, AppDataDto, StateResultDto,
 };
 use crate::errors::{AppError, AppResult, IpcErrorDto};
 use crate::models::{Account, AccountProvider, AppData, TokenHealth, now_ts};
-use crate::refresh_service::{RefreshService, write_account_auth};
+use crate::refresh_service::write_account_auth;
 use crate::storage::{commit_state_data, persist_app_data};
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +105,9 @@ pub(crate) fn remove_account_from_data(
     account_id: &str,
 ) -> AppResult<(bool, bool)> {
     let previous_len = data.accounts.len();
+    for tag in &mut data.app_settings.account_tags {
+        tag.account_ids.retain(|id| id != account_id);
+    }
     let was_codex_active = data.active_account_id.as_deref() == Some(account_id);
     let was_gemini_active = data.active_gemini_account_id.as_deref() == Some(account_id);
     data.accounts.retain(|account| account.id != account_id);
@@ -380,10 +384,7 @@ pub async fn import_antigravity_account(
                 None,
             )
             .await;
-            let project_id = quota_result
-                .as_ref()
-                .ok()
-                .and_then(|result| result.project_id.clone());
+            let project_id = quota_result.discovery.as_ref().and_then(|check| check.project_id.clone());
 
             let mut warnings = Vec::new();
             let (data, imported_id, next) = {
@@ -403,14 +404,12 @@ pub async fn import_antigravity_account(
                     .iter_mut()
                     .find(|entry| entry.id == account.id)
                     .ok_or_else(|| AppError::msg("Account disappeared during Antigravity import"))?;
-                match quota_result {
-                    Ok(result) => {
-                        account_mut.subscription_checked_at = result.discovery_checked_at;
-                        if let Some(plan_type) = result.quota.plan_type.as_ref() {
-                            account_mut.subscription_plan = Some(plan_type.clone());
-                            account_mut.subscription_detected_at = Some(now_ts());
-                        }
-                        account_mut.quota = Some(result.quota);
+                if let Some(check) = quota_result.discovery {
+                    check.apply(account_mut);
+                }
+                match quota_result.quota {
+                    Ok(quota) => {
+                        account_mut.quota = Some(quota);
                         account_mut.token_health = TokenHealth::healthy();
                         account_mut.last_error = None;
                     }
@@ -479,35 +478,22 @@ pub async fn import_codex_account(
             };
             commit_active_selection_changes(state.inner(), data, next, true, false)?;
 
-            let refresh_result = RefreshService::new(Arc::clone(state.inner()))
-                .refresh_account_subscription(&saved_id)
-                .await;
-
             let mut warnings = Vec::new();
-            let final_state = match refresh_result {
-                Ok(result) => {
-                    if let Some(msg) = result.warning {
-                        warnings.push(warning(
-                            "subscription_refresh_warning",
-                            "account",
-                            msg,
-                            Some(saved_id.clone()),
-                            true,
-                        ));
-                    }
-                    result.state
-                }
-                Err(err) => {
-                    warnings.push(warning(
-                        "subscription_refresh_warning",
+            for (kind, failure_code) in [
+                (AccountRefreshKind::Quota, "quota_refresh_warning"),
+                (AccountRefreshKind::Subscription, "subscription_refresh_warning"),
+            ] {
+                match refresh_account(state.inner(), saved_id.clone(), kind).await {
+                    Ok(result) => warnings.extend(result.warnings),
+                    Err(error) => warnings.push(warning(
+                        failure_code,
                         "account",
-                        err.user_message(),
+                        error.user_message(),
                         Some(saved_id.clone()),
                         true,
-                    ));
-                    lock_data(state.inner())?.clone()
+                    )),
                 }
-            };
+            }
 
             crate::tray_dashboard::emit_state_changed(
                 state.inner(),
@@ -516,7 +502,7 @@ pub async fn import_codex_account(
             );
 
             Ok(StateResultDto {
-                state: AppDataDto::from(&final_state),
+                state: AppDataDto::from(&*lock_data(state.inner())?),
                 warnings,
             })
         }

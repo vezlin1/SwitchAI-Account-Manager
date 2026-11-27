@@ -765,6 +765,7 @@ mod tests {
                     fetched_at: None,
                 },
                 secondary: QuotaWindow::default(),
+                claude_and_gpt: None,
                 fetched_at: crate::models::now_ts(),
             }),
             quota_next_refresh_at: None,

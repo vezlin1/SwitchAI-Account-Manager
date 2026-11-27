@@ -24,9 +24,18 @@ pub struct QuotaWindow {
 #[derive(Debug, Clone, Default)]
 pub struct QuotaInfo {
     pub plan_type: Option<String>,
+    // For Antigravity, the main windows belong exclusively to Gemini Models.
     pub primary: QuotaWindow,
     pub secondary: QuotaWindow,
+    // Present on every grouped Antigravity snapshot, including empty partner windows.
+    pub claude_and_gpt: Option<QuotaWindows<QuotaWindow>>,
     pub fetched_at: i64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct QuotaWindows<W> {
+    pub primary: W,
+    pub secondary: W,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -98,7 +107,8 @@ impl TokenHealth {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AccountProvider {
     #[default]
     Codex,
@@ -149,6 +159,17 @@ pub struct Account {
     pub subscription_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountTag {
+    pub id: String,
+    pub name: String,
+    pub provider: AccountProvider,
+    pub account_ids: Vec<String>,
+    pub show_in_all: bool,
+    pub refresh_only_in_tab: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppSettings {
     pub auto_refresh_enabled: bool,
@@ -157,6 +178,7 @@ pub struct AppSettings {
     pub skip_unsupported_region_refresh: bool,
     pub hidden_subscription_categories: Vec<String>,
     pub hidden_account_ids: Vec<String>,
+    pub account_tags: Vec<AccountTag>,
     pub last_active_provider: Option<String>,
     pub gemini_switch_targets: Vec<String>,
     pub enabled_providers: Vec<String>,
@@ -190,6 +212,7 @@ impl Default for AppSettings {
             skip_unsupported_region_refresh: true,
             hidden_subscription_categories: Vec::new(),
             hidden_account_ids: Vec::new(),
+            account_tags: Vec::new(),
             last_active_provider: Some("codex".to_string()),
             gemini_switch_targets,
             enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
@@ -212,11 +235,14 @@ pub struct RefreshRunSummary {
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.auto_refresh_interval_minutes = self.auto_refresh_interval_minutes.clamp(15, 1_440);
-        const VALID_CATEGORIES: [&str; 10] = [
+        const VALID_CATEGORIES: [&str; 13] = [
             "plus",
             "free",
             "pro-x20",
             "pro-x5",
+            "pro-500",
+            "pro",
+            "google-ai-plus",
             "google-ai-pro",
             "google-ai-ultra",
             "advanced",
@@ -348,6 +374,9 @@ pub struct RefreshProgress {
 
 #[derive(Debug, Clone)]
 pub struct AppData {
+    // View state is intentionally absent from disk and IPC snapshots.
+    pub open_account_tab: Option<(AccountProvider, String)>,
+    pub account_window_visible: bool,
     // Runtime-only monotonic revision. Persistence deliberately omits it; a
     // restarted frontend cannot race responses from the previous process.
     pub revision: u64,
@@ -363,6 +392,8 @@ impl Default for AppData {
     fn default() -> Self {
         Self {
             revision: 0,
+            open_account_tab: None,
+            account_window_visible: false,
             schema_version: APP_SCHEMA_VERSION,
             accounts: Vec::new(),
             active_account_id: None,
@@ -374,6 +405,55 @@ impl Default for AppData {
 }
 
 impl AppData {
+    pub fn open_tab_for(&self, provider: AccountProvider) -> Option<&str> {
+        self.open_account_tab
+            .as_ref()
+            .filter(|(p, _)| self.account_window_visible && *p == provider)
+            .map(|(_, tab)| tab.as_str())
+    }
+
+    pub fn allows_refresh(&self, account: &Account) -> bool {
+        let tab = self.open_tab_for(account.provider);
+        if self.app_settings.hidden_account_ids.contains(&account.id) {
+            return tab == Some("hidden");
+        }
+        let mut restricted = false;
+        for tag in &self.app_settings.account_tags {
+            if tag.provider == account.provider
+                && tag.refresh_only_in_tab
+                && tag.account_ids.contains(&account.id)
+            {
+                if tab == Some(&tag.id) {
+                    return true;
+                }
+                restricted = true;
+            }
+        }
+        !restricted
+    }
+
+    pub fn in_refresh_group(&self, account: &Account, tab: Option<&str>) -> bool {
+        if tab.is_some() && self.open_tab_for(account.provider) != tab {
+            return false;
+        }
+        match tab {
+            None => true,
+            Some("hidden") => self.app_settings.hidden_account_ids.contains(&account.id),
+            Some(id) => {
+                if self.app_settings.hidden_account_ids.contains(&account.id) {
+                    return false;
+                }
+                let mut memberships = self.app_settings.account_tags.iter().filter(|tag| {
+                    tag.provider == account.provider && tag.account_ids.contains(&account.id)
+                });
+                let Some(group) = memberships.clone().find(|tag| tag.id == id) else {
+                    return false;
+                };
+                !group.show_in_all || memberships.all(|tag| tag.show_in_all)
+            }
+        }
+    }
+
     pub fn normalize_legacy(mut self) -> Self {
         if self.schema_version < APP_SCHEMA_VERSION {
             self.schema_version = APP_SCHEMA_VERSION;

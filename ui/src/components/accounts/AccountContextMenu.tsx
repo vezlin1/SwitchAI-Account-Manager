@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Copy, Eye, EyeOff } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, Tag } from 'lucide-react'
 import { Kbd } from '../common/Kbd'
 import type { Account } from '../../types'
 import { usePrivacy } from '../../context/usePrivacy'
@@ -13,11 +13,12 @@ type AccountContextMenuProps = {
   opener: HTMLElement
   keyboardTriggered: boolean
   onToggleInAll: (accountId: string) => void
+  onEditTags: (account: Account) => void
   onClose: () => void
 }
 
 const MENU_WIDTH = 224
-const MENU_HEIGHT = 120
+const MENU_HEIGHT = 160
 const VIEWPORT_GAP = 8
 
 export function AccountContextMenu({
@@ -28,6 +29,7 @@ export function AccountContextMenu({
   opener,
   keyboardTriggered,
   onToggleInAll,
+  onEditTags,
   onClose
 }: AccountContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -104,6 +106,10 @@ export function AccountContextMenu({
       style={{ left, top }}
       onContextMenu={(event) => event.preventDefault()}
     >
+      <button type="button" role="menuitem" className="account-context-menu-item"
+        onClick={() => { onClose(); onEditTags(account) }}>
+        <span className="flex items-center gap-2"><Tag size={14} /> Edit tags</span>
+      </button>
       {account.email && (
         <button
           type="button"

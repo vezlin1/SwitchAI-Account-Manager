@@ -63,3 +63,17 @@ export function accountAttention(account: Account, notice?: AccountRefreshNotice
 export function quotaUpdateBlocked(attention: AccountAttention | null): boolean {
   return attention?.kind === 'verify' || attention?.kind === 'relogin' || attention?.kind === 'quota'
 }
+
+export function recordedAccountStatus(account: Account): {
+  tone: 'healthy' | 'neutral'
+  label: string
+  message: string
+} {
+  if (account.tokenHealth.status === 'healthy' || account.tokenHealth.status === 'refreshed') {
+    return { tone: 'healthy', label: 'Healthy', message: 'The last recorded connection check succeeded.' }
+  }
+  if (!account.quota) {
+    return { tone: 'neutral', label: 'No quota yet', message: 'This account has no saved quota data.' }
+  }
+  return { tone: 'neutral', label: 'Not checked', message: 'This account has no recorded connection check.' }
+}

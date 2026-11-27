@@ -300,6 +300,7 @@ function App() {
                 )}
                 <div className="min-h-0 flex-1">
                   <AccountsTab
+                    settingsOpen={settingsOpen}
                     data={data}
                     setData={setData}
                     getData={getData}

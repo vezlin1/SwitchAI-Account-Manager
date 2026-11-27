@@ -8,19 +8,23 @@ use crate::quota::{
     read_bounded_body, read_bounded_error_body, refresh_access_token, sanitize_remote_message,
 };
 
-const PLAN_KEYS: &[&str] = &[
+const PLAN_CODES: &[&str] = &[
+    "subscription_plan",
+    "subscriptionPlan",
     "plan_type",
     "planType",
+    "sku",
+];
+
+const PLAN_NAMES: &[&str] = &[
     "plan",
     "plan_name",
     "planName",
-    "subscription_plan",
-    "subscriptionPlan",
+    "plan_display_name",
     "product_name",
     "productName",
     "billing_plan",
     "billingPlan",
-    "sku",
 ];
 
 const EXPIRES_KEYS: &[&str] = &[
@@ -291,7 +295,7 @@ async fn fetch_subscription_endpoint(
         .header("Authorization", format!("Bearer {}", tokens.access_token))
         .header(
             "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.65 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36",
         );
 
     if let Some(account_id) = account_id
@@ -341,7 +345,7 @@ async fn fetch_subscription_endpoint(
             source,
         })
     })?;
-    let info = parse_subscription_payload(&payload);
+    let info = parse_subscription_payload(&payload, account_id);
 
     if info.plan.is_none() && info.expires_at.is_none() {
         return Err(SubscriptionEndpointError::Unsupported(format!(
@@ -370,58 +374,120 @@ fn retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<i64> {
         .map(|date| date.timestamp().saturating_sub(now_ts()).max(0))
 }
 
-fn parse_subscription_payload(payload: &Value) -> SubscriptionInfo {
+fn parse_subscription_payload(payload: &Value, account_id: Option<&str>) -> SubscriptionInfo {
+    let (plan, expires_at) =
+        if let Some(accounts) = payload.get("accounts").and_then(Value::as_object) {
+            let default = accounts.get("default");
+            let entry = match account_id {
+                Some(id) => accounts.get(id).or_else(|| {
+                    default.filter(|entry| {
+                        entry.pointer("/account/account_id").and_then(Value::as_str) == Some(id)
+                    })
+                }),
+                None => default,
+            };
+            let account = entry.and_then(|entry| entry.get("account"));
+            let entitlement = entry
+                .and_then(|entry| entry.get("entitlement"))
+                .filter(|value| {
+                    value
+                        .get("has_active_subscription")
+                        .and_then(Value::as_bool)
+                        != Some(false)
+                });
+            (
+                entitlement
+                    .and_then(direct_plan)
+                    .or_else(|| account.and_then(direct_plan)),
+                entitlement.and_then(direct_expiration),
+            )
+        } else {
+            let subscription = payload.get("subscription");
+            (
+                subscription
+                    .and_then(find_plan)
+                    .or_else(|| find_plan(payload)),
+                subscription
+                    .and_then(find_expiration)
+                    .or_else(|| find_expiration(payload)),
+            )
+        };
     SubscriptionInfo {
-        plan: find_string_by_keys(payload, PLAN_KEYS).map(normalize_plan_label),
-        expires_at: find_timestamp_by_keys(payload, EXPIRES_KEYS),
+        plan,
+        expires_at,
         fetched_at: now_ts(),
         endpoint_hint: None,
     }
 }
 
-fn find_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
-    match value {
-        Value::Object(map) => {
-            for (key, field) in map {
-                if keys
-                    .iter()
-                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
-                    && let Some(text) = field.as_str().map(str::trim)
-                    && !text.is_empty()
-                {
-                    return Some(text.to_string());
-                }
-            }
+fn direct_field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    let map = value.as_object()?;
+    map.get(key).or_else(|| {
+        map.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v)
+    })
+}
 
-            map.values()
-                .find_map(|field| find_string_by_keys(field, keys))
-        }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|item| find_string_by_keys(item, keys)),
+fn direct_plan(value: &Value) -> Option<String> {
+    let text = |key: &&str| {
+        direct_field(value, key)?
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let mut codes = PLAN_CODES.iter().filter_map(text);
+    // Prefer a qualified product SKU when the same record also has a generic Pro code.
+    let tier = codes
+        .clone()
+        .filter(|raw| !raw.eq_ignore_ascii_case("pro"))
+        .find_map(pro_tier);
+    tier.map(str::to_owned)
+        .or_else(|| codes.next().map(plan_code_label))
+        .or_else(|| {
+            PLAN_NAMES
+                .iter()
+                .find_map(text)
+                .map(|s| normalize_plan_label(s.to_owned()))
+        })
+}
+
+fn find_plan(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => direct_plan(value).or_else(|| {
+            map.iter()
+                .filter(|(key, _)| !unrelated_subscription_field(key))
+                .find_map(|(_, value)| find_plan(value))
+        }),
+        Value::Array(items) => items.iter().find_map(find_plan),
         _ => None,
     }
 }
 
-fn find_timestamp_by_keys(value: &Value, keys: &[&str]) -> Option<i64> {
-    match value {
-        Value::Object(map) => {
-            for (key, field) in map {
-                if keys
-                    .iter()
-                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
-                    && let Some(timestamp) = value_to_timestamp(field)
-                {
-                    return Some(timestamp);
-                }
-            }
+fn unrelated_subscription_field(key: &str) -> bool {
+    matches!(
+        key,
+        "scheduled_plan_change"
+            | "eligible_offers"
+            | "last_active_subscription"
+            | "eligible_promo_campaigns"
+    )
+}
 
-            map.values()
-                .find_map(|field| find_timestamp_by_keys(field, keys))
-        }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|item| find_timestamp_by_keys(item, keys)),
+fn direct_expiration(value: &Value) -> Option<i64> {
+    EXPIRES_KEYS
+        .iter()
+        .find_map(|key| direct_field(value, key).and_then(value_to_timestamp))
+}
+
+fn find_expiration(value: &Value) -> Option<i64> {
+    match value {
+        Value::Object(map) => direct_expiration(value).or_else(|| {
+            map.iter()
+                .filter(|(key, _)| !unrelated_subscription_field(key))
+                .find_map(|(_, field)| find_expiration(field))
+        }),
+        Value::Array(items) => items.iter().find_map(find_expiration),
         _ => None,
     }
 }
@@ -469,21 +535,48 @@ fn normalize_timestamp(value: i64) -> Option<i64> {
     })
 }
 
-pub(crate) fn quota_plan_label(raw: &str, current: Option<&str>) -> String {
-    let compact = raw.to_ascii_lowercase().replace(['_', '-', ' '], "");
-    let generic_pro = matches!(compact.as_str(), "pro" | "chatgptproplan");
-    if generic_pro && let Some(current) = current {
-        let normalized = normalize_plan_label(current.to_string());
-        if matches!(normalized.as_str(), "Pro x5" | "Pro x20") {
-            return normalized;
-        }
+fn pro_tier(raw: &str) -> Option<&'static str> {
+    let compact = raw
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '-', ' ', '$'], "");
+    let product = compact
+        .strip_prefix("chatgpt")
+        .or_else(|| compact.strip_prefix("codex"))
+        .unwrap_or(&compact);
+    match product.strip_suffix("plan").unwrap_or(product) {
+        "prolite" | "pro100" | "pro5x" | "prox5" => Some("Pro 100"),
+        "pro" | "pro200" | "pro20x" | "prox20" => Some("Pro 200"),
+        "promax" | "pro500" => Some("Pro 500"),
+        _ => None,
     }
-    normalize_plan_label(raw.to_string())
+}
+
+pub(crate) fn plan_code_label(raw: &str) -> String {
+    pro_tier(raw)
+        .map(str::to_owned)
+        .unwrap_or_else(|| normalize_plan_label(raw.to_owned()))
+}
+
+// Older saves collapsed all Pro tiers into the display name "Pro".
+// Only refine that label if the saved usage response still has a Pro plan code.
+pub(crate) fn saved_plan_label(plan: Option<&str>, usage_code: Option<&str>) -> Option<String> {
+    match plan {
+        Some(raw) if raw.eq_ignore_ascii_case("pro") => {
+            Some(usage_code.and_then(pro_tier).unwrap_or("Pro").into())
+        }
+        Some(raw) => Some(pro_tier(raw).unwrap_or(raw).to_owned()),
+        None => usage_code.map(plan_code_label),
+    }
 }
 
 fn normalize_plan_label(raw: String) -> String {
     let lower = raw.to_ascii_lowercase();
-    let compact = lower.replace(['_', '-', ' '], "");
+    if !raw.trim().eq_ignore_ascii_case("pro")
+        && let Some(tier) = pro_tier(&raw)
+    {
+        return tier.to_owned();
+    }
 
     if lower.contains("enterprise") {
         return "Enterprise".to_string();
@@ -493,15 +586,6 @@ fn normalize_plan_label(raw: String) -> String {
     }
     if lower.contains("team") {
         return "Team".to_string();
-    }
-    if lower.contains("pro") {
-        if compact.contains("x5") || compact.contains("5x") {
-            return "Pro x5".to_string();
-        }
-        if compact.contains("x20") || compact.contains("20x") {
-            return "Pro x20".to_string();
-        }
-        return "Pro".to_string();
     }
     if lower.contains("plus") {
         return "Plus".to_string();
@@ -607,22 +691,91 @@ mod tests {
             if first_status == 429 {
                 assert_eq!(result.unwrap_err().retry_after_seconds(), Some(300));
             } else {
-                assert_eq!(result.unwrap().plan.as_deref(), Some("Pro"));
+                assert_eq!(result.unwrap().plan.as_deref(), Some("Pro 200"));
             }
         }
     }
 
     #[test]
-    fn quota_plan_labels_match_subscription_labels_without_losing_known_tiers() {
-        assert_eq!(super::quota_plan_label("pro", None), "Pro");
-        assert_eq!(super::quota_plan_label("pro", Some("Pro x20")), "Pro x20");
-        assert_eq!(super::quota_plan_label("pro", Some("Pro x5")), "Pro x5");
+    fn old_pro_labels_only_gain_a_tier_from_identifiable_saved_data() {
+        for (plan, usage, expected) in [
+            (Some("Pro"), Some("promax"), Some("Pro 500")),
+            (Some("Pro"), Some("pro"), Some("Pro 200")),
+            (Some("Pro"), None, Some("Pro")),
+            (Some("Pro"), Some("free"), Some("Pro")),
+            (Some("Pro x5"), Some("pro"), Some("Pro 100")),
+            (None, Some("prolite"), Some("Pro 100")),
+            (Some("Free"), Some("pro"), Some("Free")),
+            (None, None, None),
+        ] {
+            assert_eq!(super::saved_plan_label(plan, usage).as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn reads_the_active_entitlement_of_the_requested_workspace() {
+        let payload = json!({"accounts": {
+            "default": {"account": {"account_id": "another", "plan_type": "prolite"}},
+            "selected": {
+                "account": {"plan_type": "pro", "plan_display_name": "Pro"},
+                "entitlement": {"has_active_subscription": true, "subscription_plan": "chatgptpromax",
+                    "expires_at": 1900000000, "scheduled_plan_change": {"plan_type": "prolite", "expires_at": 1800000000}}
+            }
+        }});
+        let info = parse_subscription_payload(&payload, Some("selected"));
+        assert_eq!(info.plan.as_deref(), Some("Pro 500"));
+        assert_eq!(info.expires_at, Some(1900000000));
         assert_eq!(
-            super::quota_plan_label("pro_20x", Some("Pro x5")),
-            "Pro x20"
+            parse_subscription_payload(&payload, Some("missing")).plan,
+            None
         );
-        assert_eq!(super::quota_plan_label("plus", Some("Pro x20")), "Plus");
-        assert_eq!(super::quota_plan_label("free", Some("Plus")), "Free");
+        assert_eq!(
+            parse_subscription_payload(&payload, Some("another"))
+                .plan
+                .as_deref(),
+            Some("Pro 100")
+        );
+        let inactive = json!({"accounts": {"selected": {
+            "account": {"plan_type": "free"},
+            "entitlement": {"has_active_subscription": false, "subscription_plan": "chatgptpro", "expires_at": 1900000000}
+        }}});
+        let info = parse_subscription_payload(&inactive, Some("selected"));
+        assert_eq!(info.plan.as_deref(), Some("Free"));
+        assert_eq!(info.expires_at, None);
+    }
+
+    #[test]
+    fn recognizes_pro_codes_and_active_skus_without_inferring_from_prices_or_offers() {
+        for (code, label) in [
+            ("prolite", "Pro 100"),
+            ("pro", "Pro 200"),
+            ("promax", "Pro 500"),
+            ("chatgptprolite", "Pro 100"),
+            ("chatgptpro", "Pro 200"),
+            ("chatgptpromax", "Pro 500"),
+            ("pro_100", "Pro 100"),
+            ("Pro 200", "Pro 200"),
+            ("Pro 500", "Pro 500"),
+            ("self_serve_business_prolite", "Business"),
+        ] {
+            assert_eq!(super::plan_code_label(code), label);
+            assert_eq!(
+                parse_subscription_payload(&json!({"plan_type": code}), None)
+                    .plan
+                    .as_deref(),
+                Some(label)
+            );
+        }
+        let info = parse_subscription_payload(
+            &json!({"subscription": {"plan_type": "pro", "sku": "chatgptpromax"}}),
+            None,
+        );
+        assert_eq!(info.plan.as_deref(), Some("Pro 500"));
+        let info = parse_subscription_payload(
+            &json!({"plan_name": "Pro", "amount": 500, "eligible_offers": [{"sku": "chatgptpromax"}]}),
+            None,
+        );
+        assert_eq!(info.plan.as_deref(), Some("Pro"));
     }
 
     use crate::errors::AppError;
@@ -644,7 +797,7 @@ mod tests {
             }
         });
 
-        let info = parse_subscription_payload(&payload);
+        let info = parse_subscription_payload(&payload, None);
 
         assert_eq!(info.plan.as_deref(), Some("Plus"));
         assert_eq!(info.expires_at, Some(1_782_863_999));
@@ -660,11 +813,14 @@ mod tests {
     }
 
     #[test]
-    fn keeps_pro_multipliers_for_ui_filtering() {
-        assert_eq!(normalize_plan_label("chatgpt_pro_5x_plan".into()), "Pro x5");
+    fn translates_legacy_pro_product_names() {
+        assert_eq!(
+            normalize_plan_label("chatgpt_pro_5x_plan".into()),
+            "Pro 100"
+        );
         assert_eq!(
             normalize_plan_label("chatgpt_pro_x20_plan".into()),
-            "Pro x20"
+            "Pro 200"
         );
         assert_eq!(normalize_plan_label("pro".into()), "Pro");
     }
@@ -672,14 +828,17 @@ mod tests {
     #[test]
     fn subscription_schedule_uses_expiry_and_long_lived_caches() {
         let now = 1_000_000;
-        let mut future = parse_subscription_payload(&json!({
-            "plan": "Plus",
-            "expires_at": now + 5_000
-        }));
+        let mut future = parse_subscription_payload(
+            &json!({
+                "plan": "Plus",
+                "expires_at": now + 5_000
+            }),
+            None,
+        );
         future.fetched_at = now;
         assert_eq!(next_subscription_check(now, None, &Ok(future)), now + 5_000);
 
-        let plan_only = parse_subscription_payload(&json!({ "plan": "Free" }));
+        let plan_only = parse_subscription_payload(&json!({ "plan": "Free" }), None);
         assert_eq!(
             next_subscription_check(now, None, &Ok(plan_only)),
             now + SUBSCRIPTION_PLAN_ONLY_RECHECK_SECONDS
@@ -719,7 +878,7 @@ mod tests {
     #[test]
     fn expired_known_subscription_keeps_daily_recheck_when_payload_has_no_date() {
         let now = 1_000_000;
-        let plan_only = parse_subscription_payload(&json!({ "plan": "Plus" }));
+        let plan_only = parse_subscription_payload(&json!({ "plan": "Plus" }), None);
 
         assert_eq!(
             next_subscription_check(now, Some(now - 1), &Ok(plan_only)),

@@ -40,7 +40,7 @@ export function SubscriptionDateControl({
         </span>
       ) : hideNoPlanBadge ? null : (
         <span className="plan-badge plan-badge-default" title="No plan reported">
-          No plan
+          {provider === 'gemini' ? 'Plan not reported' : 'No plan'}
         </span>
       )}
       {showDate && (

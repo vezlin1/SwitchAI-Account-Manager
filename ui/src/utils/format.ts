@@ -1,13 +1,6 @@
-export function clampPercent(value: number | null | undefined): number {
-  if (value == null || Number.isNaN(value)) return 0
-  if (value < 0) return 0
-  if (value > 100) return 100
-  return value
-}
-
 export function remainingPercent(value: number | null | undefined): number | null {
-  if (value == null || Number.isNaN(value)) return null
-  return clampPercent(100 - clampPercent(value))
+  if (value == null || !Number.isFinite(value) || value < 0 || value > 100) return null
+  return 100 - value
 }
 
 export function formatTimeUntil(unixTsSeconds: number, now = Date.now()): string {

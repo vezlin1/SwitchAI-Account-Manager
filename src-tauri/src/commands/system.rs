@@ -98,6 +98,7 @@ pub async fn get_startup_status(
 fn install_recovered_state(state: &Arc<SharedState>, mut recovered: AppData) -> AppResult<()> {
     let mut current = lock_data(state)?;
     recovered.revision = current.revision.saturating_add(1);
+    recovered.account_window_visible = current.account_window_visible;
     *current = recovered;
     drop(current);
     *lock_startup_error(state)? = None;
@@ -182,6 +183,26 @@ pub fn get_auto_refresh_status(
 }
 
 #[tauri::command]
+pub fn set_open_account_tab(
+    provider: crate::models::AccountProvider,
+    tab: Option<String>,
+    state: State<'_, Arc<SharedState>>,
+) -> Result<(), IpcErrorDto> {
+    command_result((|| {
+        let mut data = lock_data(state.inner())?;
+        let tab = tab
+            .filter(|t| t == "hidden" || t.starts_with("tag:"))
+            .map(|t| (provider, t));
+        if data.open_account_tab != tab {
+            data.open_account_tab = tab;
+            drop(data);
+            auto_refresh::notify_schedule_changed(state.inner());
+        }
+        Ok(())
+    })())
+}
+
+#[tauri::command]
 pub fn set_app_settings(
     settings: AppSettingsDto,
     state: State<'_, Arc<SharedState>>,
@@ -196,6 +217,13 @@ pub fn set_app_settings(
                     .iter()
                     .any(|account| &account.id == account_id)
             });
+            for tag in &mut settings.account_tags {
+                tag.account_ids.retain(|id| {
+                    data.accounts
+                        .iter()
+                        .any(|a| &a.id == id && a.provider == tag.provider)
+                });
+            }
             let mut next = data.clone();
             next.app_settings = settings;
             (data, next)

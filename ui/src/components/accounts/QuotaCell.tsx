@@ -1,7 +1,8 @@
-import { memo, useCallback } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { QuotaWindow } from '../../types'
 import { formatTimeUntil, remainingPercent } from '../../utils/format'
-import { quotaResetTime, quotaWindowIsStale } from '../../utils/quotaWindows'
+import { formatEventTime } from '../../utils/eventTime'
+import { quotaResetTime } from '../../utils/quotaWindows'
 import { useTimeValue } from '../../hooks/useSharedTicker'
 
 function quotaClass(remaining: number): string {
@@ -22,26 +23,26 @@ export const QuotaCell = memo(function QuotaCell({
   window, fetchedAt, title, updateBlocked = false, isRefreshing = false
 }: QuotaCellProps) {
   const resetAt = quotaResetTime(window, fetchedAt)
-  const remaining = remainingPercent(window?.usedPercent)
-  const hasQuota = remaining != null
+  const remaining = updateBlocked ? null : remainingPercent(window?.usedPercent)
+  const checkedAt = window?.fetchedAt ?? fetchedAt
+  const checkedTime = useMemo(() => formatEventTime(checkedAt)?.exact, [checkedAt])
+  const checkedTitle = remaining != null && checkedTime ? `Last checked: ${checkedTime}` : undefined
   const resetText = useTimeValue(useCallback(() => {
-    if (!hasQuota || updateBlocked) return ''
+    if (resetAt == null) return 'Reset time unavailable'
     const now = Date.now()
-    if (quotaWindowIsStale(window, fetchedAt, now / 1000)) return ''
-    return resetAt ? `Reset ${formatTimeUntil(resetAt, now)}` : 'Reset time unavailable'
-  }, [window, fetchedAt, hasQuota, updateBlocked, resetAt]), hasQuota && !updateBlocked)
-  const available = remaining != null && resetText !== ''
-  const roundedPercent = Math.round(remaining ?? 0)
+    return resetAt > now / 1000 ? `Reset ${formatTimeUntil(resetAt, now)}` : ''
+  }, [resetAt]), remaining != null && resetAt != null)
+  const roundedPercent = remaining == null ? undefined : Math.round(remaining)
 
   return (
     <div className="min-w-[160px]">
       <div className="flex items-center justify-between text-xs text-ag-muted mb-1">
         <span>{title}</span>
-        <span className={`font-semibold tabular-nums ${available ? 'text-ag-text' : 'text-ag-muted'}`}>
-          {available ? `${roundedPercent}% left` : 'Not available'}
+        <span title={checkedTitle} className={`font-semibold tabular-nums ${remaining != null ? 'text-ag-text' : 'text-ag-muted'}`}>
+          {remaining != null ? `${roundedPercent}% left` : 'Not available'}
         </span>
       </div>
-      {available && (
+      {remaining != null && (
         <>
           <div
             className={`quota-track${isRefreshing ? ' quota-track-refreshing' : ''}`}
@@ -50,14 +51,14 @@ export const QuotaCell = memo(function QuotaCell({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={roundedPercent}
-            aria-valuetext={`${roundedPercent}% remaining`}
+            aria-valuetext={checkedTitle ? `${roundedPercent}% remaining. ${checkedTitle}` : `${roundedPercent}% remaining`}
           >
             <div
               className={`quota-fill ${quotaClass(remaining)}`}
               style={{ transform: `scaleX(${remaining / 100})` }}
             />
           </div>
-          <div className="text-xs text-ag-muted mt-1">{resetText}</div>
+          {resetText && <div className="text-xs text-ag-muted mt-1">{resetText}</div>}
         </>
       )}
     </div>

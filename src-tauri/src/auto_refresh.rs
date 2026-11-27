@@ -236,7 +236,8 @@ pub fn snapshot(state: &Arc<SharedState>) -> AppResult<AutoRefreshStatus> {
             .accounts
             .iter()
             .filter(|account| {
-                account.token_health.status != TokenHealthStatus::NeedsRelogin
+                data.allows_refresh(account)
+                    && account.token_health.status != TokenHealthStatus::NeedsRelogin
                     && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
             })
             .count() as u32;
@@ -244,7 +245,8 @@ pub fn snapshot(state: &Arc<SharedState>) -> AppResult<AutoRefreshStatus> {
             .accounts
             .iter()
             .filter(|account| {
-                account.token_health.status != TokenHealthStatus::NeedsRelogin
+                data.allows_refresh(account)
+                    && account.token_health.status != TokenHealthStatus::NeedsRelogin
                     && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
                     && account.quota_refresh_failures > 0
             })
@@ -335,7 +337,7 @@ pub fn restart(state: &Arc<SharedState>) -> AppResult<AutoRefreshStatus> {
 pub fn request_refresh_now(state: &Arc<SharedState>) {
     let shared = Arc::clone(state);
     tauri::async_runtime::spawn(async move {
-        let _ = refresh_accounts_for_provider_with_notification(&shared, None, true).await;
+        let _ = refresh_accounts_for_provider_with_notification(&shared, None, None, true).await;
     });
 }
 
@@ -374,7 +376,8 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
                     .find(|account| account.id == account_id)
                     .ok_or_else(|| AppError::msg("Account not found"))?;
                 let is_active = is_account_active_in_data(account, &data);
-                let should = account.token_health.status != TokenHealthStatus::NeedsRelogin
+                let should = data.allows_refresh(account)
+                    && account.token_health.status != TokenHealthStatus::NeedsRelogin
                     && effective_next_attempt_at(account, &settings, is_active, now_ts())
                         <= now_ts();
                 (
@@ -407,6 +410,16 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
                 }
             }
 
+            {
+                let data = lock_data(&shared)?;
+                if !data
+                    .accounts
+                    .iter()
+                    .any(|a| a.id == account_id && data.allows_refresh(a))
+                {
+                    return Ok(());
+                }
+            }
             let outcome = refresh_single_account(&shared, &account_id).await?;
             update_account_schedule_with_retry(
                 &shared,
@@ -440,13 +453,15 @@ pub fn request_account_refresh_if_stale(state: &Arc<SharedState>, account_id: St
 pub async fn refresh_accounts_for_provider(
     state: &Arc<SharedState>,
     provider: Option<AccountProvider>,
+    requested_tab: Option<String>,
 ) -> AppResult<RefreshAllResult> {
-    refresh_accounts_for_provider_with_notification(state, provider, false).await
+    refresh_accounts_for_provider_with_notification(state, provider, requested_tab, false).await
 }
 
 async fn refresh_accounts_for_provider_with_notification(
     state: &Arc<SharedState>,
     provider: Option<AccountProvider>,
+    requested_tab: Option<String>,
     notify_ui: bool,
 ) -> AppResult<RefreshAllResult> {
     // A queued manual request must perform its own work for its requested provider.
@@ -461,7 +476,7 @@ async fn refresh_accounts_for_provider_with_notification(
     } else {
         None
     };
-    run_refresh_accounts_for_provider(state, provider, true, notify_ui).await
+    run_refresh_accounts_for_provider(state, provider, true, requested_tab, notify_ui).await
 }
 
 async fn refresh_all_accounts_if_idle(state: &Arc<SharedState>) -> AppResult<()> {
@@ -476,7 +491,7 @@ async fn refresh_all_accounts_if_idle(state: &Arc<SharedState>) -> AppResult<()>
         let Ok(_guard) = gate.try_lock() else {
             return Ok(());
         };
-        run_refresh_accounts_for_provider(state, Some(provider), false, true).await?;
+        run_refresh_accounts_for_provider(state, Some(provider), false, None, true).await?;
         Ok(())
     }
     let codex_state = Arc::clone(state);
@@ -494,19 +509,22 @@ async fn run_refresh_accounts_for_provider(
     state: &Arc<SharedState>,
     provider: Option<AccountProvider>,
     force: bool,
+    requested_tab: Option<String>,
     notify_ui: bool,
 ) -> AppResult<RefreshAllResult> {
     let shared = Arc::clone(state);
+    let tab = requested_tab.clone();
     let (mut work_items, mut reconcile_warnings) =
-        run_blocking(move || refresh_work_items(&shared, force, provider)).await?;
+        run_blocking(move || refresh_work_items(&shared, force, provider, tab.as_deref())).await?;
     let (skip_unsupported, should_probe_codex) = {
         let data = lock_data(state)?;
         let skip = data.app_settings.skip_unsupported_region_refresh;
         let is_codex_target = provider.is_none_or(|p| p == AccountProvider::Codex);
-        let has_any_codex = data
-            .accounts
-            .iter()
-            .any(|acc| acc.provider == AccountProvider::Codex);
+        let has_any_codex = data.accounts.iter().any(|acc| {
+            acc.provider == AccountProvider::Codex
+                && data.allows_refresh(acc)
+                && data.in_refresh_group(acc, requested_tab.as_deref())
+        });
         let has_codex_in_work = work_items
             .iter()
             .any(|item| item.provider == AccountProvider::Codex);
@@ -537,7 +555,10 @@ async fn run_refresh_accounts_for_provider(
 
                 let mut codex_ids = std::collections::HashSet::new();
                 for acc in &mut next.accounts {
-                    if acc.provider == AccountProvider::Codex {
+                    if acc.provider == AccountProvider::Codex
+                        && data.allows_refresh(acc)
+                        && data.in_refresh_group(acc, requested_tab.as_deref())
+                    {
                         codex_ids.insert(acc.id.clone());
                         let is_active = is_account_active(
                             acc,
@@ -565,7 +586,8 @@ async fn run_refresh_accounts_for_provider(
                 false
             };
             if was_geo_blocked
-                && let Ok((reloaded_items, _)) = refresh_work_items(state, false, provider)
+                && let Ok((reloaded_items, _)) =
+                    refresh_work_items(state, force, provider, requested_tab.as_deref())
             {
                 work_items = reloaded_items;
             }
@@ -631,7 +653,7 @@ async fn run_refresh_accounts_for_provider(
         }
     }
     mark_refresh_started(state);
-    let mut outcome = refresh_all_accounts_inner(state, work_items).await;
+    let mut outcome = refresh_all_accounts_inner(state, work_items, requested_tab).await;
     outcome.warnings.extend(reconcile_warnings);
     let warnings = outcome.warnings.clone();
     let failed_account_ids = outcome.failed_account_ids.clone();
@@ -660,6 +682,7 @@ async fn run_refresh_accounts_for_provider(
 async fn refresh_all_accounts_inner(
     state: &Arc<SharedState>,
     work_items: Vec<RefreshWorkItem>,
+    requested_tab: Option<String>,
 ) -> RefreshRunOutcome {
     use tokio::sync::Semaphore;
 
@@ -677,17 +700,19 @@ async fn refresh_all_accounts_inner(
         let gate = Arc::clone(&work_item.gate);
         let permit_sem = Arc::clone(&semaphore);
         let updated = updated.clone();
+        let requested_tab = requested_tab.clone();
 
         handles.push(tauri::async_runtime::spawn(async move {
             let _permit = permit_sem.acquire().await;
             let result = async {
                 let _guard = gate.lock().await;
-                if quota_was_refreshed_since(&shared, &account_id, requested_at)? {
-                    return Ok(crate::refresh_service::AccountRefreshOutcome {
-                        succeeded: true,
-                        retry_after_seconds: None,
-                        warnings: Vec::new(),
-                    });
+                if skip_queued_refresh(
+                    &shared,
+                    &account_id,
+                    requested_at,
+                    requested_tab.as_deref(),
+                )? {
+                    return Ok(None);
                 }
                 let result = refresh_single_account(&shared, &account_id).await;
                 // Persist failures before releasing the same gate used by individual refreshes.
@@ -709,7 +734,7 @@ async fn refresh_all_accounts_inner(
                     );
                 }
                 let _ = updated.send(account_id.clone());
-                result
+                result.map(Some)
             }
             .await;
             if let Ok(mut runtime) = lock_auto_refresh(&shared)
@@ -720,7 +745,10 @@ async fn refresh_all_accounts_inner(
                     .find(|p| p.provider == provider_key(provider))
             {
                 progress.completed += 1;
-                if !result.as_ref().is_ok_and(|outcome| outcome.succeeded) {
+                if !result
+                    .as_ref()
+                    .is_ok_and(|outcome| outcome.as_ref().is_none_or(|run| run.succeeded))
+                {
                     progress.failed += 1;
                 }
             }
@@ -734,7 +762,8 @@ async fn refresh_all_accounts_inner(
 
     for handle in handles {
         match handle.await {
-            Ok((account_id, Ok(refresh))) => {
+            Ok((_, Ok(None))) => continue,
+            Ok((account_id, Ok(Some(refresh)))) => {
                 outcome
                     .warnings
                     .extend(refresh.warnings.into_iter().map(|message| RefreshWarning {
@@ -821,6 +850,7 @@ fn refresh_work_items(
     state: &Arc<SharedState>,
     force: bool,
     provider: Option<AccountProvider>,
+    requested_tab: Option<&str>,
 ) -> AppResult<(Vec<RefreshWorkItem>, Vec<String>)> {
     let mut data = lock_data(state)?;
     let mut warnings = if provider != Some(AccountProvider::Gemini) {
@@ -863,12 +893,17 @@ fn refresh_work_items(
         .accounts
         .iter()
         .filter(|account| {
-            if account.token_health.status == TokenHealthStatus::NeedsRelogin {
+            if !data.allows_refresh(account)
+                || account.token_health.status == TokenHealthStatus::NeedsRelogin
+            {
                 return false;
             }
             if let Some(target_provider) = provider
                 && account.provider != target_provider
             {
+                return false;
+            }
+            if !data.in_refresh_group(account, requested_tab) {
                 return false;
             }
             if !force && account.provider == AccountProvider::Codex && chatgpt_geo_blocked {
@@ -895,18 +930,25 @@ fn refresh_work_items(
     Ok((work_items, warnings))
 }
 
-fn quota_was_refreshed_since(
+fn skip_queued_refresh(
     state: &Arc<SharedState>,
     account_id: &str,
     requested_at: i64,
+    requested_tab: Option<&str>,
 ) -> AppResult<bool> {
     let data = lock_data(state)?;
     Ok(data
         .accounts
         .iter()
         .find(|account| account.id == account_id)
-        .and_then(|account| account.quota.as_ref())
-        .is_some_and(|quota| quota.fetched_at >= requested_at))
+        .is_none_or(|account| {
+            !data.allows_refresh(account)
+                || !data.in_refresh_group(account, requested_tab)
+                || account
+                    .quota
+                    .as_ref()
+                    .is_some_and(|quota| quota.fetched_at >= requested_at)
+        }))
 }
 
 async fn refresh_single_account(
@@ -1054,7 +1096,8 @@ pub(crate) fn sync_schedule_runtime_status(state: &Arc<SharedState>) -> AppResul
             .accounts
             .iter()
             .filter(|account| {
-                account.token_health.status != TokenHealthStatus::NeedsRelogin
+                data.allows_refresh(account)
+                    && account.token_health.status != TokenHealthStatus::NeedsRelogin
                     && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
                     && account.quota_refresh_failures > 0
             })
@@ -1127,7 +1170,8 @@ fn update_account_schedule_inner(
             .accounts
             .iter()
             .filter(|account| {
-                account.token_health.status != TokenHealthStatus::NeedsRelogin
+                next.allows_refresh(account)
+                    && account.token_health.status != TokenHealthStatus::NeedsRelogin
                     && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
                     && account.quota_refresh_failures > 0
             })
@@ -1167,7 +1211,8 @@ fn next_scheduled_run_for_data(
     data.accounts
         .iter()
         .filter(|account| {
-            account.token_health.status != TokenHealthStatus::NeedsRelogin
+            data.allows_refresh(account)
+                && account.token_health.status != TokenHealthStatus::NeedsRelogin
                 && !(account.provider == AccountProvider::Codex && chatgpt_geo_blocked)
         })
         .map(|account| {
@@ -1359,6 +1404,7 @@ mod tests {
                     fetched_at: Some(fetched_at),
                 },
                 secondary: QuotaWindow::default(),
+                claude_and_gpt: None,
                 fetched_at,
             }),
             quota_next_refresh_at: None,
@@ -1368,6 +1414,113 @@ mod tests {
             last_error: None,
             subscription_error: None,
         }
+    }
+
+    #[test]
+    fn hidden_and_tag_refresh_require_a_visible_tab_of_the_same_provider() {
+        use crate::models::{AccountProvider, AccountTag};
+
+        let account = account(20.0, 1000, None);
+        let mut data = AppData {
+            accounts: vec![account.clone()],
+            account_window_visible: true,
+            ..AppData::default()
+        };
+        data.app_settings.auto_refresh_enabled = true;
+        for (name, restricted) in [("normal", false), ("first", true), ("second", true)] {
+            data.app_settings.account_tags.push(AccountTag {
+                id: format!("tag:{name}"),
+                name: name.into(),
+                provider: account.provider,
+                account_ids: vec![account.id.clone()],
+                show_in_all: true,
+                refresh_only_in_tab: restricted,
+            });
+        }
+        for (provider, tab, expected) in [
+            (AccountProvider::Codex, "tag:normal", false),
+            (AccountProvider::Codex, "tag:first", true),
+            (AccountProvider::Codex, "tag:second", true),
+            (AccountProvider::Gemini, "tag:first", false),
+            (AccountProvider::Codex, "hidden", false),
+        ] {
+            data.open_account_tab = Some((provider, tab.into()));
+            assert_eq!(data.allows_refresh(&account), expected);
+            assert_eq!(
+                super::next_scheduled_run_for_data(&data, &data.app_settings, false).is_some(),
+                expected
+            );
+        }
+        data.app_settings
+            .hidden_account_ids
+            .push(account.id.clone());
+        assert!(data.allows_refresh(&account));
+        data.account_window_visible = false;
+        assert!(!data.allows_refresh(&account));
+        data.account_window_visible = true;
+        data.open_account_tab = Some((account.provider, "tag:first".into()));
+        assert!(!data.allows_refresh(&account));
+        data.open_account_tab = None;
+        assert!(!data.allows_refresh(&account));
+    }
+
+    #[test]
+    fn queued_group_refresh_checks_the_current_tab_and_membership_before_fetching() {
+        use crate::models::AccountTag;
+
+        let account = account(20.0, 1000, None);
+        let tab = "tag:work";
+        let mut data = AppData {
+            accounts: vec![account.clone()],
+            account_window_visible: true,
+            open_account_tab: Some((account.provider, tab.into())),
+            ..AppData::default()
+        };
+        data.app_settings.account_tags.push(AccountTag {
+            id: tab.into(),
+            name: "Work".into(),
+            provider: account.provider,
+            account_ids: vec![account.id.clone()],
+            show_in_all: false,
+            refresh_only_in_tab: false,
+        });
+        let state = Arc::new(SharedState::new_with_startup_error(data, None).unwrap());
+        let skipped = |scope| super::skip_queued_refresh(&state, &account.id, 1001, scope).unwrap();
+        assert!(!skipped(Some(tab)));
+        assert!(skipped(Some("hidden")));
+        {
+            let mut data = super::lock_data(&state).unwrap();
+            data.app_settings.account_tags.push(AccountTag {
+                id: "tag:public".into(),
+                name: "Shared".into(),
+                provider: account.provider,
+                account_ids: vec![account.id.clone()],
+                show_in_all: true,
+                refresh_only_in_tab: false,
+            });
+            data.open_account_tab = Some((account.provider, "tag:public".into()));
+        }
+        assert!(skipped(Some("tag:public")));
+        assert!(!skipped(None));
+        super::lock_data(&state).unwrap().open_account_tab = None;
+        assert!(skipped(Some(tab)));
+        assert!(!skipped(None));
+        {
+            let mut data = super::lock_data(&state).unwrap();
+            data.open_account_tab = Some((account.provider, tab.into()));
+            data.app_settings.account_tags[0].account_ids.clear();
+        }
+        assert!(skipped(Some(tab)));
+        assert!(!skipped(None));
+        super::lock_data(&state)
+            .unwrap()
+            .app_settings
+            .hidden_account_ids
+            .push(account.id.clone());
+        assert!(skipped(None));
+        super::lock_data(&state).unwrap().open_account_tab =
+            Some((account.provider, "hidden".into()));
+        assert!(!skipped(Some("hidden")));
     }
 
     #[test]
@@ -1559,7 +1712,7 @@ mod tests {
         let state =
             Arc::new(SharedState::new_with_startup_error(data, None).expect("create shared state"));
 
-        let (items, _) = refresh_work_items(&state, true, None).expect("refresh work items");
+        let (items, _) = refresh_work_items(&state, true, None, None).expect("refresh work items");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].account_id, "healthy-1");
     }

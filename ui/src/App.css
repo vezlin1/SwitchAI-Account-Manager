@@ -1420,6 +1420,109 @@ a {
   gap: 10px;
 }
 
+.account-tag-label {
+  display: block;
+  color: rgb(var(--ag-muted));
+  font-size: 11px;
+  font-weight: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-filter-button > span:first-child {
+  max-width: min(34vw, 22ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-form { display: flex; flex-direction: column; min-height: 0; }
+.tag-editor-body, .tag-edit-fields { gap: 16px; }
+.tag-edit-fields, .tag-field { display: grid; min-width: 0; }
+.tag-field { gap: 6px; }
+.tag-account-email { overflow-wrap: anywhere; font-size: 14px; }
+.tag-field-label, .tag-group-title { font-size: 13px; font-weight: 600; }
+.tag-field-heading, .tag-picker summary, .tag-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tag-picker, .tag-name, .tag-options {
+  border: 1px solid rgb(var(--ag-border));
+  border-radius: 9px;
+  background: rgb(var(--ag-surface));
+}
+.tag-name { min-width: 0; padding: 10px 12px; color: rgb(var(--ag-text)); font-size: 14px; }
+.tag-picker summary, .tag-choice, .tag-create, .tag-option {
+  min-height: 44px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tag-picker summary { list-style: none; border-radius: 8px; user-select: none; }
+.tag-picker summary::-webkit-details-marker { display: none; }
+.tag-picker summary svg { flex-shrink: 0; color: rgb(var(--ag-muted)); }
+.tag-picker[open] summary svg { transform: rotate(180deg); }
+.tag-picker-value { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; color: rgb(var(--ag-muted)); }
+.tag-selected {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgb(var(--ag-primary) / 0.16);
+  color: #a1c6ff;
+  font-size: 12px;
+  font-weight: 550;
+}
+.tag-picker-list { max-height: 228px; overflow-y: auto; border-top: 1px solid rgb(var(--ag-border)); padding: 4px; }
+.tag-choice, .tag-create, .tag-delete { display: flex; align-items: center; gap: 9px; }
+.tag-choice, .tag-create { width: 100%; border-radius: 6px; text-align: start; }
+.tag-create { color: #88b5ff; font-weight: 600; }
+.tag-choice span, .tag-option span, .tag-group-title { overflow-wrap: anywhere; min-width: 0; }
+.tag-preferences { min-width: 0; margin: 0; padding: 0; border: 0; }
+.tag-group-title { padding: 10px 0 5px; }
+.tag-group-title small { color: rgb(var(--ag-muted)); font-weight: 400; }
+.tag-option + .tag-option { border-top: 1px solid rgb(var(--ag-border)); }
+.tag-option { border-radius: inherit; }
+.tag-option:first-child { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.tag-option:last-child { border-top-left-radius: 0; border-top-right-radius: 0; }
+.tag-choice:hover, .tag-create:hover, .tag-picker summary:hover, .tag-option:hover {
+  background: rgb(255 255 255 / 0.045);
+}
+.tag-check {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1.5px solid #667285;
+  border-radius: 5px;
+  background: rgb(var(--ag-card));
+  color: white;
+  cursor: pointer;
+}
+.tag-check:checked { background: #3675d9; border-color: #679df7; }
+.tag-check:checked::before {
+  content: '';
+  width: 0.35rem;
+  height: 0.6rem;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.tag-check:focus-visible { outline: 2px solid #88b5ff; outline-offset: 3px; }
+@media (forced-colors: active) {
+  .tag-check { appearance: auto; }
+  .tag-check:checked::before { content: none; }
+}
+.tag-discard { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; color: rgb(var(--ag-muted)); cursor: pointer; }
+.tag-discard:hover { background: rgb(255 255 255 / 0.06); color: rgb(var(--ag-text)); }
+.settings-cancel.tag-delete { margin-right: auto; color: #fca5a5; }
+
 .confirm-dialog-body,
 .recovery-dialog-body {
   flex: 1;

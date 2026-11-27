@@ -1,10 +1,8 @@
-import { memo, useCallback, useId, useState } from 'react'
+import { memo, useId, useState } from 'react'
 import { Check, CircleAlert, CircleCheck, Copy, Loader2 } from 'lucide-react'
 import type { Account } from '../../types'
-import type { AccountAttention } from '../../utils/accountFeedback'
+import { recordedAccountStatus, type AccountAttention } from '../../utils/accountFeedback'
 import { readableStatusError } from '../../utils/dateUtils'
-import { quotaIsStale } from '../../utils/quotaWindows'
-import { useTimeValue } from '../../hooks/useSharedTicker'
 import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountStatusProps = {
@@ -29,29 +27,23 @@ export const AccountStatus = memo(function AccountStatus({
   const [copied, setCopied] = useState(false)
   const statusId = useId()
   const { privacyMode } = usePrivacy()
-  const isStale = useTimeValue(
-    useCallback(() => quotaIsStale(account.quota), [account.quota]),
-    Boolean(account.quota) && !attention
-  )
 
-  if (attention || isStale || (!account.quota && !isRefreshing)) {
-    const kind = attention?.kind
-    const rawMessage = attention?.message
+  if (attention) {
+    const { kind, message: rawMessage } = attention
     const label = kind === 'verify' ? 'Verify in Antigravity'
       : kind === 'relogin' ? 'Sign-in required'
       : kind === 'subscription' ? 'Plan refresh failed'
       : kind === 'quota' ? 'Quota refresh failed'
-      : kind === 'notice' ? 'Refresh warning'
-      : isStale ? 'Saved quota' : 'No quota yet'
+      : 'Refresh warning'
     const action = kind === 'relogin' ? 'Re-login'
       : kind === 'subscription' ? 'Retry plan'
-      : attention ? 'Retry quota' : 'Refresh quota'
+      : 'Retry quota'
     const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
     return (
-      <div className={`account-status-feedback${attention ? ' account-status-warning' : ' text-ag-muted'}`}>
+      <div className="account-status-feedback account-status-warning">
         <div className="account-status-line" title={readableStatusError(rawMessage) ?? label}>
-          {attention && <CircleAlert size={13} className="account-status-icon" aria-hidden="true" />}
+          <CircleAlert size={13} className="account-status-icon" aria-hidden="true" />
           <span id={statusId}>{label}</span>
           {rawMessage && (
             <button
@@ -101,10 +93,12 @@ export const AccountStatus = memo(function AccountStatus({
     )
   }
 
+  const status = recordedAccountStatus(account)
+  const healthy = status.tone === 'healthy'
   return (
-    <span className="account-status account-status-healthy">
-      <CircleCheck size={14} className="account-status-icon" aria-hidden="true" />
-      <span>Healthy</span>
+    <span className={`account-status ${healthy ? 'account-status-healthy' : 'text-ag-muted'}`} title={status.message}>
+      {healthy && <CircleCheck size={14} className="account-status-icon" aria-hidden="true" />}
+      {status.label}
     </span>
   )
 })

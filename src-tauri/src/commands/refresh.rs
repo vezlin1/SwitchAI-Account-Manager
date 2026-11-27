@@ -14,7 +14,7 @@ use crate::refresh_service::{QuotaRefreshWarning, RefreshService};
 use crate::tray_dashboard::{emit_state_changed, refresh_dashboard, refresh_dashboard_and_alerts};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AccountRefreshKind {
+pub(super) enum AccountRefreshKind {
     Quota,
     Subscription,
 }
@@ -49,7 +49,7 @@ fn report_selection_change(
     Ok(())
 }
 
-async fn refresh_account(
+pub(super) async fn refresh_account(
     state: &Arc<SharedState>,
     account_id: String,
     kind: AccountRefreshKind,
@@ -58,14 +58,18 @@ async fn refresh_account(
     let _guard = gate.lock().await;
     let (provider, selection) = {
         let data = lock_data(state)?;
-        let provider = data
+        let account = data
             .accounts
             .iter()
             .find(|account| account.id == account_id)
-            .map(|account| account.provider)
             .ok_or_else(|| AppError::msg("Account not found"))?;
+        if !data.allows_refresh(account) {
+            return Err(AppError::msg(
+                "Open this account’s Hidden or tag tab to refresh it.",
+            ));
+        }
         (
-            provider,
+            account.provider,
             (
                 data.active_account_id.clone(),
                 data.active_gemini_account_id.clone(),
@@ -203,6 +207,7 @@ pub async fn refresh_account_quota(
 #[tauri::command]
 pub async fn refresh_all_quotas(
     provider: Option<String>,
+    tab: Option<String>,
     state: State<'_, Arc<SharedState>>,
 ) -> Result<StateResultDto, IpcErrorDto> {
     command_result(
@@ -216,7 +221,8 @@ pub async fn refresh_all_quotas(
                         _ => None,
                     });
             let result =
-                auto_refresh::refresh_accounts_for_provider(state.inner(), target_provider).await?;
+                auto_refresh::refresh_accounts_for_provider(state.inner(), target_provider, tab)
+                    .await?;
             let warned_accounts: HashSet<_> = result
                 .warnings
                 .iter()

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    APP_SCHEMA_VERSION, Account, AppData, AppSettings, QuotaInfo, QuotaWindow, TokenHealth,
-    TokenHealthStatus, Tokens,
+    APP_SCHEMA_VERSION, Account, AppData, AppSettings, QuotaInfo, QuotaWindow, QuotaWindows,
+    TokenHealth, TokenHealthStatus, Tokens,
 };
 
 fn default_schema_version() -> u32 {
@@ -123,6 +123,8 @@ struct PersistedQuotaInfo {
     plan_type: Option<String>,
     primary: PersistedQuotaWindow,
     secondary: PersistedQuotaWindow,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_and_gpt: Option<QuotaWindows<PersistedQuotaWindow>>,
     fetched_at: i64,
 }
 
@@ -142,6 +144,8 @@ struct PersistedAppSettings {
     hidden_subscription_categories: Vec<String>,
     #[serde(default)]
     hidden_account_ids: Vec<String>,
+    #[serde(default)]
+    account_tags: Vec<crate::models::AccountTag>,
     #[serde(default)]
     last_active_provider: Option<String>,
     #[serde(default = "default_gemini_switch_targets")]
@@ -243,6 +247,10 @@ impl From<&QuotaInfo> for PersistedQuotaInfo {
             plan_type: quota.plan_type.clone(),
             primary: PersistedQuotaWindow::from(&quota.primary),
             secondary: PersistedQuotaWindow::from(&quota.secondary),
+            claude_and_gpt: quota.claude_and_gpt.as_ref().map(|group| QuotaWindows {
+                primary: (&group.primary).into(),
+                secondary: (&group.secondary).into(),
+            }),
             fetched_at: quota.fetched_at,
         }
     }
@@ -254,6 +262,10 @@ impl From<PersistedQuotaInfo> for QuotaInfo {
             plan_type: quota.plan_type,
             primary: QuotaWindow::from(quota.primary),
             secondary: QuotaWindow::from(quota.secondary),
+            claude_and_gpt: quota.claude_and_gpt.map(|group| QuotaWindows {
+                primary: group.primary.into(),
+                secondary: group.secondary.into(),
+            }),
             fetched_at: quota.fetched_at,
         }
     }
@@ -268,6 +280,7 @@ impl From<&AppSettings> for PersistedAppSettings {
             skip_unsupported_region_refresh: settings.skip_unsupported_region_refresh,
             hidden_subscription_categories: settings.hidden_subscription_categories.clone(),
             hidden_account_ids: settings.hidden_account_ids.clone(),
+            account_tags: settings.account_tags.clone(),
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
@@ -285,6 +298,7 @@ impl From<PersistedAppSettings> for AppSettings {
             skip_unsupported_region_refresh: settings.skip_unsupported_region_refresh,
             hidden_subscription_categories: settings.hidden_subscription_categories,
             hidden_account_ids: settings.hidden_account_ids,
+            account_tags: settings.account_tags,
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
@@ -385,7 +399,20 @@ impl From<&AppData> for PersistedAppData {
 }
 
 impl From<PersistedAccount> for Account {
-    fn from(account: PersistedAccount) -> Self {
+    fn from(mut account: PersistedAccount) -> Self {
+        // Older Antigravity snapshots mixed model families. A fresh request
+        // is the only way to identify which family supplied their values.
+        if account.provider == PersistedAccountProvider::Gemini
+            && account
+                .quota
+                .as_ref()
+                .is_some_and(|q| q.claude_and_gpt.is_none())
+        {
+            account.quota = None;
+            if account.quota_refresh_failures == 0 {
+                account.quota_next_refresh_at = None;
+            }
+        }
         Self {
             id: account.id,
             provider: crate::models::AccountProvider::from(account.provider),
@@ -417,6 +444,8 @@ impl From<PersistedAppData> for AppData {
     fn from(data: PersistedAppData) -> Self {
         Self {
             revision: 0,
+            open_account_tab: None,
+            account_window_visible: false,
             schema_version: data.schema_version,
             accounts: data.accounts.into_iter().map(Account::from).collect(),
             active_account_id: data.active_account_id,
@@ -433,6 +462,40 @@ mod tests {
 
     use super::{AppSettings, PersistedAccount, PersistedAppData, PersistedAppSettings};
     use crate::models::{Account, AppData, TokenHealth, Tokens};
+
+    #[test]
+    fn tag_settings_survive_restart_but_open_tabs_do_not() {
+        use crate::models::{AccountProvider, AccountTag};
+
+        let mut data = AppData {
+            open_account_tab: Some((AccountProvider::Gemini, "tag:test".into())),
+            account_window_visible: true,
+            ..AppData::default()
+        };
+        data.app_settings.account_tags.push(AccountTag {
+            id: "tag:test".into(),
+            name: "Test".into(),
+            provider: AccountProvider::Gemini,
+            account_ids: vec!["account-1".into()],
+            show_in_all: false,
+            refresh_only_in_tab: true,
+        });
+        let mut json = serde_json::to_value(PersistedAppData::from(&data)).unwrap();
+        let restore =
+            |json| AppData::from(serde_json::from_value::<PersistedAppData>(json).unwrap());
+        let restored = restore(json.clone());
+        assert_eq!(
+            restored.app_settings.account_tags,
+            data.app_settings.account_tags
+        );
+        assert!(restored.open_account_tab.is_none());
+        assert!(!restored.account_window_visible);
+        json["appSettings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("accountTags");
+        assert!(restore(json).app_settings.account_tags.is_empty());
+    }
 
     fn account_with_tokens() -> Account {
         Account {
@@ -463,6 +526,47 @@ mod tests {
             last_error: None,
             subscription_error: None,
         }
+    }
+
+    #[test]
+    fn grouped_quota_survives_restart_and_old_aggregates_are_not_relabelled() {
+        use crate::models::{AccountProvider, QuotaInfo, QuotaWindow, QuotaWindows};
+        let mut account = account_with_tokens();
+        account.provider = AccountProvider::Gemini;
+        let window = |used| QuotaWindow {
+            used_percent: Some(used),
+            ..Default::default()
+        };
+        account.quota = Some(QuotaInfo {
+            primary: window(1.0),
+            claude_and_gpt: Some(QuotaWindows {
+                primary: window(12.5),
+                secondary: window(40.0),
+            }),
+            ..Default::default()
+        });
+        account.quota_next_refresh_at = Some(1234);
+        let mut stored = serde_json::to_value(PersistedAccount::from(&account)).unwrap();
+        let read =
+            |value| Account::from(serde_json::from_value::<PersistedAccount>(value).unwrap());
+        let restored = read(stored.clone());
+        let dto = serde_json::to_value(crate::dto::AccountDto::from(&restored)).unwrap();
+        assert_eq!(dto["quota"]["primary"]["usedPercent"], 1.0);
+        assert_eq!(
+            dto["quota"]["claudeAndGpt"]["secondary"]["usedPercent"],
+            40.0
+        );
+
+        stored["quota"]
+            .as_object_mut()
+            .unwrap()
+            .remove("claudeAndGpt");
+        let legacy = read(stored.clone());
+        assert!(legacy.quota.is_none() && legacy.quota_next_refresh_at.is_none());
+        stored["quotaRefreshFailures"] = json!(1);
+        assert_eq!(read(stored.clone()).quota_next_refresh_at, Some(1234));
+        stored["provider"] = json!("codex");
+        assert_eq!(read(stored).quota.unwrap().primary.used_percent, Some(1.0));
     }
 
     #[test]

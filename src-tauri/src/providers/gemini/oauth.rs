@@ -202,7 +202,7 @@ pub async fn exchange_google_code_for_tokens(
     let response = client
         .post(GOOGLE_OAUTH_TOKEN_URL)
         .header("Accept", "application/json")
-        .header("User-Agent", "antigravity/1.18.3 windows/amd64")
+        .header("User-Agent", super::USER_AGENT)
         .form(&form)
         .send()
         .await
@@ -234,7 +234,7 @@ pub async fn refresh_google_access_token(
     let response = client
         .post(GOOGLE_OAUTH_TOKEN_URL)
         .header("Accept", "application/json")
-        .header("User-Agent", "antigravity/1.18.3 windows/amd64")
+        .header("User-Agent", super::USER_AGENT)
         .form(&form)
         .send()
         .await

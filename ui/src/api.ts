@@ -73,6 +73,8 @@ export const api = {
     invoke<AutoRefreshStatus>('get_auto_refresh_status'),
   setAppSettings: (settings: AppSettings) =>
     invoke<AppData>('set_app_settings', { settings }),
+  setOpenAccountTab: (provider: AccountProvider, tab: string | null) =>
+    invoke<void>('set_open_account_tab', { provider, tab }),
 
   startOAuthFlow: (targetAccountId: string | null = null, provider: string | null = null) =>
     invoke<OAuthStartResponse>('start_oauth_flow', { targetAccountId, provider }),
@@ -105,6 +107,6 @@ export const api = {
     invoke<AccountRefreshResult>('refresh_account_subscription', { accountId }),
   refreshAccountQuota: (accountId: string) =>
     invoke<AccountRefreshResult>('refresh_account_quota', { accountId }),
-  refreshAllQuotas: (provider?: AccountProvider) =>
-    invoke<StateResult>('refresh_all_quotas', { provider })
+  refreshAllQuotas: (provider?: AccountProvider, tab?: string | null) =>
+    invoke<StateResult>('refresh_all_quotas', { provider, tab })
 }

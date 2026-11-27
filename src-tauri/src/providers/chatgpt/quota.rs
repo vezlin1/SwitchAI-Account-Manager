@@ -163,6 +163,7 @@ pub async fn fetch_quota(
             .map(ToOwned::to_owned),
         primary,
         secondary,
+        claude_and_gpt: None,
         fetched_at: now_ts(),
     })
 }

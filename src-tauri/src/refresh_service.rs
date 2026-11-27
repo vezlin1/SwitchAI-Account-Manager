@@ -698,10 +698,7 @@ fn apply_quota_update(
         match update.quota_result {
             Ok(quota) => {
                 if let Some(plan_type) = quota.plan_type.as_ref() {
-                    account.subscription_plan = Some(crate::subscription::quota_plan_label(
-                        plan_type,
-                        account.subscription_plan.as_deref(),
-                    ));
+                    account.subscription_plan = Some(crate::subscription::plan_code_label(plan_type));
                     account.subscription_detected_at = Some(checked_at);
                 }
                 account.quota = Some(quota);
@@ -726,24 +723,13 @@ fn apply_quota_update(
                 &result,
             ));
             account.subscription_error = result.as_ref().err().map(AppError::user_message);
-            match result {
-                Ok(info) => {
-                    if let Some(plan) = info.plan {
-                        account.subscription_plan = Some(plan);
-                    }
-                    if let Some(expires_at) = info.expires_at {
-                        account.subscription_expires_at = Some(expires_at);
-                    }
-                    if let Some(endpoint_hint) = info.endpoint_hint {
-                        account.subscription_endpoint_hint = Some(endpoint_hint);
-                    }
-                    account.subscription_detected_at = Some(info.fetched_at);
-                }
-                Err(error) => log::warn!(
+            apply_subscription_result(account, &result);
+            if let Err(error) = result {
+                log::warn!(
                     "Automatic subscription refresh failed for {}: {}",
                     account.email.as_deref().unwrap_or(&account.id),
                     error.user_message()
-                ),
+                );
             }
         }
     }
@@ -857,7 +843,10 @@ pub(crate) fn apply_subscription_result(
     };
 
     if let Some(plan) = info.plan.as_ref() {
-        account.subscription_plan = Some(plan.clone());
+        account.subscription_plan = crate::subscription::saved_plan_label(
+            Some(plan),
+            account.quota.as_ref().and_then(|quota| quota.plan_type.as_deref()),
+        );
     }
     if let Some(expires_at) = info.expires_at {
         account.subscription_expires_at = Some(expires_at);
@@ -1301,7 +1290,7 @@ mod tests {
         assert!(error.is_none());
         assert_eq!(
             next.accounts[0].subscription_plan.as_deref(),
-            Some("Pro x20")
+            Some("Pro 200")
         );
         assert_eq!(
             next.accounts[0].subscription_expires_at,
@@ -1591,6 +1580,7 @@ mod tests {
             plan_type: Some("Plus".to_string()),
             primary: QuotaWindow::default(),
             secondary: QuotaWindow::default(),
+            claude_and_gpt: None,
             fetched_at: 1_950_000_000,
         };
         let new_tokens = Tokens {
@@ -1636,6 +1626,7 @@ mod tests {
             plan_type: Some("Plus".to_string()),
             primary: QuotaWindow::default(),
             secondary: QuotaWindow::default(),
+            claude_and_gpt: None,
             fetched_at: 1_950_000_000,
         });
         next.accounts[1].tokens.refresh_token = "advanced-related".to_string();
@@ -1712,6 +1703,7 @@ mod tests {
             plan_type: Some("Plus".to_string()),
             primary: QuotaWindow::default(),
             secondary: QuotaWindow::default(),
+            claude_and_gpt: None,
             fetched_at: 1_950_000_000,
         };
 
@@ -1735,18 +1727,19 @@ mod tests {
     }
 
     #[test]
-    fn quota_refresh_preserves_subscription_pro_multiplier() {
-        for plan in ["Pro x5", "Pro x20"] {
+    fn quota_refresh_detects_changes_between_pro_tiers() {
+        for (code, plan) in [("prolite", "Pro 100"), ("pro", "Pro 200"), ("promax", "Pro 500")] {
             let mut data = AppData {
                 accounts: vec![account("source")],
                 ..AppData::default()
             };
-            data.accounts[0].subscription_plan = Some(plan.to_string());
+            data.accounts[0].subscription_plan = Some("Pro x5".to_string());
             let source = data.accounts[0].clone();
             let quota = QuotaInfo {
-                plan_type: Some("pro".to_string()),
+                plan_type: Some(code.to_string()),
                 primary: QuotaWindow::default(),
                 secondary: QuotaWindow::default(),
+                claude_and_gpt: None,
                 fetched_at: 1_950_000_000,
             };
             let mut next = data.clone();

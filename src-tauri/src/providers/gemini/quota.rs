@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use reqwest::Client;
@@ -8,7 +7,8 @@ use serde_json::{Value, json};
 use crate::app_state::{SharedState, lock_data};
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    AccountProvider, QuotaInfo, QuotaWindow, TokenHealth, TokenHealthStatus, Tokens, now_ts,
+    Account, AccountProvider, QuotaInfo, QuotaWindow, QuotaWindows, TokenHealth, TokenHealthStatus,
+    Tokens, now_ts,
 };
 use crate::oauth_gemini::{GoogleTokenSet, google_reauth_required, refresh_google_access_token};
 use crate::refresh_service::AccountRefreshOutcome;
@@ -22,21 +22,40 @@ const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 const FIVE_HOURS_SECONDS: i64 = 5 * 60 * 60;
 const WEEK_SECONDS: i64 = 7 * 24 * 60 * 60;
-const MODEL_RESET_CLOCK_SKEW_SECONDS: i64 = 5;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GeminiQuotaResult {
-    pub quota: QuotaInfo,
+    pub discovery: Option<GeminiPlanCheck>,
+    pub quota: AppResult<QuotaInfo>,
+}
+
+#[derive(Debug)]
+pub struct GeminiPlanCheck {
     pub project_id: Option<String>,
-    pub discovery_checked_at: Option<i64>,
+    plan: Option<String>,
+    checked_at: i64,
+}
+
+impl GeminiPlanCheck {
+    pub fn apply(self, account: &mut Account) {
+        if let Some(project) = self.project_id {
+            account.provider_project_id = Some(project);
+        }
+        account.subscription_checked_at = Some(self.checked_at);
+        account.subscription_detected_at = self.plan.as_ref().map(|_| self.checked_at);
+        // The UI also uses the plan on the last quota snapshot. Keep the two
+        // consistent even when the separate quota request fails.
+        if let Some(quota) = &mut account.quota {
+            quota.plan_type.clone_from(&self.plan);
+        }
+        account.subscription_plan = self.plan;
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct Tier {
     id: Option<String>,
     name: Option<String>,
-    #[serde(default)]
-    is_default: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -47,16 +66,12 @@ struct LoadCodeAssistResponse {
     current_tier: Option<Tier>,
     #[serde(rename = "paidTier")]
     paid_tier: Option<Tier>,
-    #[serde(rename = "allowedTiers", default)]
-    allowed_tiers: Vec<Tier>,
-    #[serde(rename = "ineligibleTiers", default)]
-    ineligible_tiers: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct QuotaSummaryEnvelope {
-    #[serde(default)]
-    groups: Vec<QuotaSummaryGroup>,
+    #[serde(flatten)]
+    body: QuotaSummaryBody,
     response: Option<QuotaSummaryBody>,
 }
 
@@ -64,19 +79,22 @@ struct QuotaSummaryEnvelope {
 struct QuotaSummaryBody {
     #[serde(default)]
     groups: Vec<QuotaSummaryGroup>,
+    #[serde(default)]
+    buckets: Vec<QuotaSummaryBucket>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct QuotaSummaryGroup {
     #[serde(rename = "displayName")]
     display_name: Option<String>,
-    description: Option<String>,
     #[serde(default)]
     buckets: Vec<QuotaSummaryBucket>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct QuotaSummaryBucket {
+    #[serde(default)]
+    disabled: bool,
     #[serde(rename = "bucketId")]
     bucket_id: Option<String>,
     window: Option<String>,
@@ -87,7 +105,6 @@ struct QuotaSummaryBucket {
     reset_time: Option<String>,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
-    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -98,120 +115,18 @@ struct RemainingQuota {
     reset_time: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct AvailableModelsEnvelope {
-    #[serde(default)]
-    models: HashMap<String, AvailableModel>,
-    response: Option<AvailableModelsBody>,
-}
-
-impl AvailableModelsEnvelope {
-    fn into_models(self) -> HashMap<String, AvailableModel> {
-        if self.models.is_empty() {
-            self.response.unwrap_or_default().models
-        } else {
-            self.models
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct AvailableModelsBody {
-    #[serde(default)]
-    models: HashMap<String, AvailableModel>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct AvailableModel {
-    #[serde(rename = "quotaInfo")]
-    quota_info: Option<ModelQuotaInfo>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ModelQuotaInfo {
-    #[serde(rename = "remainingFraction")]
-    remaining_fraction: Option<f64>,
-    #[serde(rename = "resetTime")]
-    reset_time: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct QuotaCandidate {
-    remaining_fraction: f64,
-    reset_at: Option<i64>,
-    window_seconds: Option<i64>,
-    model_group: Option<QuotaModelGroup>,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuotaModelGroup {
     Gemini,
     ClaudeAndGpt,
 }
 
 impl QuotaModelGroup {
-    fn from_bucket_id(id: Option<&str>) -> Option<Self> {
-        match id {
-            Some("gemini-5h" | "gemini-weekly") => Some(Self::Gemini),
-            Some("3p-5h" | "3p-weekly") => Some(Self::ClaudeAndGpt),
+    fn from_display_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "gemini models" | "gemini" => Some(Self::Gemini),
+            "claude and gpt models" | "claude and gpt" => Some(Self::ClaudeAndGpt),
             _ => None,
-        }
-    }
-
-    fn contains_model(self, model_id: &str) -> bool {
-        match self {
-            Self::Gemini => model_id.starts_with("gemini-"),
-            Self::ClaudeAndGpt => model_id.starts_with("claude-") || model_id.starts_with("gpt-"),
-        }
-    }
-
-    fn agreed_full_reset(self, models: &HashMap<String, AvailableModel>) -> Option<i64> {
-        let mut agreed = None;
-        for (id, model) in models {
-            if !self.contains_model(id) {
-                continue;
-            }
-            let Some(quota) = &model.quota_info else {
-                continue;
-            };
-            let reset_at = parse_reset_at(quota.reset_time.as_deref())?;
-            if quota.remaining_fraction != Some(1.0) || agreed.is_some_and(|time| time != reset_at)
-            {
-                return None;
-            }
-            agreed = Some(reset_at);
-        }
-        agreed
-    }
-}
-
-struct ParsedQuotaSummary {
-    quota: QuotaInfo,
-    reset_groups: [Option<QuotaModelGroup>; 2],
-}
-
-impl ParsedQuotaSummary {
-    fn fill_missing_resets(
-        &mut self,
-        models: AvailableModelsEnvelope,
-        requested_at: i64,
-        received_at: i64,
-    ) {
-        let models = models.into_models();
-        let windows = [&mut self.quota.primary, &mut self.quota.secondary];
-        for (window, group) in windows.into_iter().zip(self.reset_groups) {
-            let (Some(group), Some(duration)) = (group, window.limit_window_seconds) else {
-                continue;
-            };
-            // Model responses expose one timestamp without a period. It identifies
-            // a full window only when the group agrees and the full duration fits.
-            let earliest = requested_at + duration - MODEL_RESET_CLOCK_SKEW_SECONDS;
-            let latest = received_at + duration + MODEL_RESET_CLOCK_SKEW_SECONDS;
-            if let Some(reset_at) = group.agreed_full_reset(&models)
-                && (earliest..=latest).contains(&reset_at)
-            {
-                window.reset_at = Some(reset_at);
-            }
         }
     }
 }
@@ -221,7 +136,8 @@ fn antigravity_request(client: &Client, url: &str, tokens: &Tokens) -> reqwest::
         .post(url)
         .bearer_auth(&tokens.access_token)
         .header("Accept", "application/json")
-        .header("User-Agent", "antigravity/1.18.3 windows/amd64")
+        // The Hub summary includes first-party and partner quota groups.
+        .header("User-Agent", super::USER_AGENT)
         .header(
             "X-Goog-Api-Client",
             "google-cloud-sdk vscode_cloudshelleditor/0.1",
@@ -319,36 +235,31 @@ async fn post_cloud_code(
 }
 
 fn tier_label(response: &LoadCodeAssistResponse) -> Option<String> {
+    // allowedTiers are onboarding options. Only paidTier and currentTier
+    // describe the account's assigned tier.
     response
         .paid_tier
-        .as_ref()
-        .and_then(|tier| tier.name.clone().or_else(|| tier.id.clone()))
-        .or_else(|| {
-            response
-                .ineligible_tiers
-                .is_empty()
-                .then(|| {
-                    response
-                        .current_tier
-                        .as_ref()
-                        .and_then(|tier| tier.name.clone().or_else(|| tier.id.clone()))
-                })
-                .flatten()
-        })
-        .or_else(|| {
-            response
-                .allowed_tiers
-                .iter()
-                .find(|tier| tier.is_default)
-                .and_then(|tier| tier.name.clone().or_else(|| tier.id.clone()))
-                .map(|label| format!("{label} (Restricted)"))
+        .iter()
+        .chain(&response.current_tier)
+        .find_map(|tier| {
+            let name = tier
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let id = tier
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            match (id, name) {
+                (Some(id), Some("Antigravity") | None) => Some(id.to_owned()),
+                (_, label) => label.map(str::to_owned),
+            }
         })
 }
 
-async fn discover_project_and_tier(
-    client: &Client,
-    tokens: &Tokens,
-) -> AppResult<(Option<String>, Option<String>)> {
+async fn discover_project_and_tier(client: &Client, tokens: &Tokens) -> AppResult<GeminiPlanCheck> {
     let body = post_cloud_code(
         client,
         tokens,
@@ -362,7 +273,11 @@ async fn discover_project_and_tier(
             context: "Invalid Antigravity account response",
             source,
         })?;
-    Ok((response.project_id.clone(), tier_label(&response)))
+    Ok(GeminiPlanCheck {
+        plan: tier_label(&response),
+        project_id: response.project_id,
+        checked_at: now_ts(),
+    })
 }
 
 fn parse_reset_at(value: Option<&str>) -> Option<i64> {
@@ -376,222 +291,113 @@ fn parse_reset_at(value: Option<&str>) -> Option<i64> {
         .or_else(|| value.parse::<i64>().ok())
 }
 
-fn bucket_window_seconds(
-    bucket: &QuotaSummaryBucket,
-    group: &QuotaSummaryGroup,
-    reset_at: Option<i64>,
-    now: i64,
-) -> Option<i64> {
-    // 1. Check explicit bucket-level window and bucket_id
-    let bucket_label = [
-        bucket.bucket_id.as_deref(),
-        bucket.window.as_deref(),
-        bucket.display_name.as_deref(),
-        bucket.description.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" ")
-    .to_ascii_lowercase();
-
-    if bucket_label.contains("week") || bucket_label.contains("7d") || bucket_label.contains("7 d")
-    {
-        return Some(WEEK_SECONDS);
-    }
-    if bucket_label.contains("5h")
-        || bucket_label.contains("5 h")
-        || bucket_label.contains("five hour")
-    {
-        return Some(FIVE_HOURS_SECONDS);
-    }
-
-    // 2. If reset_at is far in the future (> 5h + 15m), it is a weekly / multi-day window
-    if let Some(reset_ts) = reset_at {
-        let diff = reset_ts.saturating_sub(now);
-        if diff > FIVE_HOURS_SECONDS + 15 * 60 {
-            return Some(WEEK_SECONDS);
-        }
-        if diff > 0 && diff <= FIVE_HOURS_SECONDS + 15 * 60 {
-            return Some(FIVE_HOURS_SECONDS);
+impl QuotaSummaryBucket {
+    fn family(&self, named_group: Option<QuotaModelGroup>) -> Option<QuotaModelGroup> {
+        match self.bucket_id.as_deref() {
+            Some("gemini-5h" | "gemini-weekly") => Some(QuotaModelGroup::Gemini),
+            Some("3p-5h" | "3p-weekly") => Some(QuotaModelGroup::ClaudeAndGpt),
+            // Other identified pools, e.g. an individual model's weekly limit,
+            // do not represent the shared limit even under the same group name.
+            Some(id) if id.starts_with("gemini-") || id.starts_with("3p-") => None,
+            _ => named_group,
         }
     }
 
-    // 3. Fallback to group and bucket descriptive labels (like "session")
-    let full_label = [
-        bucket_label.as_str(),
-        group.display_name.as_deref().unwrap_or(""),
-        group.description.as_deref().unwrap_or(""),
-    ]
-    .join(" ")
-    .to_ascii_lowercase();
-
-    if full_label.contains("week") || full_label.contains("7d") {
-        Some(WEEK_SECONDS)
-    } else if full_label.contains("5h")
-        || full_label.contains("5 h")
-        || full_label.contains("five hour")
-        || full_label.contains("session")
-    {
-        Some(FIVE_HOURS_SECONDS)
-    } else {
+    fn duration(&self) -> Option<i64> {
+        // Time until reset cannot distinguish a weekly limit in its last hour
+        // from a five-hour limit.
+        let labels = [
+            self.window.as_deref(),
+            self.bucket_id.as_deref(),
+            self.display_name.as_deref(),
+        ];
+        for label in labels.into_iter().flatten() {
+            let label = label.to_ascii_lowercase();
+            if label.contains("week") || label == "7d" {
+                return Some(WEEK_SECONDS);
+            }
+            if label.contains("5h") || label.contains("5 h") || label.contains("five hour") {
+                return Some(FIVE_HOURS_SECONDS);
+            }
+        }
         None
     }
-}
 
-fn candidate_to_window(candidate: Option<&QuotaCandidate>, fetched_at: i64) -> QuotaWindow {
-    candidate.map_or_else(QuotaWindow::default, |candidate| QuotaWindow {
-        used_percent: Some(
-            ((1.0 - candidate.remaining_fraction.clamp(0.0, 1.0)) * 100.0).clamp(0.0, 100.0),
-        ),
-        limit_window_seconds: candidate.window_seconds,
-        reset_at: candidate.reset_at,
-        fetched_at: Some(fetched_at),
-    })
-}
-
-fn strictest<'a>(
-    candidates: impl Iterator<Item = &'a QuotaCandidate>,
-) -> Option<&'a QuotaCandidate> {
-    candidates.min_by(|left, right| {
-        left.remaining_fraction
-            .partial_cmp(&right.remaining_fraction)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    })
+    fn window(&self, fetched_at: i64, duration: i64) -> Option<QuotaWindow> {
+        if self.disabled {
+            return None;
+        }
+        let fraction = self
+            .remaining_fraction
+            .or_else(|| self.remaining.as_ref()?.remaining_fraction)?;
+        if !(0.0..=1.0).contains(&fraction) {
+            return None;
+        }
+        let reset = self
+            .reset_time
+            .as_deref()
+            .or_else(|| self.remaining.as_ref()?.reset_time.as_deref());
+        Some(QuotaWindow {
+            used_percent: Some((1.0 - fraction) * 100.0),
+            limit_window_seconds: Some(duration),
+            reset_at: parse_reset_at(reset),
+            fetched_at: Some(fetched_at),
+        })
+    }
 }
 
 fn quota_from_summary(
     envelope: QuotaSummaryEnvelope,
     plan_type: Option<String>,
-) -> Option<ParsedQuotaSummary> {
-    let now = now_ts();
-    let groups = if envelope.groups.is_empty() {
-        envelope.response.unwrap_or_default().groups
-    } else {
-        envelope.groups
-    };
-    let mut candidates = Vec::new();
-    for group in &groups {
-        for bucket in &group.buckets {
-            let Some(remaining_fraction) = bucket.remaining_fraction.or_else(|| {
-                bucket
-                    .remaining
-                    .as_ref()
-                    .and_then(|remaining| remaining.remaining_fraction)
-            }) else {
-                continue;
-            };
-            let reset_time = bucket.reset_time.as_deref().or_else(|| {
-                bucket
-                    .remaining
-                    .as_ref()
-                    .and_then(|remaining| remaining.reset_time.as_deref())
-            });
-            let reset_at = parse_reset_at(reset_time);
-            candidates.push(QuotaCandidate {
-                remaining_fraction,
-                reset_at,
-                window_seconds: bucket_window_seconds(bucket, group, reset_at, now),
-                model_group: QuotaModelGroup::from_bucket_id(bucket.bucket_id.as_deref()),
-            });
-        }
-    }
-    if candidates.is_empty() {
-        return None;
-    }
-    let primary = strictest(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.window_seconds == Some(FIVE_HOURS_SECONDS)),
-    )
-    .or_else(|| {
-        strictest(
-            candidates
-                .iter()
-                .filter(|candidate| candidate.window_seconds.is_none()),
-        )
-    });
-    let secondary = strictest(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.window_seconds == Some(WEEK_SECONDS)),
-    );
-    let missing_reset_group = |candidate: Option<&QuotaCandidate>| {
-        candidate
-            .filter(|candidate| {
-                candidate.remaining_fraction == 1.0
-                    && candidate.reset_at.is_none_or(|reset_at| reset_at <= now)
-            })
-            .and_then(|candidate| candidate.model_group)
-    };
-    Some(ParsedQuotaSummary {
-        quota: QuotaInfo {
-            plan_type,
-            primary: candidate_to_window(primary, now),
-            secondary: candidate_to_window(secondary, now),
-            fetched_at: now,
-        },
-        reset_groups: [missing_reset_group(primary), missing_reset_group(secondary)],
-    })
-}
-
-fn quota_from_available_models(
-    envelope: AvailableModelsEnvelope,
-    plan_type: Option<String>,
 ) -> Option<QuotaInfo> {
     let now = now_ts();
-    let candidates = envelope
-        .into_models()
-        .into_values()
-        .filter_map(|model| model.quota_info)
-        .filter_map(|quota| {
-            let reset_at = parse_reset_at(quota.reset_time.as_deref());
-            let window_seconds = if let Some(reset_ts) = reset_at {
-                let diff = reset_ts.saturating_sub(now);
-                if diff > FIVE_HOURS_SECONDS + 15 * 60 {
-                    Some(WEEK_SECONDS)
-                } else if diff > 0 {
-                    Some(FIVE_HOURS_SECONDS)
+    let mut gemini = QuotaWindows::<QuotaWindow>::default();
+    let mut partners = QuotaWindows::<QuotaWindow>::default();
+    let mut reported = false;
+    for body in [Some(envelope.body), envelope.response]
+        .into_iter()
+        .flatten()
+    {
+        // Prefer grouped records over the deprecated top-level buckets.
+        let flat = QuotaSummaryGroup {
+            buckets: body.buckets,
+            ..Default::default()
+        };
+        for group in body.groups.iter().chain(std::iter::once(&flat)) {
+            let family = group
+                .display_name
+                .as_deref()
+                .and_then(QuotaModelGroup::from_display_name);
+            for bucket in &group.buckets {
+                let windows = match bucket.family(family) {
+                    Some(QuotaModelGroup::Gemini) => &mut gemini,
+                    Some(QuotaModelGroup::ClaudeAndGpt) => &mut partners,
+                    None => continue,
+                };
+                let Some(duration) = bucket.duration() else {
+                    continue;
+                };
+                let window = if duration == WEEK_SECONDS {
+                    &mut windows.secondary
                 } else {
-                    None
+                    &mut windows.primary
+                };
+                if window.used_percent.is_some() {
+                    continue;
                 }
-            } else {
-                None
-            };
-            quota
-                .remaining_fraction
-                .map(|remaining_fraction| QuotaCandidate {
-                    remaining_fraction,
-                    reset_at,
-                    window_seconds,
-                    model_group: None,
-                })
-        })
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return None;
+                let Some(record) = bucket.window(now, duration) else {
+                    continue;
+                };
+                *window = record;
+                reported = true;
+            }
+        }
     }
-    let primary = strictest(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.window_seconds == Some(FIVE_HOURS_SECONDS)),
-    )
-    .or_else(|| {
-        strictest(
-            candidates
-                .iter()
-                .filter(|candidate| candidate.window_seconds.is_none()),
-        )
-    });
-    let secondary = strictest(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.window_seconds == Some(WEEK_SECONDS)),
-    );
-    Some(QuotaInfo {
+    reported.then_some(QuotaInfo {
         plan_type,
-        primary: candidate_to_window(primary, now),
-        secondary: candidate_to_window(secondary, now),
+        primary: gemini.primary,
+        secondary: gemini.secondary,
+        claude_and_gpt: Some(partners),
         fetched_at: now,
     })
 }
@@ -635,27 +441,8 @@ pub async fn fetch_gemini_quota(
     client: &Client,
     tokens: &Tokens,
     cached_project_id: Option<&str>,
-) -> AppResult<GeminiQuotaResult> {
+) -> GeminiQuotaResult {
     fetch_gemini_quota_with_cache(client, tokens, cached_project_id, None, true).await
-}
-
-async fn fetch_available_models(
-    client: &Client,
-    tokens: &Tokens,
-    request_body: &Value,
-) -> AppResult<AvailableModelsEnvelope> {
-    let body = post_cloud_code(
-        client,
-        tokens,
-        "/v1internal:fetchAvailableModels",
-        request_body,
-        "Antigravity model quota failed",
-    )
-    .await?;
-    serde_json::from_slice(&body).map_err(|source| AppError::Json {
-        context: "Invalid Antigravity model quota response",
-        source,
-    })
 }
 
 async fn fetch_gemini_quota_with_cache(
@@ -664,76 +451,57 @@ async fn fetch_gemini_quota_with_cache(
     cached_project_id: Option<&str>,
     cached_plan: Option<&str>,
     discover: bool,
-) -> AppResult<GeminiQuotaResult> {
-    if tokens.access_token.trim().is_empty() {
-        return Err(AppError::msg(
-            "Google access token is missing. Sign in again.",
-        ));
-    }
-    let (project_id, plan_type, checked_at) = if discover {
-        match discover_project_and_tier(client, tokens).await {
-            Ok((project, plan)) => (
-                project.or_else(|| cached_project_id.map(str::to_string)),
-                plan.or_else(|| cached_plan.map(str::to_string)),
-                Some(now_ts()),
-            ),
-            Err(error) if method_unavailable(&error) => (
-                cached_project_id.map(str::to_string),
-                cached_plan.map(str::to_string),
-                None,
-            ),
-            Err(error) => return Err(error),
+) -> GeminiQuotaResult {
+    let mut discovery = None;
+    let quota = async {
+        if tokens.access_token.trim().is_empty() {
+            return Err(AppError::msg(
+                "Google access token is missing. Sign in again.",
+            ));
         }
-    } else {
-        (
-            cached_project_id.map(str::to_string),
-            cached_plan.map(str::to_string),
-            None,
-        )
-    };
-    let request_body = project_id
-        .as_ref()
-        .map_or_else(|| json!({}), |project| json!({ "project": project }));
-    let summary = post_cloud_code(
+        if discover {
+            match discover_project_and_tier(client, tokens).await {
+                Ok(check) => discovery = Some(check),
+                Err(error) if method_unavailable(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let project_id = discovery
+            .as_ref()
+            .and_then(|check| check.project_id.as_deref())
+            .or(cached_project_id);
+        let plan = match &discovery {
+            Some(check) => check.plan.as_deref(),
+            None => cached_plan,
+        };
+        fetch_quota_summary(client, tokens, project_id, plan).await
+    }
+    .await;
+    GeminiQuotaResult { discovery, quota }
+}
+
+async fn fetch_quota_summary(
+    client: &Client,
+    tokens: &Tokens,
+    project_id: Option<&str>,
+    plan: Option<&str>,
+) -> AppResult<QuotaInfo> {
+    let request_body =
+        project_id.map_or_else(|| json!({}), |project| json!({ "project": project }));
+    let body = post_cloud_code(
         client,
         tokens,
         "/v1internal:retrieveUserQuotaSummary",
         &request_body,
         "Antigravity quota summary failed",
     )
-    .await;
-    match summary {
-        Ok(body) => {
-            let envelope: QuotaSummaryEnvelope =
-                serde_json::from_slice(&body).map_err(|source| AppError::Json {
-                    context: "Invalid Antigravity quota summary",
-                    source,
-                })?;
-            if let Some(mut summary) = quota_from_summary(envelope, plan_type.clone()) {
-                if summary.reset_groups.iter().any(Option::is_some) {
-                    let requested_at = now_ts();
-                    if let Ok(models) = fetch_available_models(client, tokens, &request_body).await
-                    {
-                        summary.fill_missing_resets(models, requested_at, now_ts());
-                    }
-                }
-                return Ok(GeminiQuotaResult {
-                    quota: summary.quota,
-                    project_id,
-                    discovery_checked_at: checked_at,
-                });
-            }
-        }
-        Err(error) if method_unavailable(&error) => {}
-        Err(error) => return Err(error),
-    }
-    let envelope = fetch_available_models(client, tokens, &request_body).await?;
-    let quota = quota_from_available_models(envelope, plan_type).ok_or_else(|| AppError::msg(
-        "Antigravity did not expose quota values for this Google account. The account remains available for switching."))?;
-    Ok(GeminiQuotaResult {
-        quota,
-        project_id,
-        discovery_checked_at: checked_at,
+    .await?;
+    let envelope = serde_json::from_slice(&body).map_err(|source| AppError::Json {
+        context: "Invalid Antigravity quota summary",
+        source,
+    })?;
+    quota_from_summary(envelope, plan.map(str::to_owned)).ok_or_else(|| {
+        AppError::msg("Google did not report five-hour or weekly limits for these model groups.")
     })
 }
 
@@ -742,7 +510,7 @@ async fn fetch_account_quota(
     tokens: &Tokens,
     account: &crate::models::Account,
     force: bool,
-) -> AppResult<GeminiQuotaResult> {
+) -> GeminiQuotaResult {
     let discover = discovery_due(account, force, now_ts());
     let result = fetch_gemini_quota_with_cache(
         client,
@@ -754,7 +522,7 @@ async fn fetch_account_quota(
     .await;
     // A stale project is retried once with fresh discovery; rate limits and auth errors never enter this path.
     if !discover
-        && matches!(&result, Err(AppError::RemoteHttp { status: 400 | 404, details, .. })
+        && matches!(&result.quota, Err(AppError::RemoteHttp { status: 400 | 404, details, .. })
         if details.to_ascii_lowercase().contains("project"))
     {
         return fetch_gemini_quota_with_cache(
@@ -858,21 +626,25 @@ pub async fn refresh_gemini_account_with_options(
                 force_discovery,
             )
             .await;
-            if matches!(&quota_result, Err(AppError::RemoteHttp { status: 401, .. }))
-                && token_set.tokens == snapshot.tokens
+            if matches!(
+                &quota_result.quota,
+                Err(AppError::RemoteHttp { status: 401, .. })
+            ) && token_set.tokens == snapshot.tokens
             {
                 match refresh_google_access_token(&state.http_client, &token_set.tokens).await {
                     Ok(new_token_set) => {
                         token_set = new_token_set;
-                        quota_result = fetch_account_quota(
+                        let retry = fetch_account_quota(
                             &state.http_client,
                             &token_set.tokens,
                             &snapshot,
                             force_discovery,
                         )
                         .await;
+                        quota_result.discovery = retry.discovery.or(quota_result.discovery);
+                        quota_result.quota = retry.quota;
                     }
-                    Err(error) => quota_result = Err(error),
+                    Err(error) => quota_result.quota = Err(error),
                 }
             }
             Ok((token_set, quota_result))
@@ -881,7 +653,11 @@ pub async fn refresh_gemini_account_with_options(
     };
 
     let retry_after_seconds = match &network_result {
-        Ok((_, quota)) => quota.as_ref().err().and_then(AppError::retry_after_seconds),
+        Ok((_, result)) => result
+            .quota
+            .as_ref()
+            .err()
+            .and_then(AppError::retry_after_seconds),
         Err(error) => error.retry_after_seconds(),
     };
 
@@ -941,19 +717,13 @@ pub async fn refresh_gemini_account_with_options(
                 account.token_expires_at = Some(token_set.expires_at);
                 account.tokens_updated_at = Some(now_ts());
             }
-            match quota_result {
-                Ok(result) => {
-                    if let Some(checked) = result.discovery_checked_at {
-                        account.subscription_checked_at = Some(checked);
-                    }
-                    if result.project_id.is_some() {
-                        account.provider_project_id = result.project_id;
-                    }
-                    if let Some(plan_type) = result.quota.plan_type.as_ref() {
-                        account.subscription_plan = Some(plan_type.clone());
-                        account.subscription_detected_at = Some(now_ts());
-                    }
-                    account.quota = Some(result.quota);
+            if let Some(check) = quota_result.discovery {
+                check.apply(account);
+            }
+            match quota_result.quota {
+                Ok(mut quota) => {
+                    quota.plan_type.clone_from(&account.subscription_plan);
+                    account.quota = Some(quota);
                     account.token_health = if refreshed_tokens {
                         TokenHealth::refreshed()
                     } else {
@@ -1053,6 +823,76 @@ mod tests {
     }
 
     #[test]
+    fn plan_uses_assigned_tiers_and_preserves_provider_names() {
+        let parse = |value| tier_label(&serde_json::from_value(value).unwrap());
+        for (payload, expected) in [
+            (
+                json!({"currentTier":{"id":"free-tier","name":"Antigravity"}, "paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}),
+                Some("Google AI Pro"),
+            ),
+            (
+                json!({"paidTier":{"id":"g1-pro-tier","name":" Google AI Pro (Trial) "}}),
+                Some("Google AI Pro (Trial)"),
+            ),
+            (
+                json!({"paidTier":{"id":"g1-ultra-tier","name":"  "}}),
+                Some("g1-ultra-tier"),
+            ),
+            (
+                json!({"paidTier":{}, "currentTier":{"id":"free-tier","name":"Antigravity"}, "ineligibleTiers":[{"tierId":"standard-tier"}]}),
+                Some("free-tier"),
+            ),
+            (
+                json!({"currentTier":{"name":"Enterprise Premium"}, "allowedTiers":null}),
+                Some("Enterprise Premium"),
+            ),
+            (
+                json!({"allowedTiers":[{"name":"Google AI Ultra","isDefault":true}], "ineligibleTiers":null}),
+                None,
+            ),
+            (
+                json!({"paidTier":{"id":" ","name":""},"currentTier":null}),
+                None,
+            ),
+        ] {
+            assert_eq!(parse(payload).as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn fresh_discovery_updates_the_plan_even_without_a_new_quota_snapshot() {
+        let mut data = crate::models::AppData::default();
+        let mut account = crate::oauth_gemini::save_authenticated_gemini_account(
+            &mut data,
+            Tokens::default(),
+            None,
+            Some("plan@example.com".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        account.quota = Some(QuotaInfo {
+            fetched_at: 10,
+            ..Default::default()
+        });
+        for (time, plan) in [(20, Some("Google AI Pro")), (30, None)] {
+            GeminiPlanCheck {
+                project_id: None,
+                plan: plan.map(str::to_owned),
+                checked_at: time,
+            }
+            .apply(&mut account);
+            assert_eq!(account.subscription_plan.as_deref(), plan);
+            assert_eq!(account.subscription_checked_at, Some(time));
+            assert_eq!(account.subscription_detected_at, plan.map(|_| time));
+            let quota = account.quota.as_ref().unwrap();
+            assert_eq!(quota.plan_type.as_deref(), plan);
+            assert_eq!(quota.fetched_at, 10);
+        }
+    }
+
+    #[test]
     fn project_and_tier_cache_expires_and_manual_subscription_refresh_bypasses_it() {
         let now = now_ts();
         let mut data = crate::models::AppData::default();
@@ -1078,138 +918,112 @@ mod tests {
         assert!(discovery_due(&account, false, now));
     }
 
-    #[test]
-    fn quota_summary_maps_real_five_hour_and_weekly_buckets() {
-        let envelope: QuotaSummaryEnvelope = serde_json::from_value(json!({
-            "groups": [{
-                "displayName": "Gemini Models",
-                "buckets": [
-                    {"bucketId": "gemini-5h", "window": "5h", "remainingFraction": 0.25, "resetTime": "2030-01-01T00:00:00Z"},
-                    {"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.60, "resetTime": "2030-01-07T00:00:00Z"}
-                ]
-            }, {
-                "displayName": "Claude and GPT models",
-                "buckets": [
-                    {"bucketId": "3p-5h", "window": "5h", "remaining": {"remainingFraction": 0.10}},
-                    {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.80}
-                ]
-            }]
-        }))
-        .expect("summary");
-        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string()))
-            .expect("quota")
-            .quota;
-
-        assert_eq!(quota.primary.limit_window_seconds, Some(FIVE_HOURS_SECONDS));
-        assert_eq!(quota.primary.used_percent, Some(90.0));
-        assert_eq!(quota.secondary.limit_window_seconds, Some(WEEK_SECONDS));
-        assert_eq!(quota.secondary.used_percent, Some(40.0));
-        assert_eq!(quota.plan_type.as_deref(), Some("Google AI Pro"));
+    fn summary(value: Value) -> QuotaInfo {
+        quota_from_summary(
+            serde_json::from_value(value).unwrap(),
+            Some("Google AI Pro".into()),
+        )
+        .unwrap()
     }
 
     #[test]
-    fn available_models_fallback_uses_strictest_real_fraction() {
-        let envelope: AvailableModelsEnvelope = serde_json::from_value(json!({
-            "models": {
-                "gemini-3-pro": {"quotaInfo": {"remainingFraction": 0.7}},
-                "claude-sonnet": {"quotaInfo": {"remainingFraction": 0.2}}
+    fn quota_request_uses_hub_profile_for_first_party_windows() {
+        let request = antigravity_request(&Client::new(), CLOUD_CODE_BASE_URL, &Tokens::default())
+            .build()
+            .unwrap();
+        let agent = request.headers()[reqwest::header::USER_AGENT]
+            .to_str()
+            .unwrap();
+        assert!(agent.starts_with("antigravity/hub/"));
+    }
+
+    #[test]
+    fn hub_summary_keeps_each_percent_and_reset_in_its_own_group_and_period() {
+        let partners = json!({"displayName": "Claude and GPT models", "buckets": [
+            {"bucketId": "3p-weekly", "remainingFraction": 0.6040296, "resetTime": "2026-12-03T15:40:53Z"},
+            {"bucketId": "3p-5h", "remainingFraction": 1.0}
+        ]});
+        let gemini = json!({"displayName": "Gemini Models", "buckets": [
+            {"bucketId": "gemini-weekly", "remainingFraction": 0.5825124, "resetTime": "2026-12-03T10:44:58Z"},
+            {"bucketId": "gemini-5h", "remainingFraction": 0.996712, "resetTime": "2026-11-27T16:19:27Z"}
+        ]});
+        let other = json!({"displayName": "Argon", "buckets": [
+            {"bucketId": "gemini-argon-weekly", "window": "weekly", "remainingFraction": 0.01}
+        ]});
+        for groups in [
+            json!([partners, gemini, other]),
+            json!([other, gemini, partners]),
+        ] {
+            let quota = summary(json!({"groups": groups}));
+            assert_eq!(quota.plan_type.as_deref(), Some("Google AI Pro"));
+            let partners = quota.claude_and_gpt.unwrap();
+            for (window, remaining, seconds, reset) in [
+                (
+                    quota.primary,
+                    99.6712,
+                    FIVE_HOURS_SECONDS,
+                    Some("2026-11-27T16:19:27Z"),
+                ),
+                (
+                    quota.secondary,
+                    58.25124,
+                    WEEK_SECONDS,
+                    Some("2026-12-03T10:44:58Z"),
+                ),
+                (partners.primary, 100.0, FIVE_HOURS_SECONDS, None),
+                (
+                    partners.secondary,
+                    60.40296,
+                    WEEK_SECONDS,
+                    Some("2026-12-03T15:40:53Z"),
+                ),
+            ] {
+                assert!((100.0 - window.used_percent.unwrap() - remaining).abs() < 1e-8);
+                assert_eq!(window.reset_at, parse_reset_at(reset));
+                assert_eq!(window.limit_window_seconds, Some(seconds));
+                assert_eq!(window.fetched_at, Some(quota.fetched_at));
             }
-        }))
-        .expect("models");
-        let quota = quota_from_available_models(envelope, None).expect("quota");
-        assert_eq!(quota.primary.used_percent, Some(80.0));
-        assert_eq!(quota.primary.limit_window_seconds, None);
-    }
-
-    fn full_partner_quota_summary() -> ParsedQuotaSummary {
-        let envelope = serde_json::from_value(json!({
-            "groups": [{
-                "buckets": [
-                    {"bucketId": "3p-5h", "window": "5h", "remainingFraction": 1.0},
-                    {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 1.0}
-                ]
-            }]
-        }))
-        .expect("summary");
-        quota_from_summary(envelope, None).expect("quota")
-    }
-
-    #[test]
-    fn missing_summary_reset_is_recovered_only_for_the_matching_period() {
-        for duration in [FIVE_HOURS_SECONDS, WEEK_SECONDS] {
-            let mut summary = full_partner_quota_summary();
-            let now = summary.quota.fetched_at;
-            let reset = now + duration;
-            let models = serde_json::from_value(json!({
-                "models": {
-                    "claude-sonnet": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": reset.to_string()}},
-                    "gpt-oss": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": reset.to_string()}},
-                    "gemini-pro": {"quotaInfo": {"remainingFraction": 0.005, "resetTime": (now + 500_000).to_string()}}
-                }
-            }))
-            .expect("models");
-            summary.fill_missing_resets(models, now, now);
-            assert_eq!(
-                summary.quota.primary.reset_at,
-                (duration == FIVE_HOURS_SECONDS).then_some(reset)
-            );
-            assert_eq!(
-                summary.quota.secondary.reset_at,
-                (duration == WEEK_SECONDS).then_some(reset)
-            );
-            assert_eq!(summary.quota.primary.used_percent, Some(0.0));
-            assert_eq!(summary.quota.secondary.used_percent, Some(0.0));
         }
     }
 
     #[test]
-    fn missing_summary_reset_stays_unknown_if_model_metadata_does_not_match() {
-        let mut summary = full_partner_quota_summary();
-        let now = summary.quota.fetched_at;
-        let weekly = now + WEEK_SECONDS;
-        let five_hour = now + FIVE_HOURS_SECONDS;
-        for (fraction, reset) in [(1.0, five_hour), (0.5, weekly)] {
-            let models = serde_json::from_value(json!({
-                "models": {
-                    "claude-sonnet": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": weekly.to_string()}},
-                    "gpt-oss": {"quotaInfo": {"remainingFraction": fraction, "resetTime": reset.to_string()}}
-                }
-            }))
-            .expect("models");
-            summary.fill_missing_resets(models, now, now);
-            assert_eq!(summary.quota.primary.reset_at, None);
-            assert_eq!(summary.quota.secondary.reset_at, None);
-        }
+    fn legacy_partner_only_response_does_not_supply_gemini_limits() {
+        let quota = summary(json!({"response": {"groups": [{"buckets": [
+            {"bucketId": "3p-weekly", "remainingFraction": 0.60},
+            {"bucketId": "3p-5h", "remainingFraction": 1.0}
+        ]}]}}));
+        assert!(quota.primary.used_percent.is_none() && quota.secondary.used_percent.is_none());
+        let partners = quota.claude_and_gpt.unwrap();
+        assert_eq!(partners.primary.used_percent, Some(0.0));
+        assert!(partners.primary.reset_at.is_none());
+        assert_eq!(partners.secondary.used_percent, Some(40.0));
     }
 
     #[test]
-    fn quota_summary_separates_multiday_models_from_5h_session_window() {
-        let now = now_ts();
-        let flash_reset = chrono::DateTime::from_timestamp(now + 3600, 0)
-            .unwrap()
-            .to_rfc3339();
-        let claude_reset = chrono::DateTime::from_timestamp(now + 5 * 24 * 3600, 0)
-            .unwrap()
-            .to_rfc3339();
-
-        let envelope: QuotaSummaryEnvelope = serde_json::from_value(json!({
-            "groups": [{
-                "displayName": "Session Quotas",
-                "buckets": [
-                    {"bucketId": "gemini-flash", "remainingFraction": 1.0, "resetTime": flash_reset},
-                    {"bucketId": "claude-3-7-sonnet", "remainingFraction": 0.58, "resetTime": claude_reset}
-                ]
-            }]
-        }))
-        .expect("summary");
-        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string()))
-            .expect("quota")
-            .quota;
-
-        // The 5-day Claude reset must NOT become the primary 5-hour window
+    fn named_windows_use_the_bucket_period_and_only_fill_gaps_from_flat_records() {
+        let quota = summary(json!({
+            "groups": [{"displayName": "Gemini Models", "buckets": [
+                {"window": "weekly", "remaining": {"remainingFraction": 0.0, "resetTime": "1234"}},
+                {"window": "5h", "disabled": true, "remainingFraction": 1.0}
+            ]}],
+            "buckets": [
+                {"bucketId": "gemini-weekly", "remainingFraction": 0.8, "resetTime": "5678"},
+                {"bucketId": "gemini-5h", "remainingFraction": 0.25},
+                {"bucketId": "unknown", "window": "weekly", "remainingFraction": 0.01}
+            ]
+        }));
+        assert_eq!(quota.primary.used_percent, Some(75.0));
+        assert!(quota.primary.reset_at.is_none());
+        assert_eq!(quota.secondary.used_percent, Some(100.0));
         assert_eq!(quota.secondary.limit_window_seconds, Some(WEEK_SECONDS));
-        assert!((quota.secondary.used_percent.unwrap() - 42.0).abs() < 0.1);
-        assert_eq!(quota.primary.limit_window_seconds, Some(FIVE_HOURS_SECONDS));
-        assert_eq!(quota.primary.used_percent, Some(0.0));
+        assert_eq!(quota.secondary.reset_at, Some(1234));
+        assert!(
+            quota
+                .claude_and_gpt
+                .unwrap()
+                .secondary
+                .used_percent
+                .is_none()
+        );
     }
 }

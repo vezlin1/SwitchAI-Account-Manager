@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Loader2, Settings, X } from 'lucide-react'
 import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus } from '../../types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { Switch } from '../common/Switch'
+import { TagPreferences } from '../accounts/AccountTags'
 
 type SettingsModalProps = {
   settings: AppSettings
@@ -307,6 +308,21 @@ export function SettingsModal({
               })()}
             </div>
           </div>
+
+          {(draft.accountTags?.length ?? 0) > 0 && <section className="settings-card">
+            <h3 className="settings-card-label">Account tags</h3>
+            {draft.accountTags.map(tag => (
+              <TagPreferences
+                key={tag.id}
+                value={tag}
+                legend={<>{tag.name} <small>{tag.provider === 'gemini' ? 'Gemini' : 'ChatGPT'}</small></>}
+                onChange={options => setDraft(prev => ({
+                  ...prev,
+                  accountTags: prev.accountTags.map(t => t.id === tag.id ? { ...t, ...options } : t)
+                }))}
+              />
+            ))}
+          </section>}
 
           {/* Close to Tray */}
           <div

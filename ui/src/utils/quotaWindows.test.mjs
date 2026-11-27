@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { quotaCellsForAccount, quotaColumnsForAccounts, quotaIsStale, quotaResetTime, quotaWindowForColumn, quotaWindowIsStale } from './quotaWindows.ts'
+import { detailQuotaGroups, quotaCellsForAccount, quotaColumnsForAccounts, quotaIsStale, quotaResetTime, quotaWindowForColumn, quotaWindowIsStale } from './quotaWindows.ts'
 
 function window(limitWindowSeconds, usedPercent = 25) {
   return {
@@ -116,4 +116,21 @@ test('an obsolete reset timestamp does not invalidate a newly fetched value', ()
   assert.equal(quotaResetTime(active, null), null)
   assert.equal(quotaWindowIsStale(active, null, 1_001), false)
   assert.equal(quotaWindowIsStale(active, null, 4_600), true)
+})
+
+test('Antigravity rows show Gemini and details show both families with independent gaps', () => {
+  const value = quota(window(18_000, 0.3288))
+  value.claudeAndGpt = quota(window(18_000, 0), window(604_800, 39.59704))
+  const account = { provider: 'gemini', quota: value }
+  const columns = quotaColumnsForAccounts([account])
+  assert.deepEqual(columns.map(col => col.key), ['5h', 'weekly'])
+  const row = quotaCellsForAccount(value, columns, true)
+  assert.deepEqual(row.map(cell => cell.window), [value.primary, null])
+  const [gemini, partners] = detailQuotaGroups(account)
+  assert.equal(gemini.title, 'Gemini Models')
+  assert.deepEqual(gemini.cells, row)
+  assert.equal(partners.title, 'Claude and GPT models')
+  assert.equal(partners.cells[1].window, value.claudeAndGpt.secondary)
+  assert.ok(detailQuotaGroups({ provider: 'gemini', quota: null }).every(group =>
+    group.cells.length === 2 && group.cells.every(cell => cell.window === null)))
 })

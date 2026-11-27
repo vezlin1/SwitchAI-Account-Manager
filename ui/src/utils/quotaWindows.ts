@@ -1,4 +1,4 @@
-import type { Account, QuotaInfo, QuotaWindow } from '../types'
+import type { Account, QuotaInfo, QuotaWindow, QuotaWindows } from '../types'
 
 type QuotaWindowSource = 'primary' | 'secondary'
 
@@ -118,7 +118,7 @@ function describeWindow(window: QuotaWindow, source: QuotaWindowSource): QuotaCo
   }
 }
 
-function quotaEntries(quota: QuotaInfo | null | undefined): Array<{
+function quotaEntries(quota: QuotaWindows | null | undefined): Array<{
   source: QuotaWindowSource
   window: QuotaWindow
 }> {
@@ -133,8 +133,13 @@ function quotaEntries(quota: QuotaInfo | null | undefined): Array<{
   }>
 }
 
+const antigravityColumns: QuotaColumn[] = [FIVE_HOURS_SECONDS, WEEK_SECONDS].map(describeKnownDuration)
+
 export function quotaColumnsForAccounts(accounts: Account[]): QuotaColumn[] {
   const columns = new Map<string, QuotaColumn>()
+  if (accounts.some((account) => account.provider === 'gemini')) {
+    for (const column of antigravityColumns) columns.set(column.key, column)
+  }
 
   for (const account of accounts) {
     for (const { source, window } of quotaEntries(account.quota)) {
@@ -156,7 +161,7 @@ export function quotaColumnsForAccounts(accounts: Account[]): QuotaColumn[] {
 }
 
 export function quotaWindowForColumn(
-  quota: QuotaInfo | null | undefined,
+  quota: QuotaWindows | null | undefined,
   column: QuotaColumn
 ): QuotaWindow | null {
   for (const { source, window } of quotaEntries(quota)) {
@@ -169,12 +174,13 @@ export function quotaWindowForColumn(
   return null
 }
 
-export function quotaCellsForAccount(quota: QuotaInfo | null | undefined, columns: QuotaColumn[]) {
+export function quotaCellsForAccount(quota: QuotaWindows | null | undefined, columns: QuotaColumn[], keepMissing = false) {
   const cells = columns.map((column) => ({
     column,
     window: quotaWindowForColumn(quota, column),
     colSpan: 1
   }))
+  if (keepMissing) return cells
   const available = cells.filter((cell) => cell.window?.usedPercent != null)
   if (available.length === 0) return cells
 
@@ -187,4 +193,15 @@ export function quotaCellsForAccount(quota: QuotaInfo | null | undefined, column
     start = end
     return { ...cell, colSpan }
   })
+}
+
+export function detailQuotaGroups(account: Account) {
+  if (account.provider === 'gemini') {
+    return [
+      { title: 'Gemini Models', cells: quotaCellsForAccount(account.quota, antigravityColumns, true) },
+      { title: 'Claude and GPT models', cells: quotaCellsForAccount(account.quota?.claudeAndGpt, antigravityColumns, true) }
+    ]
+  }
+  const cells = quotaCellsForAccount(account.quota, quotaColumnsForAccounts([account]))
+  return cells.length ? [{ title: null, cells }] : []
 }

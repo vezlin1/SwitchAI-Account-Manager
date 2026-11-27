@@ -259,7 +259,7 @@ export function useAccountsActions({
     }
   }, [beginOp, endOp, persistAppSettings, clearError, setProviderError])
 
-  const refreshAll = useCallback(async (provider?: AccountProvider) => {
+  const refreshAll = useCallback(async (provider?: AccountProvider, tab?: string | null, viewReady?: Promise<void>) => {
     const targets: AccountProvider[] = provider ? [provider] : ['codex', 'gemini']
     if (targets.some((target) => refreshAllInFlightRef.current.has(target))) return
     targets.forEach((target) => refreshAllInFlightRef.current.add(target))
@@ -267,7 +267,8 @@ export function useAccountsActions({
     const currentProv: AccountProvider = provider ?? 'codex'
     try {
       setProviderError(currentProv, null)
-      const response = await api.refreshAllQuotas(provider)
+      await viewReady
+      const response = await api.refreshAllQuotas(provider, tab)
       setData(response.state)
       const general = applyRefreshNotices(response.warnings, { provider })
       if (general.length > 0) setProviderError(currentProv, general.join(' · '))

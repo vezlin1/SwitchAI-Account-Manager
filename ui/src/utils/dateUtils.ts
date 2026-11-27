@@ -17,22 +17,23 @@ export function formatSubscriptionDate(unixTsSeconds: number | null | undefined)
   return `${label}\u00A0${SUBSCRIPTION_DATE_FORMAT.format(date)}`
 }
 
+const GOOGLE_TIER_LABELS = new Map([
+  ['free tier', 'Free'],
+  ['free', 'Free'],
+  ['g1 pro tier', 'Google AI Pro'],
+  ['google ai pro', 'Google AI Pro'],
+  ['g1 ultra tier', 'Google AI Ultra'],
+  ['google ai ultra', 'Google AI Ultra'],
+  ['google ai plus', 'Google AI Plus']
+])
+
 function formatAntigravityPlan(raw: string): string {
-  const cleaned = raw
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const normalized = cleaned.toLowerCase()
-  const restricted = normalized.includes('restricted') ? ' (Restricted)' : ''
-  const tierName = normalized.replace(/\s*\(restricted\)\s*/g, '').trim()
-  const tierTokens = new Set(tierName.split(/\s+/))
-
-  if (tierTokens.has('ultra')) return `Google AI Ultra${restricted}`
-  if (tierTokens.has('pro') || tierTokens.has('premium')) return `Google AI Pro${restricted}`
-  if (tierTokens.has('free')) return `Free${restricted}`
-
-  // Unknown tiers are kept verbatim: the Cloud Code response is the source of truth.
-  return cleaned
+  const qualifierAt = raw.indexOf('(')
+  const base = qualifierAt < 0 ? raw : raw.slice(0, qualifierAt)
+  const key = base.toLowerCase().replace(/[\s_-]+/g, ' ').trim()
+  const label = GOOGLE_TIER_LABELS.get(key)
+  if (!label) return raw
+  return qualifierAt < 0 ? label : `${label} ${raw.slice(qualifierAt)}`
 }
 
 export function formatSubscriptionPlan(
@@ -44,7 +45,6 @@ export function formatSubscriptionPlan(
   if (provider === 'gemini') return formatAntigravityPlan(raw)
 
   const normalized = raw.toLowerCase()
-  const compact = normalized.replace(/[\s_-]+/g, '')
   if (normalized.includes('advanced')) return 'Advanced'
   if (normalized.includes('premium')) return 'AI Premium'
   if (normalized.includes('enterprise')) return 'Enterprise'
@@ -52,11 +52,7 @@ export function formatSubscriptionPlan(
   if (normalized.includes('workspace')) return 'Workspace'
   if (normalized.includes('studio') || normalized.includes('developer')) return 'Developer'
   if (normalized.includes('team')) return 'Team'
-  if (normalized.includes('pro')) {
-    if (compact.includes('x5') || compact.includes('5x')) return 'Pro x5'
-    if (compact.includes('x20') || compact.includes('20x')) return 'Pro x20'
-    return 'Pro'
-  }
+  if (normalized === 'pro') return 'Pro'
   if (normalized.includes('plus')) return 'Plus'
   if (normalized.includes('free')) return 'Free'
 

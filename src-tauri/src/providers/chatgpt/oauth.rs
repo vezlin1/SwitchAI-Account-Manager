@@ -517,17 +517,11 @@ pub async fn complete_oauth_code(
             }
         }
 
-        let mut gemini_project_id = None;
-        let mut gemini_discovery_checked_at = None;
+        let mut gemini_discovery = None;
         let (quota_result, subscription_result) = if flow_provider == AccountProvider::Gemini {
-            let quota = fetch_gemini_quota(&shared.http_client, &tokens, None)
-                .await
-                .map(|result| {
-                    gemini_project_id = result.project_id;
-                    gemini_discovery_checked_at = result.discovery_checked_at;
-                    result.quota
-                });
-            (quota, Err(AppError::msg("Not applicable")))
+            let result = fetch_gemini_quota(&shared.http_client, &tokens, None).await;
+            gemini_discovery = result.discovery;
+            (result.quota, Err(AppError::msg("Not applicable")))
         } else {
             let limits_base_url = {
                 let data = lock_data(shared)?;
@@ -579,7 +573,7 @@ pub async fn complete_oauth_code(
                         token_expires_at,
                         email,
                         account_id,
-                        gemini_project_id,
+                        gemini_discovery.as_ref().and_then(|check| check.project_id.clone()),
                         target_account_id.as_deref(),
                     )?
                 } else {
@@ -597,13 +591,13 @@ pub async fn complete_oauth_code(
                     .find(|entry| entry.id == account.id)
                     .ok_or_else(|| AppError::msg("Account disappeared during OAuth completion"))?;
 
-                if flow_provider == AccountProvider::Gemini {
-                    account_mut.subscription_checked_at = gemini_discovery_checked_at;
+                if let Some(check) = gemini_discovery {
+                    check.apply(account_mut);
                 }
                 match quota_result {
                     Ok(quota) => {
-                        if let Some(plan_type) = quota.plan_type.as_ref() {
-                            account_mut.subscription_plan = Some(plan_type.clone());
+                        if flow_provider == AccountProvider::Codex && let Some(plan_type) = quota.plan_type.as_ref() {
+                            account_mut.subscription_plan = Some(crate::subscription::plan_code_label(plan_type));
                             account_mut.subscription_detected_at = Some(now_ts());
                         }
                         account_mut.quota = Some(quota);
@@ -634,24 +628,13 @@ pub async fn complete_oauth_code(
                         account_mut.subscription_expires_at,
                         &subscription_result,
                     ));
-                    match subscription_result {
-                        Ok(info) => {
-                            if let Some(plan) = info.plan {
-                                account_mut.subscription_plan = Some(plan);
-                            }
-                            if let Some(expires_at) = info.expires_at {
-                                account_mut.subscription_expires_at = Some(expires_at);
-                            }
-                            if let Some(endpoint_hint) = info.endpoint_hint {
-                                account_mut.subscription_endpoint_hint = Some(endpoint_hint);
-                            }
-                            account_mut.subscription_detected_at = Some(info.fetched_at);
-                        }
-                        Err(error) => log::warn!(
+                    crate::refresh_service::apply_subscription_result(account_mut, &subscription_result);
+                    if let Err(error) = subscription_result {
+                        log::warn!(
                             "Subscription auto-detect failed after OAuth for {}: {}",
                             account_mut.email.as_deref().unwrap_or(&account_mut.id),
                             error.user_message()
-                        ),
+                        );
                     }
                 }
 
