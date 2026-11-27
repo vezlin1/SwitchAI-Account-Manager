@@ -18,7 +18,7 @@ added when a version is published.
 * **Faster With Many Accounts:** quicker startup and quota refresh, with long lists shown in pages.
 * **Clearer Status and Tray:** "Updated 6 min ago · next in 10m" instead of a bare interval, a labelled privacy toggle, and a tray menu in plain text with the system check mark instead of emoji.
 * **Manual Updates:** the built-in updater is removed; download new versions from GitHub Releases.
-* Updated rustls to address RUSTSEC-2026-0285, plus general polish and stability improvements.
+* Updated rustls, quinn, cookie and url to address security advisories, plus general polish and stability improvements.
 
 ## 1.3.0 — 2026-09-14
 

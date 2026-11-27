@@ -95,7 +95,7 @@
 - The portable updater, its update dialog, the `latest.json` manifest generation and Minisign signing are removed.
 - Account operations are consolidated, unused code is removed, and startup and quota refresh are faster for large account lists.
 - Account tag groups, refresh warnings on the affected account, Pro tier detection, and Gemini reset times recovered from model metadata.
-- rustls updated to address RUSTSEC-2026-0285.
+- rustls, rustls-webpki, quinn-proto, quinn-udp, cookie, url and webpki-root-certs updated to address RustSec advisories, including RUSTSEC-2026-0285.
 
 </details>
 
