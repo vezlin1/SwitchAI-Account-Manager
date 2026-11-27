@@ -16,6 +16,7 @@ type AccountRowProps = {
   account: Account
   tagNames?: string
   isActive: boolean
+  isRecommended?: boolean
   isSwitching: boolean
   isRemoving: boolean
   isRelogining: boolean
@@ -41,6 +42,7 @@ export const AccountRow = memo(function AccountRow({
   account,
   tagNames,
   isActive,
+  isRecommended = false,
   isSwitching,
   isRemoving,
   isRelogining,
@@ -112,6 +114,11 @@ export const AccountRow = memo(function AccountRow({
               {isActive && (
                 <span className="account-active-badge">
                   In use
+                </span>
+              )}
+              {isRecommended && (
+                <span className="account-best-badge" title="The best account to use right now">
+                  Best
                 </span>
               )}
             </div>

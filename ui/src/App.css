@@ -648,6 +648,18 @@ a {
   background: rgb(var(--ag-success));
 }
 
+.account-best-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 6px;
+  color: #60a5fa;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 550;
+}
+
 .account-hidden-badge {
   display: inline-flex;
   align-items: center;
@@ -2485,114 +2497,6 @@ a {
 
 .quota-cell-exhausted .quota-cell-value {
   color: rgb(var(--ag-danger));
-}
-
-/* ==========================================================================
-   Best account right now
-   ========================================================================== */
-.best-account {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid rgba(59, 130, 246, 0.28);
-  border-radius: 10px;
-  background: rgba(59, 130, 246, 0.07);
-}
-
-.best-account-current,
-.best-account-empty {
-  border-color: rgb(var(--ag-border));
-  background: rgb(var(--ag-card));
-}
-
-.best-account-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.best-account-kicker {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: rgb(var(--ag-muted));
-}
-
-.best-account-line {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  font-size: 14px;
-  color: rgb(var(--ag-text));
-}
-
-.best-account-line strong {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.best-account-meta {
-  font-size: 12.5px;
-  color: rgb(var(--ag-muted));
-  font-variant-numeric: tabular-nums;
-}
-
-.best-account-meta + .best-account-meta::before {
-  content: '·';
-  margin-right: 10px;
-}
-
-.best-account-reason {
-  font-size: 12px;
-  color: rgb(var(--ag-muted));
-}
-
-.best-account-switch {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 10px;
-  background: rgb(var(--ag-primary));
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.12s ease, transform 0.08s ease;
-}
-
-.best-account-switch:hover:not(:disabled) {
-  background: #2563eb;
-}
-
-.best-account-switch:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.best-account-switch:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.best-account-switch:focus-visible {
-  outline: 2px solid rgb(var(--ag-primary));
-  outline-offset: 2px;
-}
-
-@media (max-width: 640px) {
-  .best-account {
-    flex-direction: column;
-    align-items: stretch;
-  }
 }
 
 /* A header button that also says what it does. */

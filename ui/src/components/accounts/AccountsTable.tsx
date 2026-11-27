@@ -32,6 +32,7 @@ type AccountsTableProps = {
   tags: AccountTag[]
   provider?: AccountProvider
   activeAccountId: string | null
+  recommendedAccountId?: string | null
   totalAccountCount: number
   activeFilter: SubscriptionFilterId
   hiddenAccountCount: number
@@ -201,6 +202,7 @@ export const AccountsTable = memo(function AccountsTable({
   tags,
   provider = 'codex',
   activeAccountId,
+  recommendedAccountId = null,
   totalAccountCount,
   activeFilter,
   hiddenAccountCount,
@@ -402,6 +404,7 @@ export const AccountsTable = memo(function AccountsTable({
                         tagNames={tagNamesByAccount.get(account.id)?.join(' · ')}
                         refreshNotice={getRefreshNotice(account)}
                         isActive={activeAccountId === account.id}
+                        isRecommended={recommendedAccountId === account.id}
                         isSwitching={statusFlags.isSwitching}
                         isRemoving={statusFlags.isRemoving}
                         isRelogining={statusFlags.isRelogining}
@@ -462,6 +465,7 @@ export const AccountsTable = memo(function AccountsTable({
                     tagNames={tagNamesByAccount.get(account.id)?.join(' · ')}
                     refreshNotice={getRefreshNotice(account)}
                     isActive={activeAccountId === account.id}
+                    isRecommended={recommendedAccountId === account.id}
                     isSwitching={statusFlags.isSwitching}
                     isRemoving={statusFlags.isRemoving}
                     isRelogining={statusFlags.isRelogining}
@@ -506,6 +510,7 @@ type SortableAccountRowProps = {
   tagNames?: string
   refreshNotice?: AccountRefreshNotice
   isActive: boolean
+  isRecommended: boolean
   isSwitching: boolean
   isRemoving: boolean
   isRelogining: boolean
@@ -527,6 +532,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
   tagNames,
   refreshNotice,
   isActive,
+  isRecommended,
   isSwitching,
   isRemoving,
   isRelogining,
@@ -568,6 +574,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
       tagNames={tagNames}
       refreshNotice={refreshNotice}
       isActive={isActive}
+      isRecommended={isRecommended}
       isSwitching={isSwitching}
       isRemoving={isRemoving}
       isRelogining={isRelogining}

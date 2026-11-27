@@ -15,6 +15,7 @@ type AccountCardProps = {
   account: Account
   tagNames?: string
   isActive: boolean
+  isRecommended?: boolean
   isSwitching: boolean
   isRemoving: boolean
   isRelogining: boolean
@@ -35,6 +36,7 @@ export const AccountCard = memo(function AccountCard({
   account,
   tagNames,
   isActive,
+  isRecommended = false,
   isSwitching,
   isRemoving,
   isRelogining,
@@ -80,8 +82,9 @@ export const AccountCard = memo(function AccountCard({
               {privacyMode ? maskEmail(account.email) : (account.email ?? 'Unknown email')}
             </span>
             <span className="account-card-subline">
-              {isActive ? 'In use' : ''}
-              {hiddenFromAll ? (isActive ? ' · Hidden' : 'Hidden') : ''}
+              {[isActive && 'In use', isRecommended && 'Best', hiddenFromAll && 'Hidden']
+                .filter(Boolean)
+                .join(' · ')}
             </span>
             {tagNames && <span className="account-tag-label" title={tagNames}>{tagNames}</span>}
           </span>

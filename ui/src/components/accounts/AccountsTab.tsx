@@ -10,7 +10,6 @@ import { ErrorBanner } from '../common'
 import { AccountsTable } from './AccountsTable'
 import { AccountsToolbar } from './AccountsToolbar'
 import { GeminiSwitchTargetsBar } from './GeminiSwitchTargetsBar'
-import { BestAccountBar } from './BestAccountBar'
 import {
   reorderFilteredAccounts,
   filterAccountsBySubscription,
@@ -165,10 +164,6 @@ export function AccountsTab({
       .catch(() => { if (!cancelled) setRecommendation(null) })
     return () => { cancelled = true }
   }, [accounts, currentProvider, geminiQuotaFocus, hiddenAccountIds, recommendationMinute])
-  const bestBarAccounts = useMemo(
-    () => accounts.filter((account) => !hiddenAccountIds.includes(account.id)),
-    [accounts, hiddenAccountIds]
-  )
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
        (autoRefreshError.toLowerCase().includes('chatgpt') && currentProvider === 'codex') ||
@@ -380,15 +375,6 @@ export function AccountsTab({
             />
           )}
 
-          <BestAccountBar
-            provider={currentProvider}
-            accounts={bestBarAccounts}
-            activeAccountId={activeAccountId}
-            recommendation={recommendation}
-            switchingAccountId={recommendation && actions.busyKeys.has(`switch:${recommendation.accountId}`) ? recommendation.accountId : null}
-            onSwitch={handleSwitch}
-          />
-
           {showSubscriptionFilters && (
             <nav className="account-filter-bar" aria-label="Filter accounts">
               <div className="account-filter-summary">
@@ -425,6 +411,7 @@ export function AccountsTab({
 
           <AccountsTable
             accounts={searchedAccounts}
+            recommendedAccountId={recommendation?.accountId ?? null}
             tags={tags}
             provider={currentProvider}
             totalAccountCount={accounts.length}
