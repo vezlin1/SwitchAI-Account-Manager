@@ -5,7 +5,8 @@ use crate::app_state::{SharedState, lock_data, lock_startup_error};
 use crate::auto_refresh;
 use crate::commands::{command_result, run_blocking};
 use crate::dto::{
-    AppDataDto, AppSettingsDto, AutoRefreshStatusDto, RecoveryStatusDto, StartupStatusDto,
+    AccountProviderDto, AppDataDto, AppSettingsDto, AutoRefreshStatusDto, RecommendationDto,
+    RecoveryStatusDto, StartupStatusDto,
 };
 use crate::errors::{AppError, AppResult, IpcErrorDto};
 use crate::models::AppData;
@@ -264,4 +265,20 @@ mod tests {
         assert!(response.state.is_some());
         assert!(response.auto_refresh.is_some());
     }
+}
+
+/// The account the tray and the window recommend switching to, computed by the
+/// same code so both always agree.
+#[tauri::command]
+pub fn get_recommended_account(
+    state: State<'_, Arc<SharedState>>,
+    provider: AccountProviderDto,
+) -> Result<Option<RecommendationDto>, IpcErrorDto> {
+    command_result((|| {
+        let data = lock_data(state.inner())?;
+        Ok(
+            crate::recommendation::recommend(&data, provider.into(), crate::models::now_ts())
+                .map(RecommendationDto::from),
+        )
+    })())
 }

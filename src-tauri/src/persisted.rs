@@ -155,6 +155,12 @@ struct PersistedAppSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     privacy_mode: Option<bool>,
+    #[serde(default = "default_gemini_quota_focus")]
+    gemini_quota_focus: String,
+}
+
+fn default_gemini_quota_focus() -> String {
+    crate::recommendation::GEMINI_QUOTA_FOCUS_GEMINI.to_string()
 }
 
 fn default_enabled_providers() -> Vec<String> {
@@ -285,6 +291,7 @@ impl From<&AppSettings> for PersistedAppSettings {
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
             privacy_mode: (!settings.privacy_migration_pending).then_some(settings.privacy_mode),
+            gemini_quota_focus: settings.gemini_quota_focus.clone(),
         }
     }
 }
@@ -304,6 +311,7 @@ impl From<PersistedAppSettings> for AppSettings {
             enabled_providers: settings.enabled_providers,
             privacy_mode: settings.privacy_mode.unwrap_or(true),
             privacy_migration_pending: settings.privacy_mode.is_none(),
+            gemini_quota_focus: settings.gemini_quota_focus,
         }
     }
 }

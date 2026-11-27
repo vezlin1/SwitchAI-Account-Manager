@@ -29,6 +29,43 @@ const CHATGPT_APP_TARGET: &str = r"shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!A
 const CHATGPT_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "windows")]
 const CHATGPT_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(target_os = "windows")]
+const CHATGPT_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(2500);
+
+#[cfg(target_os = "windows")]
+const CODEX_CLI_PROCESS_NAME: &str = "codex.exe";
+#[cfg(not(target_os = "windows"))]
+const CODEX_CLI_PROCESS_NAME: &str = "codex";
+#[cfg(target_os = "windows")]
+const CHATGPT_DESKTOP_PROCESS_NAME: &str = "ChatGPT.exe";
+#[cfg(not(target_os = "windows"))]
+const CHATGPT_DESKTOP_PROCESS_NAME: &str = "ChatGPT";
+
+/// Codex CLI sessions and IDE extensions read `auth.json` when they start and
+/// keep those credentials in memory, so they go on using the previous account
+/// until restarted. Codex processes the ChatGPT app owns are restarted with it
+/// and are not counted.
+pub fn running_codex_cli_notice() -> Option<String> {
+    let processes = crate::process::list_processes();
+    let count = crate::process::count_processes_outside(
+        &processes,
+        CODEX_CLI_PROCESS_NAME,
+        &[CHATGPT_DESKTOP_PROCESS_NAME],
+    );
+    codex_cli_notice(count)
+}
+
+fn codex_cli_notice(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(
+            "A Codex CLI session or IDE extension is still running and keeps using the previous account until you restart it.".to_string(),
+        ),
+        _ => Some(format!(
+            "{count} Codex CLI sessions or IDE extensions are still running and keep using the previous account until you restart them."
+        )),
+    }
+}
 
 fn codex_auth_path() -> AppResult<PathBuf> {
     let home =
@@ -415,21 +452,43 @@ pub fn restart_codex_process() -> AppResult<()> {
         return Ok(());
     }
 
-    let status = crate::process::command_status_with_timeout(
+    // Ask the app to close first so it can flush drafts and session state; only
+    // force-terminate the tree when it does not exit within the grace period.
+    let _ = crate::process::command_status_with_timeout(
         Command::new("taskkill")
-            .args(["/IM", CHATGPT_PROCESS_IMAGE, "/F", "/T"])
+            .args(["/IM", CHATGPT_PROCESS_IMAGE])
             .creation_flags(CREATE_NO_WINDOW),
         Duration::from_secs(5),
         "Failed to stop client process",
-    )?;
+    );
 
-    if !status.success() {
-        log::info!(
-            "taskkill returned {status} for {CHATGPT_PROCESS_IMAGE}; continuing because ChatGPT may already be closed"
-        );
+    let graceful_deadline = Instant::now() + CHATGPT_GRACEFUL_EXIT_TIMEOUT;
+    let mut exited = false;
+    while Instant::now() < graceful_deadline {
+        if !is_chatgpt_running()? {
+            exited = true;
+            break;
+        }
+        thread::sleep(CHATGPT_EXIT_POLL_INTERVAL);
     }
 
-    wait_for_chatgpt_to_exit()?;
+    if !exited && is_chatgpt_running()? {
+        let status = crate::process::command_status_with_timeout(
+            Command::new("taskkill")
+                .args(["/IM", CHATGPT_PROCESS_IMAGE, "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW),
+            Duration::from_secs(5),
+            "Failed to stop client process",
+        )?;
+
+        if !status.success() {
+            log::info!(
+                "taskkill returned {status} for {CHATGPT_PROCESS_IMAGE}; continuing because ChatGPT may already be closed"
+            );
+        }
+
+        wait_for_chatgpt_to_exit()?;
+    }
     crate::shell::open_target(CHATGPT_APP_TARGET, "Failed to launch ChatGPT")
 }
 
@@ -503,6 +562,21 @@ pub fn restart_codex_process() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_cli_notice_is_only_shown_for_running_sessions() {
+        assert_eq!(codex_cli_notice(0), None);
+        assert!(
+            codex_cli_notice(1)
+                .unwrap()
+                .starts_with("A Codex CLI session")
+        );
+        assert!(
+            codex_cli_notice(3)
+                .unwrap()
+                .starts_with("3 Codex CLI sessions")
+        );
+    }
     use crate::models::{Account, AppData, TokenHealth, Tokens};
 
     fn account(id: &str, account_id: Option<&str>, email: Option<&str>, ts: i64) -> Account {

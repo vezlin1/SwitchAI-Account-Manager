@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   BarChart3,
@@ -12,12 +12,11 @@ import {
   Sparkles,
   UserCheck
 } from 'lucide-react'
-import type { Account } from '../../types'
+import type { Account, Recommendation } from '../../types'
 import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUtils'
 import { accountAttention, quotaUpdateBlocked, recordedAccountStatus, type AccountAttention, type AccountRefreshNotice } from '../../utils/accountFeedback'
-import { useTimeValue } from '../../hooks/useSharedTicker'
 import { QuotaCell } from './QuotaCell'
-import { detailQuotaGroups, quotaIsStale } from '../../utils/quotaWindows'
+import { detailQuotaGroups } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { EventTime } from './EventTime'
 import { usePrivacy } from '../../context/usePrivacy'
@@ -26,7 +25,7 @@ type AccountDetailsProps = {
   account: Account
   refreshNotice?: AccountRefreshNotice
   isActive: boolean
-  isRecommended: boolean
+  recommendation: Recommendation | null
   busyKeys: ReadonlySet<string>
   onBack: () => void
   onEditTags: (account: Account) => void
@@ -34,6 +33,27 @@ type AccountDetailsProps = {
   onRelogin: (account: Account) => void
   onRefreshQuota: (accountId: string) => Promise<void>
   onDetectSubscription: (accountId: string) => Promise<void>
+}
+
+function recommendationLabel(recommendation: Recommendation): string {
+  switch (recommendation.reason) {
+    case 'resets_soon': return 'Best reserve · resets soon'
+    case 'larger_plan': return 'Best reserve · larger plan'
+    default: return 'Best reserve'
+  }
+}
+
+function recommendationTitle(recommendation: Recommendation): string {
+  const remaining = `${recommendation.projected ? '~' : ''}${Math.round(recommendation.remainingPercent)}% left`
+  const why = recommendation.reason === 'resets_soon'
+    ? 'Its long quota window resets within a day, so spending it first loses nothing.'
+    : recommendation.reason === 'larger_plan'
+      ? 'A lower percentage of a larger plan is more absolute quota.'
+      : 'It has the most quota left.'
+  const projected = recommendation.projected
+    ? ' A limit has reset since the last check; the new value is not confirmed yet.'
+    : ''
+  return `${remaining}. ${why}${projected}`
 }
 
 function statusDetails(
@@ -71,7 +91,7 @@ export function AccountDetails({
   account,
   refreshNotice,
   isActive,
-  isRecommended,
+  recommendation,
   busyKeys,
   onBack,
   onEditTags,
@@ -96,7 +116,6 @@ export function AccountDetails({
     busyKeys.has(`account:${account.id}:subscription`)
   const attention = accountAttention(account, refreshNotice)
   const updateBlocked = quotaUpdateBlocked(attention)
-  const isStale = useTimeValue(useCallback(() => quotaIsStale(account.quota), [account.quota]), isRecommended)
   const status = statusDetails(account, attention, isRefreshingAccount)
   const busy = isRefreshingAccount
     || busyKeys.has(`switch:${account.id}`)
@@ -192,9 +211,12 @@ export function AccountDetails({
                 {account.provider === 'gemini' ? 'Active in Antigravity' : 'Active in Codex'}
               </span>
             )}
-            {isRecommended && !isStale && !updateBlocked && (
-              <span className="account-detail-badge account-detail-badge-recommended">
-                <Sparkles size={12} aria-hidden="true" /> Best reserve
+            {recommendation && !updateBlocked && (
+              <span
+                className="account-detail-badge account-detail-badge-recommended"
+                title={recommendationTitle(recommendation)}
+              >
+                <Sparkles size={12} aria-hidden="true" /> {recommendationLabel(recommendation)}
               </span>
             )}
           </div>

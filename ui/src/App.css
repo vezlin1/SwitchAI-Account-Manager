@@ -793,6 +793,16 @@ a {
   background: #10b981;
 }
 
+/* A limit that has reset but is not yet confirmed by a fresh check. */
+.quota-fill-projected {
+  opacity: 0.55;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    rgb(255 255 255 / 0.18) 6px 12px
+  );
+}
+
 .quota-fill-warn {
   background: #f59e0b;
 }

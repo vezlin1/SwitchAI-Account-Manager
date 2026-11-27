@@ -181,10 +181,12 @@ export function useAccountsActions({
         : await api.switchActiveAccountAndRestartCodex(account.id)
       setData(response.state)
       if (isGemini) window.dispatchEvent(new Event('antigravity-surfaces-changed'))
-      if (response.restartWarning) {
-        const appName = isGemini ? 'Antigravity' : 'ChatGPT'
-        setProviderError(provider, `Account switched, but ${appName} restart failed: ${response.restartWarning}`)
-      }
+      const appName = isGemini ? 'Antigravity' : 'ChatGPT'
+      const messages = [
+        response.restartWarning ? `Account switched, but ${appName} restart failed: ${response.restartWarning}` : null,
+        response.clientNotice ? `Account switched. ${response.clientNotice}` : null
+      ].filter((message): message is string => message != null)
+      if (messages.length) setProviderError(provider, messages.join(' '))
     } catch (err) {
       setProviderError(provider, describeIpcError(err))
     } finally {

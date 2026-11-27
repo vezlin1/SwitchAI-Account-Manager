@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Loader2, Settings, X } from 'lucide-react'
-import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus } from '../../types'
+import type { Account, AccountProvider, AppData, AppSettings, AutoRefreshStatus, GeminiQuotaFocus } from '../../types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { Switch } from '../common/Switch'
 
@@ -11,6 +11,12 @@ type SettingsModalProps = {
   onSave: (settings: AppSettings) => Promise<AppData | null>
   onRefreshStatus: () => Promise<AutoRefreshStatus>
 }
+
+const geminiQuotaFocusOptions: Array<{ value: GeminiQuotaFocus; label: string; title: string }> = [
+  { value: 'gemini', label: 'Gemini', title: 'Recommend by the Gemini models limits' },
+  { value: 'claude_and_gpt', label: 'Claude & GPT', title: 'Recommend by the Claude and GPT models limits' },
+  { value: 'both', label: 'Both', title: 'Recommend by whichever model group is tighter' }
+]
 
 const quickIntervals = [
   { label: '15m', minutes: 15 },
@@ -308,6 +314,30 @@ export function SettingsModal({
               })()}
             </div>
           </div>
+
+          {(draft.enabledProviders ?? ['codex', 'gemini']).includes('gemini') && (
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <span className="settings-card-label">Antigravity recommendation uses</span>
+              </div>
+              <div className="settings-card-content">
+                <div className="settings-quick-pills" role="group" aria-label="Antigravity model group for recommendations">
+                  {geminiQuotaFocusOptions.map(({ value, label, title }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="settings-pill"
+                      title={title}
+                      aria-pressed={(draft.geminiQuotaFocus ?? 'gemini') === value}
+                      onClick={() => setDraft((prev) => ({ ...prev, geminiQuotaFocus: value }))}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Close to Tray */}
           <div

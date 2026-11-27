@@ -184,6 +184,8 @@ pub struct AppSettings {
     pub enabled_providers: Vec<String>,
     pub privacy_mode: bool,
     pub privacy_migration_pending: bool,
+    /// Which Antigravity model group the recommendation judges by.
+    pub gemini_quota_focus: String,
 }
 
 impl AppSettings {
@@ -218,6 +220,7 @@ impl Default for AppSettings {
             enabled_providers: vec!["codex".to_string(), "gemini".to_string()],
             privacy_mode: false,
             privacy_migration_pending: false,
+            gemini_quota_focus: crate::recommendation::GEMINI_QUOTA_FOCUS_GEMINI.to_string(),
         }
     }
 }
@@ -297,6 +300,14 @@ impl AppSettings {
         } else {
             self.last_active_provider = Some(self.enabled_providers[0].clone());
         }
+
+        let focus = self.gemini_quota_focus.trim().to_ascii_lowercase();
+        self.gemini_quota_focus =
+            if crate::recommendation::GEMINI_QUOTA_FOCUS_VALUES.contains(&focus.as_str()) {
+                focus
+            } else {
+                crate::recommendation::GEMINI_QUOTA_FOCUS_GEMINI.to_string()
+            };
 
         const VALID_TARGETS: [&str; 3] = ["antigravity", "ide", "cli"];
         let mut normalized_targets = Vec::new();

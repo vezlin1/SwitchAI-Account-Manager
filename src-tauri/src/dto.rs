@@ -21,6 +21,36 @@ impl From<crate::models::AccountProvider> for AccountProviderDto {
     }
 }
 
+impl From<AccountProviderDto> for crate::models::AccountProvider {
+    fn from(provider: AccountProviderDto) -> Self {
+        match provider {
+            AccountProviderDto::Codex => Self::Codex,
+            AccountProviderDto::Gemini => Self::Gemini,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationDto {
+    pub account_id: String,
+    pub remaining_percent: f64,
+    /// A window reset since the last check and is assumed full again.
+    pub projected: bool,
+    pub reason: crate::recommendation::RecommendationReason,
+}
+
+impl From<crate::recommendation::Recommendation> for RecommendationDto {
+    fn from(recommendation: crate::recommendation::Recommendation) -> Self {
+        Self {
+            account_id: recommendation.account_id,
+            remaining_percent: recommendation.remaining,
+            projected: recommendation.projected,
+            reason: recommendation.reason,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppDataDto {
@@ -88,6 +118,12 @@ pub struct AppSettingsDto {
     pub privacy_mode: bool,
     #[serde(default)]
     pub privacy_migration_pending: bool,
+    #[serde(default = "default_gemini_quota_focus")]
+    pub gemini_quota_focus: String,
+}
+
+fn default_gemini_quota_focus() -> String {
+    crate::recommendation::GEMINI_QUOTA_FOCUS_GEMINI.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +310,7 @@ impl From<&AppSettings> for AppSettingsDto {
             enabled_providers: settings.enabled_providers.clone(),
             privacy_mode: settings.privacy_mode,
             privacy_migration_pending: settings.privacy_migration_pending,
+            gemini_quota_focus: settings.gemini_quota_focus.clone(),
         }
     }
 }
@@ -293,6 +330,7 @@ impl From<AppSettingsDto> for AppSettings {
             enabled_providers: settings.enabled_providers,
             privacy_mode: settings.privacy_mode,
             privacy_migration_pending: settings.privacy_migration_pending,
+            gemini_quota_focus: settings.gemini_quota_focus,
         }
     }
 }

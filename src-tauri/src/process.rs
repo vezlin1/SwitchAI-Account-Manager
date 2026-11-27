@@ -206,6 +206,183 @@ pub fn is_named_process_running(names: &[&str]) -> Vec<bool> {
     vec![false; names.len()]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessEntry {
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub name: String,
+}
+
+#[cfg(target_os = "windows")]
+pub fn list_processes() -> Vec<ProcessEntry> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let mut processes = Vec::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return processes;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                processes.push(ProcessEntry {
+                    pid: entry.th32ProcessID,
+                    parent_pid: entry.th32ParentProcessID,
+                    name: String::from_utf16_lossy(&entry.szExeFile[..len]),
+                });
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    processes
+}
+
+#[cfg(target_os = "macos")]
+pub fn list_processes() -> Vec<ProcessEntry> {
+    use std::os::raw::{c_int, c_void};
+
+    const PROC_ALL_PIDS: u32 = 1;
+    const PROC_PIDT_SHORTBSDINFO: c_int = 13;
+    const MAXCOMLEN: usize = 16;
+
+    // struct proc_bsdshortinfo from <sys/proc_info.h>.
+    #[repr(C)]
+    struct ProcBsdShortInfo {
+        pbsi_pid: u32,
+        pbsi_ppid: u32,
+        pbsi_pgid: u32,
+        pbsi_status: u32,
+        pbsi_comm: [u8; MAXCOMLEN],
+        pbsi_flags: u32,
+        pbsi_uid: u32,
+        pbsi_gid: u32,
+        pbsi_ruid: u32,
+        pbsi_rgid: u32,
+        pbsi_svuid: u32,
+        pbsi_svgid: u32,
+        pbsi_rfu: u32,
+    }
+
+    unsafe extern "C" {
+        fn proc_listpids(
+            proc_type: u32,
+            proc_info: u32,
+            buffer: *mut c_void,
+            buffersize: c_int,
+        ) -> c_int;
+        fn proc_pidinfo(
+            pid: c_int,
+            flavor: c_int,
+            arg: u64,
+            buffer: *mut c_void,
+            buffersize: c_int,
+        ) -> c_int;
+    }
+
+    let mut processes = Vec::new();
+    unsafe {
+        let count = proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0);
+        if count <= 0 {
+            return processes;
+        }
+        let mut pids = vec![0 as c_int; (count as usize) / std::mem::size_of::<c_int>() + 32];
+        let bytes_written = proc_listpids(
+            PROC_ALL_PIDS,
+            0,
+            pids.as_mut_ptr() as *mut c_void,
+            (pids.len() * std::mem::size_of::<c_int>()) as c_int,
+        );
+        if bytes_written <= 0 {
+            return processes;
+        }
+        let num_pids = (bytes_written as usize) / std::mem::size_of::<c_int>();
+        let mut info = std::mem::zeroed::<ProcBsdShortInfo>();
+        let size = std::mem::size_of::<ProcBsdShortInfo>() as c_int;
+        for &pid in &pids[..num_pids] {
+            if pid <= 0 {
+                continue;
+            }
+            let ret = proc_pidinfo(
+                pid,
+                PROC_PIDT_SHORTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut c_void,
+                size,
+            );
+            if ret != size {
+                continue;
+            }
+            let len = info
+                .pbsi_comm
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(MAXCOMLEN);
+            processes.push(ProcessEntry {
+                pid: info.pbsi_pid,
+                parent_pid: info.pbsi_ppid,
+                name: String::from_utf8_lossy(&info.pbsi_comm[..len]).into_owned(),
+            });
+        }
+    }
+    processes
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn list_processes() -> Vec<ProcessEntry> {
+    Vec::new()
+}
+
+/// Counts processes called `name` that are not descendants of a process
+/// called one of `excluded_ancestors` (case-insensitive).
+pub fn count_processes_outside(
+    processes: &[ProcessEntry],
+    name: &str,
+    excluded_ancestors: &[&str],
+) -> usize {
+    let by_pid: std::collections::HashMap<u32, &ProcessEntry> = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect();
+    processes
+        .iter()
+        .filter(|process| process.name.eq_ignore_ascii_case(name))
+        .filter(|process| {
+            let mut parent_pid = process.parent_pid;
+            // Bounded walk: PIDs can be reused, so a cycle must not hang us.
+            for _ in 0..16 {
+                let Some(parent) = by_pid.get(&parent_pid) else {
+                    return true;
+                };
+                if parent.pid == parent.parent_pid {
+                    return true;
+                }
+                if excluded_ancestors
+                    .iter()
+                    .any(|excluded| parent.name.eq_ignore_ascii_case(excluded))
+                {
+                    return false;
+                }
+                parent_pid = parent.parent_pid;
+            }
+            true
+        })
+        .count()
+}
+
 pub fn is_process_running(name: &str) -> AppResult<bool> {
     Ok(is_named_process_running(&[name])[0])
 }
@@ -271,6 +448,32 @@ mod tests {
         let running = is_process_running("nonexistent_process_definitely_not_running_12345.exe")
             .expect("detection should not fail");
         assert!(!running);
+    }
+
+    #[test]
+    fn counts_only_processes_outside_the_excluded_process_tree() {
+        let entry = |pid, parent_pid, name: &str| ProcessEntry {
+            pid,
+            parent_pid,
+            name: name.to_string(),
+        };
+        let processes = vec![
+            entry(1, 0, "explorer.exe"),
+            entry(10, 1, "ChatGPT.exe"),
+            entry(11, 10, "helper.exe"),
+            entry(12, 11, "codex.exe"),
+            entry(20, 1, "Code.exe"),
+            entry(21, 20, "CODEX.EXE"),
+            entry(30, 99, "codex.exe"),
+            entry(40, 40, "codex.exe"),
+        ];
+        assert_eq!(
+            count_processes_outside(&processes, "codex.exe", &["ChatGPT.exe"]),
+            3
+        );
+        assert_eq!(count_processes_outside(&processes, "codex.exe", &[]), 4);
+        let cycle = vec![entry(1, 2, "a"), entry(2, 1, "b"), entry(3, 1, "codex")];
+        assert_eq!(count_processes_outside(&cycle, "codex", &["x"]), 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -10,6 +11,7 @@ use tauri_plugin_notification::NotificationExt;
 use crate::app_state::{SharedState, lock_data};
 use crate::errors::{AppError, AppResult};
 use crate::models::{Account, AccountProvider, AppData, TokenHealthStatus};
+use crate::recommendation::{QuotaFocus, Recommendation, quota_focus};
 
 pub const TRAY_ID: &str = "main-tray";
 pub const SWITCH_CODEX_ACCOUNT_PREFIX: &str = "switch-codex-account:";
@@ -159,20 +161,14 @@ pub fn account_label(account: &Account, privacy_mode: bool) -> String {
     }
 }
 
-pub fn remaining_percent(account: &Account) -> Option<f64> {
-    let quota = account.quota.as_ref()?;
-    [&quota.primary, &quota.secondary]
-        .into_iter()
-        .filter_map(|window| window.used_percent)
-        .filter(|used| used.is_finite() && (0.0..=100.0).contains(used))
-        .map(|used| (100.0 - used).clamp(0.0, 100.0))
-        .min_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
+pub fn remaining_percent(account: &Account, focus: QuotaFocus) -> Option<f64> {
+    crate::recommendation::remaining_percent(account, focus)
 }
 
-pub fn quota_suffix(account: &Account) -> String {
+pub fn quota_suffix(account: &Account, focus: QuotaFocus) -> String {
     if account.token_health.status == TokenHealthStatus::NeedsRelogin {
         " · re-login required".to_string()
-    } else if let Some(remaining) = remaining_percent(account) {
+    } else if let Some(remaining) = remaining_percent(account, focus) {
         format!(" · {remaining:.0}% left")
     } else {
         " · quota unavailable".to_string()
@@ -181,6 +177,7 @@ pub fn quota_suffix(account: &Account) -> String {
 
 pub fn account_menu_label(
     account: &Account,
+    focus: QuotaFocus,
     is_active: bool,
     is_recommended: bool,
     privacy_mode: bool,
@@ -205,7 +202,7 @@ pub fn account_menu_label(
         } else {
             "• "
         };
-        let quota = quota_suffix(account);
+        let quota = quota_suffix(account, focus);
         format!("{prefix}{name}{quota}{rec_suffix}")
     }
 }
@@ -213,6 +210,7 @@ pub fn account_menu_label(
 pub fn sort_accounts_for_provider<'a>(
     accounts: &[&'a Account],
     active_id: Option<&str>,
+    focus: QuotaFocus,
 ) -> Vec<&'a Account> {
     let mut sorted = accounts.to_vec();
     sorted.sort_by(|a, b| {
@@ -234,8 +232,8 @@ pub fn sort_accounts_for_provider<'a>(
             return Ordering::Greater;
         }
 
-        let a_rem = remaining_percent(a);
-        let b_rem = remaining_percent(b);
+        let a_rem = remaining_percent(a, focus);
+        let b_rem = remaining_percent(b, focus);
         match (a_rem, b_rem) {
             (Some(ar), Some(br)) => br
                 .partial_cmp(&ar)
@@ -250,43 +248,25 @@ pub fn sort_accounts_for_provider<'a>(
     sorted
 }
 
-fn quota_is_fresh(account: &Account, now: i64) -> bool {
-    let Some(quota) = account.quota.as_ref() else {
-        return false;
-    };
-    let age = now.saturating_sub(quota.fetched_at);
-    (-60..3600).contains(&age)
-        && [&quota.primary, &quota.secondary].iter().all(|window| {
-            window
-                .used_percent
-                .is_none_or(|used| used.is_finite() && (0.0..=100.0).contains(&used))
-                && !(window.used_percent.is_some()
-                    && window.reset_at.is_some_and(|reset| {
-                        reset <= now && reset > window.fetched_at.unwrap_or(quota.fetched_at)
-                    }))
-        })
-}
-
+/// The recommended account and its decision details; see `recommendation`.
 pub fn recommended_account_for_provider(
     data: &AppData,
     provider: AccountProvider,
-) -> Option<&Account> {
-    data.accounts
+) -> Option<(&Account, Recommendation)> {
+    let recommendation = crate::recommendation::recommend(data, provider, crate::models::now_ts())?;
+    let account = data
+        .accounts
         .iter()
-        .filter(|account| account.provider == provider)
-        .filter(|account| !data.app_settings.hidden_account_ids.contains(&account.id))
-        .filter(|account| {
-            matches!(
-                account.token_health.status,
-                TokenHealthStatus::Healthy | TokenHealthStatus::Refreshed
-            )
-        })
-        .filter(|account| {
-            account.last_error.is_none() && quota_is_fresh(account, crate::models::now_ts())
-        })
-        .filter_map(|account| remaining_percent(account).map(|remaining| (account, remaining)))
-        .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap_or(Ordering::Equal))
-        .map(|(account, _)| account)
+        .find(|account| account.id == recommendation.account_id)?;
+    Some((account, recommendation))
+}
+
+fn recommended_quota_text(recommendation: &Recommendation) -> String {
+    if recommendation.projected {
+        format!("~{:.0}% left after reset", recommendation.remaining)
+    } else {
+        format!("{:.0}% left", recommendation.remaining)
+    }
 }
 
 pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppResult<Menu<R>> {
@@ -339,11 +319,9 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
     let has_any_accounts = !codex_accounts.is_empty() || !gemini_accounts.is_empty();
     if has_any_accounts {
         if codex_enabled && !codex_accounts.is_empty() {
-            if let Some(best) = rec_codex {
+            if let Some((best, recommendation)) = &rec_codex {
                 let is_active = data.active_account_id.as_deref() == Some(best.id.as_str());
-                let quota_str = remaining_percent(best)
-                    .map(|r| format!("{r:.0}% left"))
-                    .unwrap_or_else(|| "available".to_string());
+                let quota_str = recommended_quota_text(recommendation);
                 let label = account_label(best, privacy_mode);
 
                 let item = if is_active {
@@ -383,11 +361,9 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
         }
 
         if gemini_enabled && !gemini_accounts.is_empty() {
-            if let Some(best) = rec_gemini {
+            if let Some((best, recommendation)) = &rec_gemini {
                 let is_active = data.active_gemini_account_id.as_deref() == Some(best.id.as_str());
-                let quota_str = remaining_percent(best)
-                    .map(|r| format!("{r:.0}% left"))
-                    .unwrap_or_else(|| "available".to_string());
+                let quota_str = recommended_quota_text(recommendation);
                 let label = account_label(best, privacy_mode);
 
                 let item = if is_active {
@@ -450,14 +426,25 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
                 .map_err(|error| AppError::msg(format!("Failed to build tray item: {error}")))?;
             builder = builder.item(&item);
         } else {
-            let sorted_codex =
-                sort_accounts_for_provider(&codex_accounts, data.active_account_id.as_deref());
+            let sorted_codex = sort_accounts_for_provider(
+                &codex_accounts,
+                data.active_account_id.as_deref(),
+                quota_focus(&data.app_settings, AccountProvider::Codex),
+            );
             for account in sorted_codex {
                 let is_active = data.active_account_id.as_deref() == Some(account.id.as_str());
                 let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
-                let is_recommended =
-                    !needs_relogin && rec_codex.is_some_and(|item| item.id == account.id);
-                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+                let is_recommended = !needs_relogin
+                    && rec_codex
+                        .as_ref()
+                        .is_some_and(|(item, _)| item.id == account.id);
+                let label = account_menu_label(
+                    account,
+                    quota_focus(&data.app_settings, AccountProvider::Codex),
+                    is_active,
+                    is_recommended,
+                    privacy_mode,
+                );
 
                 let item = MenuItemBuilder::with_id(
                     format!("{SWITCH_CODEX_ACCOUNT_PREFIX}{}", account.id),
@@ -494,14 +481,23 @@ pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppR
             let sorted_gemini = sort_accounts_for_provider(
                 &gemini_accounts,
                 data.active_gemini_account_id.as_deref(),
+                quota_focus(&data.app_settings, AccountProvider::Gemini),
             );
             for account in sorted_gemini {
                 let is_active =
                     data.active_gemini_account_id.as_deref() == Some(account.id.as_str());
                 let needs_relogin = account.token_health.status == TokenHealthStatus::NeedsRelogin;
-                let is_recommended =
-                    !needs_relogin && rec_gemini.is_some_and(|item| item.id == account.id);
-                let label = account_menu_label(account, is_active, is_recommended, privacy_mode);
+                let is_recommended = !needs_relogin
+                    && rec_gemini
+                        .as_ref()
+                        .is_some_and(|(item, _)| item.id == account.id);
+                let label = account_menu_label(
+                    account,
+                    quota_focus(&data.app_settings, AccountProvider::Gemini),
+                    is_active,
+                    is_recommended,
+                    privacy_mode,
+                );
 
                 let item = MenuItemBuilder::with_id(
                     format!("{SWITCH_GEMINI_ACCOUNT_PREFIX}{}", account.id),
@@ -551,22 +547,22 @@ pub fn tray_tooltip(data: &AppData) -> String {
     };
     let privacy_mode = data.app_settings.privacy_mode;
     match (rec_codex, rec_gemini) {
-        (Some(c), Some(g)) => format!(
+        (Some((c, rc)), Some((g, rg))) => format!(
             "SwitchAI — Codex: {} ({:.0}%) · Antigravity: {} ({:.0}%)",
             account_label(c, privacy_mode),
-            remaining_percent(c).unwrap_or_default(),
+            rc.remaining,
             account_label(g, privacy_mode),
-            remaining_percent(g).unwrap_or_default()
+            rg.remaining
         ),
-        (Some(c), None) => format!(
+        (Some((c, rc)), None) => format!(
             "SwitchAI — [Codex] {} ({:.0}% left)",
             account_label(c, privacy_mode),
-            remaining_percent(c).unwrap_or_default()
+            rc.remaining
         ),
-        (None, Some(g)) => format!(
+        (None, Some((g, rg))) => format!(
             "SwitchAI — [Antigravity] {} ({:.0}% left)",
             account_label(g, privacy_mode),
-            remaining_percent(g).unwrap_or_default()
+            rg.remaining
         ),
         (None, None) => "SwitchAI".to_string(),
     }
@@ -626,6 +622,13 @@ fn alert_level(remaining: f64) -> u8 {
     }
 }
 
+fn provider_client_name(provider: AccountProvider) -> &'static str {
+    match provider {
+        AccountProvider::Codex => "Codex",
+        AccountProvider::Gemini => "Antigravity",
+    }
+}
+
 fn alert_body(account: &Account, level: u8, remaining: f64, privacy_mode: bool) -> String {
     match level {
         3 => format!(
@@ -647,6 +650,95 @@ fn alert_body(account: &Account, level: u8, remaining: f64, privacy_mode: bool) 
     }
 }
 
+fn switch_suggestion(data: &AppData, account: &Account) -> Option<String> {
+    let (best, recommendation) = recommended_account_for_provider(data, account.provider)?;
+    (best.id != account.id).then(|| {
+        format!(
+            " Best reserve: {} ({}). Switch from the tray menu.",
+            account_label(best, data.app_settings.privacy_mode),
+            recommended_quota_text(&recommendation)
+        )
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuotaAlert {
+    title: &'static str,
+    body: String,
+}
+
+/// Decides which quota notifications to show and records the new levels.
+///
+/// - The first level seen for an account is recorded silently, so starting the
+///   app never replays alerts for accounts that were already low.
+/// - Running low is only reported for the account each client is using now;
+///   inactive accounts running low need no action.
+/// - When the active account is critical, an inactive account getting its quota
+///   back is reported because it is now a way out.
+fn quota_alerts(data: &AppData, levels: &mut HashMap<String, u8>) -> Vec<QuotaAlert> {
+    let privacy_mode = data.app_settings.privacy_mode;
+    let mut current_levels = HashMap::new();
+    for account in &data.accounts {
+        let focus = quota_focus(&data.app_settings, account.provider);
+        if let Some(remaining) = remaining_percent(account, focus) {
+            current_levels.insert(account.id.clone(), (alert_level(remaining), remaining));
+        }
+    }
+    let active_level = |provider: AccountProvider| {
+        data.accounts
+            .iter()
+            .filter(|account| account.provider == provider)
+            .find(|account| crate::auto_refresh::is_account_active_in_data(account, data))
+            .and_then(|account| current_levels.get(&account.id))
+            .map(|(level, _)| *level)
+    };
+
+    let mut alerts = Vec::new();
+    for account in &data.accounts {
+        let Some(&(next_level, remaining)) = current_levels.get(&account.id) else {
+            continue;
+        };
+        let Some(previous) = levels.insert(account.id.clone(), next_level) else {
+            continue;
+        };
+        let is_active = crate::auto_refresh::is_account_active_in_data(account, data);
+        let client = provider_client_name(account.provider);
+        if is_active && next_level > previous {
+            let mut body = alert_body(account, next_level, remaining, privacy_mode);
+            if next_level >= 2
+                && let Some(suggestion) = switch_suggestion(data, account)
+            {
+                body.push_str(&suggestion);
+            }
+            alerts.push(QuotaAlert {
+                title: if next_level == 3 {
+                    "Quota exhausted"
+                } else {
+                    "Quota alert"
+                },
+                body,
+            });
+        } else if previous > 0 && next_level == 0 {
+            if is_active {
+                alerts.push(QuotaAlert {
+                    title: "Quota recovered",
+                    body: alert_body(account, 0, remaining, privacy_mode),
+                });
+            } else if active_level(account.provider).is_some_and(|level| level >= 2) {
+                alerts.push(QuotaAlert {
+                    title: "Quota available",
+                    body: format!(
+                        "{} has quota again ({remaining:.0}% left). Switch {client} to it from the tray menu.",
+                        account_label(account, privacy_mode)
+                    ),
+                });
+            }
+        }
+    }
+    levels.retain(|account_id, _| current_levels.contains_key(account_id));
+    alerts
+}
+
 pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
     refresh_dashboard(state);
     let Some(app) = state.app_handle.get() else {
@@ -661,42 +753,18 @@ pub fn refresh_dashboard_and_alerts(state: &Arc<SharedState>) {
         Err(_) => return,
     };
 
-    let privacy_mode = data.app_settings.privacy_mode;
-    for account in &data.accounts {
-        let Some(remaining) = remaining_percent(account) else {
-            continue;
-        };
-        let next_level = alert_level(remaining);
-        let previous = levels.insert(account.id.clone(), next_level);
-        let should_notify = match previous {
-            None => next_level > 0,
-            Some(old) => next_level > old || (old > 0 && next_level == 0),
-        };
-        if should_notify
-            && let Err(error) = show_notification(
-                app,
-                if next_level == 0 {
-                    "Quota recovered"
-                } else {
-                    "Quota alert"
-                },
-                alert_body(account, next_level, remaining, privacy_mode),
-            )
-        {
+    for alert in quota_alerts(&data, &mut levels) {
+        if let Err(error) = show_notification(app, alert.title, alert.body) {
             log::warn!("Could not show quota notification: {error}");
         }
     }
-    levels.retain(|account_id, _| {
-        data.accounts
-            .iter()
-            .any(|account| &account.id == account_id)
-    });
 }
 
 pub fn notify_account_selected(
     state: &Arc<SharedState>,
     account: &Account,
     restart_warning: Option<&str>,
+    client_notice: Option<&str>,
 ) {
     let Some(app) = state.app_handle.get() else {
         return;
@@ -704,24 +772,22 @@ pub fn notify_account_selected(
     let privacy_mode = lock_data(state)
         .map(|data| data.app_settings.privacy_mode)
         .unwrap_or(false);
-    let client = match account.provider {
-        AccountProvider::Codex => "Codex",
-        AccountProvider::Gemini => "Antigravity",
+    let client = provider_client_name(account.provider);
+    let mut body = match restart_warning {
+        Some(warning) => format!(
+            "{} selected. {client} restart warning: {warning}",
+            account_label(account, privacy_mode)
+        ),
+        None => format!(
+            "{} selected. Configured {client} restart completed.",
+            account_label(account, privacy_mode)
+        ),
     };
-    let _ = show_notification(
-        app,
-        "Account selected",
-        match restart_warning {
-            Some(warning) => format!(
-                "{} selected. {client} restart warning: {warning}",
-                account_label(account, privacy_mode)
-            ),
-            None => format!(
-                "{} selected. Configured {client} restart completed.",
-                account_label(account, privacy_mode)
-            ),
-        },
-    );
+    if let Some(notice) = client_notice {
+        body.push(' ');
+        body.push_str(notice);
+    }
+    let _ = show_notification(app, "Account selected", body);
 }
 
 #[cfg(test)]
@@ -780,10 +846,10 @@ mod tests {
     #[test]
     fn calculates_remaining_percent() {
         let account = make_account("1", "user@test.com", AccountProvider::Codex, Some(25.0));
-        assert_eq!(remaining_percent(&account), Some(75.0));
+        assert_eq!(remaining_percent(&account, QuotaFocus::Primary), Some(75.0));
 
         let no_quota = make_account("2", "user2@test.com", AccountProvider::Codex, None);
-        assert_eq!(remaining_percent(&no_quota), None);
+        assert_eq!(remaining_percent(&no_quota, QuotaFocus::Primary), None);
     }
 
     #[test]
@@ -815,10 +881,10 @@ mod tests {
         ));
 
         let best_codex = recommended_account_for_provider(&data, AccountProvider::Codex);
-        assert_eq!(best_codex.map(|a| a.id.as_str()), Some("c2"));
+        assert_eq!(best_codex.map(|(a, _)| a.id.as_str()), Some("c2"));
 
         let best_gemini = recommended_account_for_provider(&data, AccountProvider::Gemini);
-        assert_eq!(best_gemini.map(|a| a.id.as_str()), Some("g1"));
+        assert_eq!(best_gemini.map(|(a, _)| a.id.as_str()), Some("g1"));
 
         let tooltip = tray_tooltip(&data);
         assert!(tooltip.contains("Codex: codex-high@openai.com (90%)"));
@@ -914,14 +980,20 @@ mod tests {
     #[test]
     fn test_quota_suffix() {
         let healthy = make_account("1", "u@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
-        assert_eq!(quota_suffix(&healthy), " · 90% left");
+        assert_eq!(quota_suffix(&healthy, QuotaFocus::Primary), " · 90% left");
 
         let no_quota = make_account("4", "u@test.com", AccountProvider::Codex, None);
-        assert_eq!(quota_suffix(&no_quota), " · quota unavailable");
+        assert_eq!(
+            quota_suffix(&no_quota, QuotaFocus::Primary),
+            " · quota unavailable"
+        );
 
         let mut relogin = make_account("5", "u@test.com", AccountProvider::Codex, Some(10.0));
         relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
-        assert_eq!(quota_suffix(&relogin), " · re-login required");
+        assert_eq!(
+            quota_suffix(&relogin, QuotaFocus::Primary),
+            " · re-login required"
+        );
     }
 
     #[test]
@@ -929,29 +1001,30 @@ mod tests {
         let account = make_account("1", "user@test.com", AccountProvider::Codex, Some(10.0)); // 90% left
 
         // Active
-        let label_active = account_menu_label(&account, true, false, false);
+        let label_active = account_menu_label(&account, QuotaFocus::Primary, true, false, false);
         assert_eq!(label_active, "✓ user@test.com · 90% left");
 
         // Active & Recommended
-        let label_active_rec = account_menu_label(&account, true, true, false);
+        let label_active_rec = account_menu_label(&account, QuotaFocus::Primary, true, true, false);
         assert_eq!(label_active_rec, "✓ user@test.com · 90% left (recommended)");
 
         // Inactive & Recommended
-        let label_rec = account_menu_label(&account, false, true, false);
+        let label_rec = account_menu_label(&account, QuotaFocus::Primary, false, true, false);
         assert_eq!(label_rec, "★ user@test.com · 90% left (recommended)");
 
         // Inactive normal
-        let label_normal = account_menu_label(&account, false, false, false);
+        let label_normal = account_menu_label(&account, QuotaFocus::Primary, false, false, false);
         assert_eq!(label_normal, "• user@test.com · 90% left");
 
         // Needs relogin
         let mut relogin = make_account("2", "relogin@test.com", AccountProvider::Codex, Some(10.0));
         relogin.token_health.status = TokenHealthStatus::NeedsRelogin;
 
-        let label_relogin = account_menu_label(&relogin, false, false, false);
+        let label_relogin = account_menu_label(&relogin, QuotaFocus::Primary, false, false, false);
         assert_eq!(label_relogin, "⚠️ relogin@test.com (re-login required)");
 
-        let label_relogin_active = account_menu_label(&relogin, true, false, false);
+        let label_relogin_active =
+            account_menu_label(&relogin, QuotaFocus::Primary, true, false, false);
         assert_eq!(
             label_relogin_active,
             "✓ ⚠️ relogin@test.com (re-login required)"
@@ -969,13 +1042,124 @@ mod tests {
         let accounts = vec![&c1, &c2, &c3, &c4];
 
         // Case 1: c1 is active -> c1 must be first, then c2 (90%), c4 (50%), and c3 (relogin) last
-        let sorted = sort_accounts_for_provider(&accounts, Some("c1"));
+        let sorted = sort_accounts_for_provider(&accounts, Some("c1"), QuotaFocus::Primary);
         let ids: Vec<&str> = sorted.into_iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["c1", "c2", "c4", "c3"]);
 
         // Case 2: no active account -> c2 (90%), c4 (50%), c1 (20%), c3 (relogin)
-        let sorted2 = sort_accounts_for_provider(&accounts, None);
+        let sorted2 = sort_accounts_for_provider(&accounts, None, QuotaFocus::Primary);
         let ids2: Vec<&str> = sorted2.into_iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids2, vec!["c2", "c4", "c1", "c3"]);
+    }
+
+    #[test]
+    fn alerts_are_silent_on_first_sight_and_only_escalate_for_the_active_account() {
+        let mut data = AppData::default();
+        data.accounts.push(make_account(
+            "active",
+            "active@test.com",
+            AccountProvider::Codex,
+            Some(50.0),
+        ));
+        data.accounts.push(make_account(
+            "other",
+            "other@test.com",
+            AccountProvider::Codex,
+            Some(95.0),
+        ));
+        data.active_account_id = Some("active".into());
+        let mut levels = HashMap::new();
+
+        // Startup: an already exhausted inactive account must not notify.
+        assert!(quota_alerts(&data, &mut levels).is_empty());
+
+        // An inactive account dropping further stays silent.
+        data.accounts[1]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(100.0);
+        assert!(quota_alerts(&data, &mut levels).is_empty());
+
+        // The active account going critical notifies once.
+        data.accounts[0]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(92.0);
+        let alerts = quota_alerts(&data, &mut levels);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].title, "Quota alert");
+        assert!(alerts[0].body.contains("active@test.com"));
+        assert!(quota_alerts(&data, &mut levels).is_empty());
+    }
+
+    #[test]
+    fn critical_alert_suggests_the_best_reserve_and_reports_a_way_out() {
+        let mut data = AppData::default();
+        data.accounts.push(make_account(
+            "active",
+            "active@test.com",
+            AccountProvider::Codex,
+            Some(50.0),
+        ));
+        data.accounts.push(make_account(
+            "spare",
+            "spare@test.com",
+            AccountProvider::Codex,
+            Some(100.0),
+        ));
+        data.active_account_id = Some("active".into());
+        let mut levels = HashMap::new();
+        quota_alerts(&data, &mut levels);
+
+        // Spare recovers while the active account is still fine: no alert.
+        data.accounts[1]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(10.0);
+        assert!(quota_alerts(&data, &mut levels).is_empty());
+
+        data.accounts[0]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(100.0);
+        let alerts = quota_alerts(&data, &mut levels);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].title, "Quota exhausted");
+        assert!(
+            alerts[0]
+                .body
+                .contains("Best reserve: spare@test.com (90% left)")
+        );
+
+        // Spare runs out and comes back while the active one is exhausted.
+        data.accounts[1]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(100.0);
+        assert!(quota_alerts(&data, &mut levels).is_empty());
+        data.accounts[1]
+            .quota
+            .as_mut()
+            .unwrap()
+            .primary
+            .used_percent = Some(0.0);
+        let alerts = quota_alerts(&data, &mut levels);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].title, "Quota available");
+        assert!(
+            alerts[0]
+                .body
+                .contains("spare@test.com has quota again (100% left)")
+        );
     }
 }

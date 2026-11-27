@@ -81,6 +81,18 @@ export type AppSettings = {
   enabledProviders?: AccountProvider[]
   privacyMode?: boolean
   privacyMigrationPending?: boolean
+  geminiQuotaFocus?: GeminiQuotaFocus
+}
+
+export type GeminiQuotaFocus = 'gemini' | 'claude_and_gpt' | 'both'
+
+export type RecommendationReason = 'most_remaining' | 'resets_soon' | 'larger_plan'
+
+export type Recommendation = {
+  accountId: string
+  remainingPercent: number
+  projected: boolean
+  reason: RecommendationReason
 }
 
 export type AppData = {
@@ -112,6 +124,7 @@ export type AccountRefreshResult = {
 export type SwitchAccountRestartResponse = {
   state: AppData
   restartWarning: string | null
+  clientNotice: string | null
 }
 
 export type IpcError = {

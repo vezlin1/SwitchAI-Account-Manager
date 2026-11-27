@@ -22,6 +22,9 @@ use crate::storage::{commit_state_data, persist_app_data};
 pub struct SwitchAccountRestartResponse {
     pub state: AppDataDto,
     pub restart_warning: Option<String>,
+    /// Something the user should know after a successful switch, such as
+    /// clients that still use the previous account.
+    pub client_notice: Option<String>,
 }
 
 fn account_for_selection(data: &AppData, account_id: Option<&str>) -> Option<Account> {
@@ -216,14 +219,25 @@ pub(crate) fn set_active_account_data(
     Ok(result)
 }
 
+pub(crate) struct CodexSwitchOutcome {
+    pub data: AppData,
+    pub restart_warning: Option<String>,
+    pub client_notice: Option<String>,
+}
+
 pub(crate) fn switch_codex_account(
     account_id: &str,
     state: &Arc<SharedState>,
-) -> AppResult<(AppData, Option<String>)> {
+) -> AppResult<CodexSwitchOutcome> {
     let data = set_active_account_data(account_id, state)?;
     crate::tray_dashboard::emit_state_changed(state, "accounts", vec![account_id.to_string()]);
-    let warning = restart_codex_process().err().map(|err| err.user_message());
-    Ok((data, warning))
+    let restart_warning = restart_codex_process().err().map(|err| err.user_message());
+    let client_notice = crate::codex::running_codex_cli_notice();
+    Ok(CodexSwitchOutcome {
+        data,
+        restart_warning,
+        client_notice,
+    })
 }
 
 #[tauri::command]
@@ -234,10 +248,11 @@ pub async fn switch_active_account_and_restart_codex(
     let state = Arc::clone(state.inner());
     command_result(
         run_blocking(move || {
-            let (data, restart_warning) = switch_codex_account(&account_id, &state)?;
+            let outcome = switch_codex_account(&account_id, &state)?;
             Ok(SwitchAccountRestartResponse {
-                state: AppDataDto::from(&data),
-                restart_warning,
+                state: AppDataDto::from(&outcome.data),
+                restart_warning: outcome.restart_warning,
+                client_notice: outcome.client_notice,
             })
         })
         .await,
@@ -342,6 +357,7 @@ pub async fn switch_active_gemini_account_and_restart_antigravity(
         |(data, restart_warning)| SwitchAccountRestartResponse {
             state: AppDataDto::from(&data),
             restart_warning,
+            client_notice: None,
         },
     ))
 }

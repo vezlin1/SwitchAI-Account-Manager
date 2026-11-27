@@ -10,6 +10,7 @@ import type {
   IpcError,
   OAuthFlowResponse,
   OAuthStartResponse,
+  Recommendation,
   StartupStatus,
   StateResult,
   SwitchAccountRestartResponse
@@ -73,6 +74,8 @@ export const api = {
     invoke<AutoRefreshStatus>('get_auto_refresh_status'),
   setAppSettings: (settings: AppSettings) =>
     invoke<AppData>('set_app_settings', { settings }),
+  getRecommendedAccount: (provider: AccountProvider) =>
+    invoke<Recommendation | null>('get_recommended_account', { provider }),
   setOpenAccountTab: (provider: AccountProvider, tab: string | null) =>
     invoke<void>('set_open_account_tab', { provider, tab }),
 

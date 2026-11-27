@@ -16,6 +16,7 @@ mod models;
 pub mod oauth;
 mod persisted;
 pub mod process;
+mod recommendation;
 mod refresh_service;
 mod secret_store;
 mod shell;
@@ -126,8 +127,9 @@ pub fn run() {
                                 })
                             {
                                 match commands::switch_codex_account(account_id, &tray_state) {
-                                    Ok((data, restart_warning)) => {
-                                        if let Some(account) = data
+                                    Ok(outcome) => {
+                                        if let Some(account) = outcome
+                                            .data
                                             .accounts
                                             .iter()
                                             .find(|account| account.id == account_id)
@@ -135,7 +137,8 @@ pub fn run() {
                                             tray_dashboard::notify_account_selected(
                                                 &tray_state,
                                                 account,
-                                                restart_warning.as_deref(),
+                                                outcome.restart_warning.as_deref(),
+                                                outcome.client_notice.as_deref(),
                                             );
                                         }
                                         tray_dashboard::refresh_dashboard(&tray_state);
@@ -170,6 +173,7 @@ pub fn run() {
                                                     &selection_state,
                                                     account,
                                                     restart_warning.as_deref(),
+                                                    None,
                                                 );
                                             }
                                             tray_dashboard::refresh_dashboard(&selection_state);
@@ -263,6 +267,7 @@ pub fn run() {
             commands::set_app_settings,
             commands::set_open_account_tab,
             commands::migrate_privacy_mode,
+            commands::get_recommended_account,
             commands::start_oauth_flow,
             commands::get_oauth_flow_status,
             commands::cancel_oauth_flow,

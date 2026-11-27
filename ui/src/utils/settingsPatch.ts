@@ -35,6 +35,9 @@ export function settingsPatch(previous: AppSettings, next: AppSettings): Setting
   if (!sameStrings(previous.enabledProviders, next.enabledProviders)) {
     patch.enabledProviders = next.enabledProviders
   }
+  if (previous.geminiQuotaFocus !== next.geminiQuotaFocus && next.geminiQuotaFocus !== undefined) {
+    patch.geminiQuotaFocus = next.geminiQuotaFocus
+  }
   if (previous.privacyMode !== next.privacyMode && next.privacyMode !== undefined) {
     patch.privacyMode = next.privacyMode
   }

@@ -32,14 +32,23 @@ function renderQuota(usedPercent, resetAt) {
   }))
 }
 
-test('a saved percentage and bar remain visible after an hour and after reset', () => {
-  for (const resetAt of [now + 3600, now - 3600]) {
-    const markup = renderQuota(28, resetAt)
-    assert.match(markup, /72% left/)
-    assert.match(markup, /aria-valuenow="72"/)
-    assert.match(markup, /Last checked:/)
-    assert.equal(markup.includes('Reset in '), resetAt > now)
-  }
+test('a saved percentage and bar remain visible an hour after the check', () => {
+  const markup = renderQuota(28, now + 3600)
+  assert.match(markup, /72% left/)
+  assert.match(markup, /aria-valuenow="72"/)
+  assert.match(markup, /Last checked:/)
+  assert.match(markup, /Reset in /)
+  assert.doesNotMatch(markup, /quota-fill-projected/)
+})
+
+test('a window whose reset has passed is projected as full until a check confirms it', () => {
+  const markup = renderQuota(28, now - 3600)
+  assert.match(markup, /~100% left/)
+  assert.match(markup, /aria-valuenow="100"/)
+  assert.match(markup, /quota-fill-projected/)
+  assert.match(markup, /waiting for confirmation/)
+  assert.match(markup, /Reset · not confirmed yet/)
+  assert.doesNotMatch(markup, /Reset in /)
 })
 
 test('zero and full saved balances are distinct from absent or invalid readings', () => {
@@ -60,7 +69,7 @@ function renderStatuses(tokenStatus, { quota = savedQuota, isRefreshing = false,
   return [
     renderToStaticMarkup(createElement(AccountStatus, { account, attention: accountAttention(account), isRefreshing })),
     renderToStaticMarkup(createElement(AccountDetails, {
-      account, isRecommended: false, busyKeys: new Set(isRefreshing ? ['quota:test-account'] : [])
+      account, recommendation: null, busyKeys: new Set(isRefreshing ? ['quota:test-account'] : [])
     }))
   ]
 }

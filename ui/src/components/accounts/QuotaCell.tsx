@@ -23,14 +23,26 @@ export const QuotaCell = memo(function QuotaCell({
   window, fetchedAt, title, updateBlocked = false, isRefreshing = false
 }: QuotaCellProps) {
   const resetAt = quotaResetTime(window, fetchedAt)
-  const remaining = updateBlocked ? null : remainingPercent(window?.usedPercent)
+  const reported = updateBlocked ? null : remainingPercent(window?.usedPercent)
+  // Once the reset time has passed the window is known to be full again, even
+  // before the next check confirms it.
+  const resetPassed = useTimeValue(
+    useCallback(() => resetAt != null && Date.now() / 1000 >= resetAt, [resetAt]),
+    reported != null && resetAt != null
+  )
+  const projected = reported != null && resetPassed
+  const remaining = projected ? 100 : reported
   const checkedAt = window?.fetchedAt ?? fetchedAt
   const checkedTime = useMemo(() => formatEventTime(checkedAt)?.exact, [checkedAt])
-  const checkedTitle = remaining != null && checkedTime ? `Last checked: ${checkedTime}` : undefined
+  const checkedTitle = remaining == null || !checkedTime
+    ? undefined
+    : projected
+      ? `Limit reset after the last check (${checkedTime}); waiting for confirmation`
+      : `Last checked: ${checkedTime}`
   const resetText = useTimeValue(useCallback(() => {
     if (resetAt == null) return 'Reset time unavailable'
     const now = Date.now()
-    return resetAt > now / 1000 ? `Reset ${formatTimeUntil(resetAt, now)}` : ''
+    return resetAt > now / 1000 ? `Reset ${formatTimeUntil(resetAt, now)}` : 'Reset · not confirmed yet'
   }, [resetAt]), remaining != null && resetAt != null)
   const roundedPercent = remaining == null ? undefined : Math.round(remaining)
 
@@ -39,7 +51,7 @@ export const QuotaCell = memo(function QuotaCell({
       <div className="flex items-center justify-between text-xs text-ag-muted mb-1">
         <span>{title}</span>
         <span title={checkedTitle} className={`font-semibold tabular-nums ${remaining != null ? 'text-ag-text' : 'text-ag-muted'}`}>
-          {remaining != null ? `${roundedPercent}% left` : 'Not available'}
+          {remaining != null ? `${projected ? '~' : ''}${roundedPercent}% left` : 'Not available'}
         </span>
       </div>
       {remaining != null && (
@@ -54,7 +66,7 @@ export const QuotaCell = memo(function QuotaCell({
             aria-valuetext={checkedTitle ? `${roundedPercent}% remaining. ${checkedTitle}` : `${roundedPercent}% remaining`}
           >
             <div
-              className={`quota-fill ${quotaClass(remaining)}`}
+              className={`quota-fill ${quotaClass(remaining)}${projected ? ' quota-fill-projected' : ''}`}
               style={{ transform: `scaleX(${remaining / 100})` }}
             />
           </div>

@@ -1,7 +1,8 @@
-import { Suspense, lazy, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api'
 import { AccountTagsDialog, type TagEditorTarget } from './AccountTags'
-import type { Account, AccountProvider, AppData, AutoRefreshStatus } from '../../types'
+import type { Account, AccountProvider, AppData, AutoRefreshStatus, Recommendation } from '../../types'
+import { useSharedTicker } from '../../hooks/useSharedTicker'
 import { useAccountsActions } from '../../hooks/useAccountsActions'
 import type { AppDataUpdater } from '../../hooks/useAppData'
 import { useOAuthLogin } from '../../hooks/useOAuthLogin'
@@ -10,7 +11,6 @@ import { AccountsTable } from './AccountsTable'
 import { AccountsToolbar } from './AccountsToolbar'
 import { GeminiSwitchTargetsBar } from './GeminiSwitchTargetsBar'
 import {
-  recommendedAccount,
   reorderFilteredAccounts,
   filterAccountsBySubscription,
   subscriptionFiltersForAccounts,
@@ -151,10 +151,20 @@ export function AccountsTab({
   const detailsAccount = detailsAccountId
     ? filteredAccounts.find((account) => account.id === detailsAccountId) ?? null
     : null
-  const recommendation = useMemo(
-    () => detailsAccountId ? recommendedAccount(accounts, hiddenAccountIds) : null,
-    [accounts, detailsAccountId, hiddenAccountIds]
-  )
+  // The backend owns the recommendation so the window and the tray never
+  // disagree. Re-ask when the data changes and once a minute, because quota
+  // freshness and passed resets change with time alone.
+  const [recommendation, setRecommendation] = useState<Recommendation | null>(null)
+  const recommendationMinute = useSharedTicker(detailsAccountId != null)
+  const geminiQuotaFocus = data.appSettings.geminiQuotaFocus
+  useEffect(() => {
+    if (!detailsAccountId) return
+    let cancelled = false
+    api.getRecommendedAccount(currentProvider)
+      .then((next) => { if (!cancelled) setRecommendation(next) })
+      .catch(() => { if (!cancelled) setRecommendation(null) })
+    return () => { cancelled = true }
+  }, [accounts, currentProvider, detailsAccountId, geminiQuotaFocus, hiddenAccountIds, recommendationMinute])
   const autoRefreshErrorForProvider = autoRefreshError
     ? ((autoRefreshError.toLowerCase().includes('gemini') && currentProvider === 'gemini') ||
        (autoRefreshError.toLowerCase().includes('chatgpt') && currentProvider === 'codex') ||
@@ -319,7 +329,7 @@ export function AccountsTab({
               account={detailsAccount}
               refreshNotice={actions.getRefreshNotice(detailsAccount)}
               isActive={activeAccountId === detailsAccount.id}
-              isRecommended={recommendation?.id === detailsAccount.id}
+              recommendation={recommendation?.accountId === detailsAccount.id ? recommendation : null}
               busyKeys={accountBusyKeys}
               onBack={closeDetails}
               onEditTags={editAccountTags}
