@@ -527,7 +527,7 @@ pub fn commit_app_data(current: &mut AppData, next: AppData) -> AppResult<()> {
 
 // Only refresh callers use this path. Credential/selection changes remain durable
 // before returning; bulk quota metadata is published immediately and flushed in a
-// short batch, at the end of the refresh run, and before exiting/updating.
+// short batch, at the end of the refresh run, and before exiting.
 pub(crate) fn refresh_metadata_can_wait(current: &AppData, next: &AppData) -> bool {
     current.active_account_id == next.active_account_id
         && current.active_gemini_account_id == next.active_gemini_account_id
@@ -1478,7 +1478,7 @@ mod tests {
             started_tx.send(()).unwrap();
             let current = crate::app_state::lock_data(&writer_state).unwrap();
             let mut settings = current.clone();
-            settings.app_settings.auto_check_updates = false;
+            settings.app_settings.close_to_tray = false;
             super::commit_state_data_at(&writer_state, current, settings, &writer_path).unwrap();
             saved_tx.send(()).unwrap();
         });
@@ -1498,13 +1498,13 @@ mod tests {
 
         let data = crate::app_state::lock_data(&state).unwrap();
         assert_eq!(data.accounts[0].tokens.refresh_token, "rotated-token");
-        assert!(!data.app_settings.auto_check_updates);
+        assert!(!data.app_settings.close_to_tray);
         assert_eq!(data.revision, 2);
         let stored = crate::secret_store::load_all_tokens().unwrap();
         assert_eq!(stored[&data.accounts[0].id].refresh_token, "rotated-token");
         let (_, persisted) = super::read_persisted_state(&path).unwrap();
         let persisted: serde_json::Value = serde_json::from_str(&persisted).unwrap();
-        assert_eq!(persisted["appSettings"]["autoCheckUpdates"], false);
+        assert_eq!(persisted["appSettings"]["closeToTray"], false);
         crate::secret_store::delete_tokens(&data.accounts[0].id).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1523,16 +1523,16 @@ mod tests {
 
         let current = crate::app_state::lock_data(&state).unwrap();
         let mut next = current.clone();
-        next.app_settings.auto_check_updates = false;
+        next.app_settings.close_to_tray = false;
 
         let committed =
             super::commit_state_data_at(&state, current, next, &path).expect("commit state data");
         assert_eq!(committed.revision, 4);
-        assert!(!committed.app_settings.auto_check_updates);
+        assert!(!committed.app_settings.close_to_tray);
 
         let in_state = crate::app_state::lock_data(&state).unwrap().clone();
         assert_eq!(in_state.revision, 4);
-        assert!(!in_state.app_settings.auto_check_updates);
+        assert!(!in_state.app_settings.close_to_tray);
         let _ = fs::remove_dir_all(dir);
     }
 

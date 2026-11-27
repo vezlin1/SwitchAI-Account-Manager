@@ -1,127 +1,110 @@
-import { memo, useState } from 'react'
+import { memo, useCallback, useId, useState } from 'react'
 import { Check, CircleAlert, CircleCheck, Copy, Loader2 } from 'lucide-react'
 import type { Account } from '../../types'
-import { readableStatusError, STATUS_PREVIEW_LIMIT } from '../../utils/dateUtils'
-import { QuotaFreshness } from './QuotaFreshness'
+import type { AccountAttention } from '../../utils/accountFeedback'
+import { readableStatusError } from '../../utils/dateUtils'
+import { quotaIsStale } from '../../utils/quotaWindows'
+import { useTimeValue } from '../../hooks/useSharedTicker'
+import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountStatusProps = {
   account: Account
-  isRefreshing?: boolean
+  attention: AccountAttention | null
+  isRefreshing: boolean
+  actionDisabled: boolean
+  onRefreshQuota: (id: string) => Promise<void>
+  onDetectSubscription: (id: string) => Promise<void>
+  onRelogin: (account: Account) => void
 }
 
 export const AccountStatus = memo(function AccountStatus({
-  account, isRefreshing = false
-}: AccountStatusProps) {
-  return (
-    <div className="flex flex-col items-start gap-1 min-w-0">
-      <AccountHealthStatus account={account} isRefreshing={isRefreshing} />
-      <QuotaFreshness account={account} />
-    </div>
-  )
-})
-
-const AccountHealthStatus = memo(function AccountHealthStatus({
   account,
-  isRefreshing = false
+  attention,
+  isRefreshing,
+  actionDisabled,
+  onRefreshQuota,
+  onDetectSubscription,
+  onRelogin
 }: AccountStatusProps) {
   const [copied, setCopied] = useState(false)
-  const tokenHealth = account.tokenHealth
-  const isUnknown = tokenHealth?.status === 'unknown'
-  const notCheckedYet = !tokenHealth?.lastCheckedAt && !account.quota
-  const isChecking = isRefreshing
+  const statusId = useId()
+  const { privacyMode } = usePrivacy()
+  const isStale = useTimeValue(
+    useCallback(() => quotaIsStale(account.quota), [account.quota]),
+    Boolean(account.quota) && !attention
+  )
 
-  const needsRelogin = tokenHealth?.status === 'needs_relogin'
-  const tokenWarning = tokenHealth?.status === 'network_error' || tokenHealth?.status === 'server_error'
-  const quotaIssue = account.issues?.quota ?? null
-  const rawStatusError = tokenHealth?.lastError ?? quotaIssue
-  const statusTitle = rawStatusError ?? (isChecking ? 'Checking status and quotas…' : 'Healthy')
-  const tokenStatusMessage = readableStatusError(tokenHealth?.lastError)
-  const accountStatusMessage = readableStatusError(quotaIssue)
+  if (attention || isStale || (!account.quota && !isRefreshing)) {
+    const kind = attention?.kind
+    const rawMessage = attention?.message
+    const label = kind === 'verify' ? 'Verify in Antigravity'
+      : kind === 'relogin' ? 'Sign-in required'
+      : kind === 'subscription' ? 'Plan refresh failed'
+      : kind === 'quota' ? 'Quota refresh failed'
+      : kind === 'notice' ? 'Refresh warning'
+      : isStale ? 'Saved quota' : 'No quota yet'
+    const action = kind === 'relogin' ? 'Re-login'
+      : kind === 'subscription' ? 'Retry plan'
+      : attention ? 'Retry quota' : 'Refresh quota'
+    const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
-  const copyError = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!rawStatusError) return
-    try {
-      await navigator.clipboard.writeText(rawStatusError)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Ignore
-    }
-  }
-
-  if (isChecking && !needsRelogin) {
     return (
-      <span className="account-status account-status-loading" title={statusTitle}>
-        <Loader2 size={13} className="account-status-icon animate-spin text-blue-400" aria-hidden="true" />
-        <span className="text-blue-400/90 font-medium">checking…</span>
-      </span>
-    )
-  }
-
-  if (needsRelogin) {
-    return (
-      <span className="account-status account-status-danger" title={statusTitle}>
-        <CircleAlert size={14} className="account-status-icon" aria-hidden="true" />
-        <span>{tokenStatusMessage ?? 'needs re-login'}</span>
-        {rawStatusError && (
-          <button
-            type="button"
-            onClick={copyError}
-            className="ml-1 p-0.5 text-red-300/80 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-            title={copied ? 'Copied error!' : 'Copy full error'}
-          >
-            {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
-          </button>
-        )}
-      </span>
-    )
-  }
-
-  if (quotaIssue) {
-    return (
-      <span className="account-status account-status-danger" title={quotaIssue}>
-        <CircleAlert size={14} className="account-status-icon" aria-hidden="true" />
-        <span>{accountStatusMessage ?? quotaIssue.slice(0, STATUS_PREVIEW_LIMIT)}</span>
+      <div className={`account-status-feedback${attention ? ' account-status-warning' : ' text-ag-muted'}`}>
+        <div className="account-status-line" title={readableStatusError(rawMessage) ?? label}>
+          {attention && <CircleAlert size={13} className="account-status-icon" aria-hidden="true" />}
+          <span id={statusId}>{label}</span>
+          {rawMessage && (
+            <button
+              type="button"
+              className="account-status-copy"
+              aria-label={copied ? 'Copied' : 'Copy status details'}
+              title={copied ? 'Copied' : 'Copy status details'}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(rawMessage)
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 2000)
+                } catch {
+                  // The browser can deny clipboard access.
+                }
+              }}
+            >
+              {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+            </button>
+          )}
+        </div>
         <button
           type="button"
-          onClick={copyError}
-          className="ml-1 p-0.5 text-red-300/80 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-          title={copied ? 'Copied error!' : 'Copy full error'}
+          className="account-status-action"
+          aria-label={`${action} for ${accountLabel}`}
+          aria-describedby={kind === 'verify' ? statusId : undefined}
+          aria-disabled={actionDisabled}
+          onClick={() => {
+            if (actionDisabled) return
+            if (kind === 'relogin') onRelogin(account)
+            else if (kind === 'subscription') void onDetectSubscription(account.id)
+            else void onRefreshQuota(account.id)
+          }}
         >
-          {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+          {action}
         </button>
-      </span>
+      </div>
     )
   }
 
-  if (tokenWarning) {
+  if (isRefreshing) {
     return (
-      <span className="account-status account-status-warning" title={statusTitle}>
-        <CircleAlert size={14} className="account-status-icon" aria-hidden="true" />
-        <span>{tokenStatusMessage ?? 'token check warning'}</span>
-        {rawStatusError && (
-          <button
-            type="button"
-            onClick={copyError}
-            className="ml-1 p-0.5 text-amber-300/80 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
-            title={copied ? 'Copied error!' : 'Copy full error'}
-          >
-            {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
-          </button>
-        )}
+      <span className="account-status account-status-loading" title="Checking status and quotas…">
+        <Loader2 size={13} className="account-status-icon animate-spin" aria-hidden="true" />
+        <span>Checking…</span>
       </span>
     )
-  }
-
-  if (isUnknown || notCheckedYet) {
-    return <span className="account-status text-ag-muted">Not checked</span>
   }
 
   return (
     <span className="account-status account-status-healthy">
       <CircleCheck size={14} className="account-status-icon" aria-hidden="true" />
-      <span>healthy</span>
+      <span>Healthy</span>
     </span>
   )
 })

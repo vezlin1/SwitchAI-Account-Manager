@@ -1,6 +1,7 @@
 import { memo } from 'react'
-import { ChevronRight, Eye, EyeOff, KeyRound, Loader2, Trash2, UserCheck } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Loader2, Trash2, UserCheck } from 'lucide-react'
 import type { Account } from '../../types'
+import { accountAttention, quotaUpdateBlocked, type AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
 import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
@@ -20,6 +21,9 @@ type AccountCardProps = {
   hiddenFromAll: boolean
   onOpenDetails: (account: Account, opener: HTMLElement) => void
   onSwitch: (account: Account) => void
+  refreshNotice?: AccountRefreshNotice
+  onRefreshQuota: (id: string) => Promise<void>
+  onDetectSubscription: (id: string) => Promise<void>
   onRelogin: (account: Account) => void
   onRemove: (account: Account) => void
   onToggleInAll: (accountId: string) => void
@@ -37,6 +41,9 @@ export const AccountCard = memo(function AccountCard({
   onOpenDetails,
   onSwitch,
   onRelogin,
+  refreshNotice,
+  onRefreshQuota,
+  onDetectSubscription,
   onRemove,
   onToggleInAll
 }: AccountCardProps) {
@@ -48,6 +55,8 @@ export const AccountCard = memo(function AccountCard({
     needsRelogin,
     detectedSubscriptionDate
   } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  const attention = accountAttention(account, refreshNotice)
+  const updateBlocked = quotaUpdateBlocked(attention)
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
@@ -92,18 +101,6 @@ export const AccountCard = memo(function AccountCard({
               ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
               : <UserCheck size={16} aria-hidden="true" />}
           </button>
-          {needsRelogin && (
-            <button
-              type="button"
-              className="account-card-icon-action account-card-icon-action-warning"
-              onClick={() => onRelogin(account)}
-              disabled={switching || removing || isAccountRefreshing}
-              title="Re-login account"
-              aria-label={`Re-login ${accountLabel}`}
-            >
-              <KeyRound size={16} aria-hidden="true" />
-            </button>
-          )}
           <button
             type="button"
             className="account-card-icon-action"
@@ -131,7 +128,15 @@ export const AccountCard = memo(function AccountCard({
 
       <div className="account-card-status">
         <span className="account-card-label">Status</span>
-        <AccountStatus account={account} isRefreshing={isAccountRefreshing} />
+        <AccountStatus
+          account={account}
+          attention={attention}
+          isRefreshing={isAccountRefreshing}
+          actionDisabled={switching || removing || isAccountRefreshing}
+          onRelogin={onRelogin}
+          onRefreshQuota={onRefreshQuota}
+          onDetectSubscription={onDetectSubscription}
+        />
       </div>
 
       {quotaColumns.length > 0 && (
@@ -140,8 +145,9 @@ export const AccountCard = memo(function AccountCard({
             return (
               <QuotaCell
                 key={column.key}
-                value={window?.usedPercent}
-                resetAt={window?.resetAt}
+                window={window}
+                fetchedAt={account.quota?.fetchedAt ?? null}
+                updateBlocked={updateBlocked}
                 title={column.cellTitle}
               />
             )

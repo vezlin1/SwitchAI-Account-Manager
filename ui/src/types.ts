@@ -65,26 +65,8 @@ export type AppSettings = {
   lastActiveProvider?: AccountProvider
   geminiSwitchTargets?: string[]
   enabledProviders?: AccountProvider[]
-  autoCheckUpdates: boolean
-  ignoredUpdateVersion?: string | null
   privacyMode?: boolean
   privacyMigrationPending?: boolean
-}
-
-export type UpdateCheckResult = {
-  updateAvailable: boolean
-  version: string
-  currentVersion: string
-  releaseDate?: string | null
-  releaseNotes?: string | null
-  downloadSize?: number | null
-  stagedReady?: boolean
-}
-
-export type UpdateProgress = {
-  downloadedBytes: number
-  totalBytes?: number | null
-  percent: number
 }
 
 export type AppData = {

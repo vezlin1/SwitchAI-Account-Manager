@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::State;
 
@@ -216,26 +217,59 @@ pub async fn refresh_all_quotas(
                     });
             let result =
                 auto_refresh::refresh_accounts_for_provider(state.inner(), target_provider).await?;
+            let warned_accounts: HashSet<_> = result
+                .warnings
+                .iter()
+                .filter_map(|notice| notice.account_id.as_deref())
+                .collect();
+            let failed_accounts: HashSet<_> = result
+                .failed_account_ids
+                .iter()
+                .map(String::as_str)
+                .collect();
             let mut warnings = result
                 .warnings
-                .into_iter()
-                .map(|message| warning("refresh_warning", "account", message, None, false))
+                .iter()
+                .map(|notice| {
+                    let code = if notice
+                        .account_id
+                        .as_deref()
+                        .is_some_and(|id| failed_accounts.contains(id))
+                    {
+                        "refresh_failed"
+                    } else {
+                        "refresh_warning"
+                    };
+                    warning(
+                        code,
+                        "account",
+                        notice.message.clone(),
+                        notice.account_id.clone(),
+                        false,
+                    )
+                })
                 .collect::<Vec<_>>();
-            for account_id in result.failed_account_ids {
-                let is_needs_relogin = result
+            if !result.failed_account_ids.is_empty() {
+                let accounts: HashMap<_, _> = result
                     .state
                     .accounts
                     .iter()
-                    .find(|account| account.id == account_id)
-                    .is_some_and(|account| {
-                        account.token_health.status == TokenHealthStatus::NeedsRelogin
-                    });
-                if !is_needs_relogin {
+                    .map(|account| (account.id.as_str(), account))
+                    .collect();
+                for account_id in &result.failed_account_ids {
+                    let id = account_id.as_str();
+                    if warned_accounts.contains(id)
+                        || !accounts.get(id).is_some_and(|account| {
+                            account.token_health.status != TokenHealthStatus::NeedsRelogin
+                        })
+                    {
+                        continue;
+                    }
                     warnings.push(warning(
                         "refresh_failed",
                         "account",
                         "Quota refresh failed for this account".to_string(),
-                        Some(account_id),
+                        Some(account_id.clone()),
                         true,
                     ));
                 }

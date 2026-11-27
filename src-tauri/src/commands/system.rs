@@ -173,11 +173,6 @@ pub fn migrate_privacy_mode(
 }
 
 #[tauri::command]
-pub fn acknowledge_update_startup() -> Result<(), IpcErrorDto> {
-    command_result(crate::portable_updater::acknowledge_update_startup())
-}
-
-#[tauri::command]
 pub fn get_auto_refresh_status(
     state: State<'_, Arc<SharedState>>,
 ) -> Result<AutoRefreshStatusDto, IpcErrorDto> {

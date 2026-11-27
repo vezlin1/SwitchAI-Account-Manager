@@ -16,6 +16,33 @@ const FIVE_HOURS_SECONDS = 5 * HOUR_SECONDS
 const WEEK_SECONDS = 7 * DAY_SECONDS
 const MIN_MONTH_SECONDS = 27 * DAY_SECONDS
 const MAX_MONTH_SECONDS = 32 * DAY_SECONDS
+const QUOTA_FRESH_SECONDS = HOUR_SECONDS
+
+export function quotaResetTime(window: QuotaWindow | null, fetchedAt: number | null): number | null {
+  if (!window?.resetAt || !Number.isFinite(window.resetAt)) return null
+  return window.resetAt > (window.fetchedAt ?? fetchedAt ?? 0) ? window.resetAt : null
+}
+
+export function quotaWindowIsStale(
+  window: QuotaWindow | null,
+  fetchedAt: number | null,
+  now = Date.now() / 1000
+): boolean {
+  if (window?.usedPercent == null) return false
+  const checkedAt = window.fetchedAt ?? fetchedAt
+  if (checkedAt == null || !Number.isFinite(checkedAt)) return true
+  if (!Number.isFinite(window.usedPercent) || window.usedPercent < 0 || window.usedPercent > 100) return true
+  const resetAt = quotaResetTime(window, fetchedAt)
+  const age = now - checkedAt
+  return age < -60 || age >= QUOTA_FRESH_SECONDS || (resetAt !== null && now >= resetAt)
+}
+
+export function quotaIsStale(quota: QuotaInfo | null, now = Date.now() / 1000): boolean {
+  return quota !== null && (
+    quotaWindowIsStale(quota.primary, quota.fetchedAt, now) ||
+    quotaWindowIsStale(quota.secondary, quota.fetchedAt, now)
+  )
+}
 
 function isNear(value: number, target: number, tolerance: number): boolean {
   return Math.abs(value - target) <= tolerance

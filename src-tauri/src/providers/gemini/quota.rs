@@ -22,6 +22,7 @@ const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 const FIVE_HOURS_SECONDS: i64 = 5 * 60 * 60;
 const WEEK_SECONDS: i64 = 7 * 24 * 60 * 60;
+const MODEL_RESET_CLOCK_SKEW_SECONDS: i64 = 5;
 
 #[derive(Debug, Clone)]
 pub struct GeminiQuotaResult {
@@ -104,6 +105,16 @@ struct AvailableModelsEnvelope {
     response: Option<AvailableModelsBody>,
 }
 
+impl AvailableModelsEnvelope {
+    fn into_models(self) -> HashMap<String, AvailableModel> {
+        if self.models.is_empty() {
+            self.response.unwrap_or_default().models
+        } else {
+            self.models
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct AvailableModelsBody {
     #[serde(default)]
@@ -129,6 +140,80 @@ struct QuotaCandidate {
     remaining_fraction: f64,
     reset_at: Option<i64>,
     window_seconds: Option<i64>,
+    model_group: Option<QuotaModelGroup>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QuotaModelGroup {
+    Gemini,
+    ClaudeAndGpt,
+}
+
+impl QuotaModelGroup {
+    fn from_bucket_id(id: Option<&str>) -> Option<Self> {
+        match id {
+            Some("gemini-5h" | "gemini-weekly") => Some(Self::Gemini),
+            Some("3p-5h" | "3p-weekly") => Some(Self::ClaudeAndGpt),
+            _ => None,
+        }
+    }
+
+    fn contains_model(self, model_id: &str) -> bool {
+        match self {
+            Self::Gemini => model_id.starts_with("gemini-"),
+            Self::ClaudeAndGpt => model_id.starts_with("claude-") || model_id.starts_with("gpt-"),
+        }
+    }
+
+    fn agreed_full_reset(self, models: &HashMap<String, AvailableModel>) -> Option<i64> {
+        let mut agreed = None;
+        for (id, model) in models {
+            if !self.contains_model(id) {
+                continue;
+            }
+            let Some(quota) = &model.quota_info else {
+                continue;
+            };
+            let reset_at = parse_reset_at(quota.reset_time.as_deref())?;
+            if quota.remaining_fraction != Some(1.0) || agreed.is_some_and(|time| time != reset_at)
+            {
+                return None;
+            }
+            agreed = Some(reset_at);
+        }
+        agreed
+    }
+}
+
+struct ParsedQuotaSummary {
+    quota: QuotaInfo,
+    reset_groups: [Option<QuotaModelGroup>; 2],
+}
+
+impl ParsedQuotaSummary {
+    fn fill_missing_resets(
+        &mut self,
+        models: AvailableModelsEnvelope,
+        requested_at: i64,
+        received_at: i64,
+    ) {
+        let models = models.into_models();
+        let windows = [&mut self.quota.primary, &mut self.quota.secondary];
+        for (window, group) in windows.into_iter().zip(self.reset_groups) {
+            let (Some(group), Some(duration)) = (group, window.limit_window_seconds) else {
+                continue;
+            };
+            // Model responses expose one timestamp without a period. It identifies
+            // a full window only when the group agrees and the full duration fits.
+            let earliest = requested_at + duration - MODEL_RESET_CLOCK_SKEW_SECONDS;
+            let latest = received_at + duration + MODEL_RESET_CLOCK_SKEW_SECONDS;
+            if let Some(reset_at) = group.agreed_full_reset(&models)
+                && (earliest..=latest).contains(&reset_at)
+            {
+                window.reset_at = Some(reset_at);
+            }
+        }
+    }
 }
 
 fn antigravity_request(client: &Client, url: &str, tokens: &Tokens) -> reqwest::RequestBuilder {
@@ -378,7 +463,7 @@ fn strictest<'a>(
 fn quota_from_summary(
     envelope: QuotaSummaryEnvelope,
     plan_type: Option<String>,
-) -> Option<QuotaInfo> {
+) -> Option<ParsedQuotaSummary> {
     let now = now_ts();
     let groups = if envelope.groups.is_empty() {
         envelope.response.unwrap_or_default().groups
@@ -407,6 +492,7 @@ fn quota_from_summary(
                 remaining_fraction,
                 reset_at,
                 window_seconds: bucket_window_seconds(bucket, group, reset_at, now),
+                model_group: QuotaModelGroup::from_bucket_id(bucket.bucket_id.as_deref()),
             });
         }
     }
@@ -430,11 +516,22 @@ fn quota_from_summary(
             .iter()
             .filter(|candidate| candidate.window_seconds == Some(WEEK_SECONDS)),
     );
-    Some(QuotaInfo {
-        plan_type,
-        primary: candidate_to_window(primary, now),
-        secondary: candidate_to_window(secondary, now),
-        fetched_at: now,
+    let missing_reset_group = |candidate: Option<&QuotaCandidate>| {
+        candidate
+            .filter(|candidate| {
+                candidate.remaining_fraction == 1.0
+                    && candidate.reset_at.is_none_or(|reset_at| reset_at <= now)
+            })
+            .and_then(|candidate| candidate.model_group)
+    };
+    Some(ParsedQuotaSummary {
+        quota: QuotaInfo {
+            plan_type,
+            primary: candidate_to_window(primary, now),
+            secondary: candidate_to_window(secondary, now),
+            fetched_at: now,
+        },
+        reset_groups: [missing_reset_group(primary), missing_reset_group(secondary)],
     })
 }
 
@@ -443,12 +540,8 @@ fn quota_from_available_models(
     plan_type: Option<String>,
 ) -> Option<QuotaInfo> {
     let now = now_ts();
-    let models = if envelope.models.is_empty() {
-        envelope.response.unwrap_or_default().models
-    } else {
-        envelope.models
-    };
-    let candidates = models
+    let candidates = envelope
+        .into_models()
         .into_values()
         .filter_map(|model| model.quota_info)
         .filter_map(|quota| {
@@ -471,6 +564,7 @@ fn quota_from_available_models(
                     remaining_fraction,
                     reset_at,
                     window_seconds,
+                    model_group: None,
                 })
         })
         .collect::<Vec<_>>();
@@ -545,6 +639,25 @@ pub async fn fetch_gemini_quota(
     fetch_gemini_quota_with_cache(client, tokens, cached_project_id, None, true).await
 }
 
+async fn fetch_available_models(
+    client: &Client,
+    tokens: &Tokens,
+    request_body: &Value,
+) -> AppResult<AvailableModelsEnvelope> {
+    let body = post_cloud_code(
+        client,
+        tokens,
+        "/v1internal:fetchAvailableModels",
+        request_body,
+        "Antigravity model quota failed",
+    )
+    .await?;
+    serde_json::from_slice(&body).map_err(|source| AppError::Json {
+        context: "Invalid Antigravity model quota response",
+        source,
+    })
+}
+
 async fn fetch_gemini_quota_with_cache(
     client: &Client,
     tokens: &Tokens,
@@ -596,9 +709,16 @@ async fn fetch_gemini_quota_with_cache(
                     context: "Invalid Antigravity quota summary",
                     source,
                 })?;
-            if let Some(quota) = quota_from_summary(envelope, plan_type.clone()) {
+            if let Some(mut summary) = quota_from_summary(envelope, plan_type.clone()) {
+                if summary.reset_groups.iter().any(Option::is_some) {
+                    let requested_at = now_ts();
+                    if let Ok(models) = fetch_available_models(client, tokens, &request_body).await
+                    {
+                        summary.fill_missing_resets(models, requested_at, now_ts());
+                    }
+                }
                 return Ok(GeminiQuotaResult {
-                    quota,
+                    quota: summary.quota,
                     project_id,
                     discovery_checked_at: checked_at,
                 });
@@ -607,19 +727,7 @@ async fn fetch_gemini_quota_with_cache(
         Err(error) if method_unavailable(&error) => {}
         Err(error) => return Err(error),
     }
-    let body = post_cloud_code(
-        client,
-        tokens,
-        "/v1internal:fetchAvailableModels",
-        &request_body,
-        "Antigravity model quota failed",
-    )
-    .await?;
-    let envelope: AvailableModelsEnvelope =
-        serde_json::from_slice(&body).map_err(|source| AppError::Json {
-            context: "Invalid Antigravity model quota response",
-            source,
-        })?;
+    let envelope = fetch_available_models(client, tokens, &request_body).await?;
     let quota = quota_from_available_models(envelope, plan_type).ok_or_else(|| AppError::msg(
         "Antigravity did not expose quota values for this Google account. The account remains available for switching."))?;
     Ok(GeminiQuotaResult {
@@ -988,7 +1096,9 @@ mod tests {
             }]
         }))
         .expect("summary");
-        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string())).expect("quota");
+        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string()))
+            .expect("quota")
+            .quota;
 
         assert_eq!(quota.primary.limit_window_seconds, Some(FIVE_HOURS_SECONDS));
         assert_eq!(quota.primary.used_percent, Some(90.0));
@@ -1011,6 +1121,67 @@ mod tests {
         assert_eq!(quota.primary.limit_window_seconds, None);
     }
 
+    fn full_partner_quota_summary() -> ParsedQuotaSummary {
+        let envelope = serde_json::from_value(json!({
+            "groups": [{
+                "buckets": [
+                    {"bucketId": "3p-5h", "window": "5h", "remainingFraction": 1.0},
+                    {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 1.0}
+                ]
+            }]
+        }))
+        .expect("summary");
+        quota_from_summary(envelope, None).expect("quota")
+    }
+
+    #[test]
+    fn missing_summary_reset_is_recovered_only_for_the_matching_period() {
+        for duration in [FIVE_HOURS_SECONDS, WEEK_SECONDS] {
+            let mut summary = full_partner_quota_summary();
+            let now = summary.quota.fetched_at;
+            let reset = now + duration;
+            let models = serde_json::from_value(json!({
+                "models": {
+                    "claude-sonnet": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": reset.to_string()}},
+                    "gpt-oss": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": reset.to_string()}},
+                    "gemini-pro": {"quotaInfo": {"remainingFraction": 0.005, "resetTime": (now + 500_000).to_string()}}
+                }
+            }))
+            .expect("models");
+            summary.fill_missing_resets(models, now, now);
+            assert_eq!(
+                summary.quota.primary.reset_at,
+                (duration == FIVE_HOURS_SECONDS).then_some(reset)
+            );
+            assert_eq!(
+                summary.quota.secondary.reset_at,
+                (duration == WEEK_SECONDS).then_some(reset)
+            );
+            assert_eq!(summary.quota.primary.used_percent, Some(0.0));
+            assert_eq!(summary.quota.secondary.used_percent, Some(0.0));
+        }
+    }
+
+    #[test]
+    fn missing_summary_reset_stays_unknown_if_model_metadata_does_not_match() {
+        let mut summary = full_partner_quota_summary();
+        let now = summary.quota.fetched_at;
+        let weekly = now + WEEK_SECONDS;
+        let five_hour = now + FIVE_HOURS_SECONDS;
+        for (fraction, reset) in [(1.0, five_hour), (0.5, weekly)] {
+            let models = serde_json::from_value(json!({
+                "models": {
+                    "claude-sonnet": {"quotaInfo": {"remainingFraction": 1.0, "resetTime": weekly.to_string()}},
+                    "gpt-oss": {"quotaInfo": {"remainingFraction": fraction, "resetTime": reset.to_string()}}
+                }
+            }))
+            .expect("models");
+            summary.fill_missing_resets(models, now, now);
+            assert_eq!(summary.quota.primary.reset_at, None);
+            assert_eq!(summary.quota.secondary.reset_at, None);
+        }
+    }
+
     #[test]
     fn quota_summary_separates_multiday_models_from_5h_session_window() {
         let now = now_ts();
@@ -1031,7 +1202,9 @@ mod tests {
             }]
         }))
         .expect("summary");
-        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string())).expect("quota");
+        let quota = quota_from_summary(envelope, Some("Google AI Pro".to_string()))
+            .expect("quota")
+            .quota;
 
         // The 5-day Claude reset must NOT become the primary 5-hour window
         assert_eq!(quota.secondary.limit_window_seconds, Some(WEEK_SECONDS));

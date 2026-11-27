@@ -18,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { ArrowDownToLine, Loader2, LogIn, Sparkles, UserPlus, Users } from 'lucide-react'
 import type { Account, AccountProvider } from '../../types'
+import type { AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountCard } from './AccountCard'
 import { AccountContextMenu } from './AccountContextMenu'
 import { AccountRow } from './AccountRow'
@@ -44,6 +45,9 @@ type AccountsTableProps = {
   onOpenDetails: (account: Account, opener: HTMLElement) => void
   onSwitch: (account: Account) => void
   onRelogin: (account: Account) => void
+  getRefreshNotice: (account: Account) => AccountRefreshNotice | undefined
+  onRefreshQuota: (accountId: string) => Promise<void>
+  onDetectSubscription: (accountId: string) => Promise<void>
   onRemove: (account: Account) => void
   onToggleAccountInAll: (accountId: string) => void
   onAddAccount: () => void
@@ -182,6 +186,9 @@ export const AccountsTable = memo(function AccountsTable({
   onOpenDetails,
   onSwitch,
   onRelogin,
+  getRefreshNotice,
+  onRefreshQuota,
+  onDetectSubscription,
   onRemove,
   onToggleAccountInAll,
   onAddAccount,
@@ -353,6 +360,7 @@ export const AccountsTable = memo(function AccountsTable({
                       <SortableAccountRow
                         key={account.id}
                         account={account}
+                        refreshNotice={getRefreshNotice(account)}
                         isActive={activeAccountId === account.id}
                         isSwitching={statusFlags.isSwitching}
                         isRemoving={statusFlags.isRemoving}
@@ -364,6 +372,8 @@ export const AccountsTable = memo(function AccountsTable({
                         onOpenDetails={onOpenDetails}
                         onSwitch={onSwitch}
                         onRelogin={onRelogin}
+                        onRefreshQuota={onRefreshQuota}
+                        onDetectSubscription={onDetectSubscription}
                         onRemove={onRemove}
                         onOpenContextMenu={openContextMenu}
                       />
@@ -409,6 +419,7 @@ export const AccountsTable = memo(function AccountsTable({
                 <li key={account.id}>
                   <AccountCard
                     account={account}
+                    refreshNotice={getRefreshNotice(account)}
                     isActive={activeAccountId === account.id}
                     isSwitching={statusFlags.isSwitching}
                     isRemoving={statusFlags.isRemoving}
@@ -419,6 +430,8 @@ export const AccountsTable = memo(function AccountsTable({
                     onOpenDetails={onOpenDetails}
                     onSwitch={onSwitch}
                     onRelogin={onRelogin}
+                    onRefreshQuota={onRefreshQuota}
+                    onDetectSubscription={onDetectSubscription}
                     onRemove={onRemove}
                     onToggleInAll={onToggleAccountInAll}
                   />
@@ -448,6 +461,7 @@ export const AccountsTable = memo(function AccountsTable({
 
 type SortableAccountRowProps = {
   account: Account
+  refreshNotice?: AccountRefreshNotice
   isActive: boolean
   isSwitching: boolean
   isRemoving: boolean
@@ -459,12 +473,15 @@ type SortableAccountRowProps = {
   onOpenDetails: (account: Account, opener: HTMLElement) => void
   onSwitch: (account: Account) => void
   onRelogin: (account: Account) => void
+  onRefreshQuota: (accountId: string) => Promise<void>
+  onDetectSubscription: (accountId: string) => Promise<void>
   onRemove: (account: Account) => void
   onOpenContextMenu: (event: ReactMouseEvent<HTMLTableRowElement>, account: Account) => void
 }
 
 const SortableAccountRow = memo(function SortableAccountRow({
   account,
+  refreshNotice,
   isActive,
   isSwitching,
   isRemoving,
@@ -476,6 +493,8 @@ const SortableAccountRow = memo(function SortableAccountRow({
   onOpenDetails,
   onSwitch,
   onRelogin,
+  onRefreshQuota,
+  onDetectSubscription,
   onRemove,
   onOpenContextMenu
 }: SortableAccountRowProps) {
@@ -503,6 +522,7 @@ const SortableAccountRow = memo(function SortableAccountRow({
   return (
     <AccountRow
       account={account}
+      refreshNotice={refreshNotice}
       isActive={isActive}
       isSwitching={isSwitching}
       isRemoving={isRemoving}
@@ -519,6 +539,8 @@ const SortableAccountRow = memo(function SortableAccountRow({
       onOpenDetails={onOpenDetails}
       onSwitch={onSwitch}
       onRelogin={onRelogin}
+      onRefreshQuota={onRefreshQuota}
+      onDetectSubscription={onDetectSubscription}
       onRemove={onRemove}
       onOpenContextMenu={onOpenContextMenu}
     />

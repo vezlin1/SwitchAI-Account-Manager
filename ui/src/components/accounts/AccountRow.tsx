@@ -1,7 +1,8 @@
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import { memo, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
-import { ChevronRight, EyeOff, GripVertical, KeyRound, Loader2, Trash2, UserCheck } from 'lucide-react'
+import { ChevronRight, EyeOff, GripVertical, Loader2, Trash2, UserCheck } from 'lucide-react'
 import type { Account } from '../../types'
+import { accountAttention, quotaUpdateBlocked, type AccountRefreshNotice } from '../../utils/accountFeedback'
 import { AccountStatus } from './AccountStatus'
 import { QuotaCell } from './QuotaCell'
 import { quotaCellsForAccount, type QuotaColumn } from '../../utils/quotaWindows'
@@ -27,6 +28,9 @@ type AccountRowProps = {
   setDragHandleRef?: (element: HTMLElement | null) => void
   onOpenDetails: (account: Account, opener: HTMLElement) => void
   onSwitch: (account: Account) => void
+  refreshNotice?: AccountRefreshNotice
+  onRefreshQuota: (id: string) => Promise<void>
+  onDetectSubscription: (id: string) => Promise<void>
   onRelogin: (account: Account) => void
   onRemove: (account: Account) => void
   onOpenContextMenu?: (event: ReactMouseEvent<HTMLTableRowElement>, account: Account) => void
@@ -50,6 +54,9 @@ export const AccountRow = memo(function AccountRow({
   onOpenDetails,
   onSwitch,
   onRelogin,
+  refreshNotice,
+  onRefreshQuota,
+  onDetectSubscription,
   onRemove,
   onOpenContextMenu
 }: AccountRowProps) {
@@ -58,11 +65,12 @@ export const AccountRow = memo(function AccountRow({
   const {
     isSwitching: switching,
     isRemoving: removing,
-    isRelogining: relogining,
     isRefreshing: isAccountRefreshing,
     needsRelogin,
     detectedSubscriptionDate
   } = useAccountRowState(account, { isSwitching, isRemoving, isRelogining, isRefreshing })
+  const attention = accountAttention(account, refreshNotice)
+  const updateBlocked = quotaUpdateBlocked(attention)
   const accountLabel = privacyMode ? 'account' : (account.email ?? 'account')
 
   return (
@@ -124,8 +132,9 @@ export const AccountRow = memo(function AccountRow({
         return (
           <td key={column.key} colSpan={colSpan} className="account-row-quota" data-label={column.label}>
             <QuotaCell
-              value={window?.usedPercent}
-              resetAt={window?.resetAt}
+              window={window}
+              fetchedAt={account.quota?.fetchedAt ?? null}
+              updateBlocked={updateBlocked}
               title={column.cellTitle}
               isRefreshing={isAccountRefreshing}
             />
@@ -133,7 +142,15 @@ export const AccountRow = memo(function AccountRow({
         )
       })}
       <td className="account-row-status" data-label="Status">
-        <AccountStatus account={account} isRefreshing={isAccountRefreshing} />
+        <AccountStatus
+          account={account}
+          attention={attention}
+          isRefreshing={isAccountRefreshing}
+          actionDisabled={switching || removing || isAccountRefreshing || orderBusy}
+          onRelogin={onRelogin}
+          onRefreshQuota={onRefreshQuota}
+          onDetectSubscription={onDetectSubscription}
+        />
       </td>
       <td className="account-row-subscription" data-label="Subscription">
         <SubscriptionDateControl
@@ -164,20 +181,6 @@ export const AccountRow = memo(function AccountRow({
               : <UserCheck size={14} aria-hidden="true" />}
           </button>
 
-          {needsRelogin && (
-            <button
-              type="button"
-              className="account-action account-action-relogin"
-              onClick={() => onRelogin(account)}
-              disabled={relogining || switching || removing || isAccountRefreshing || orderBusy}
-              title="Re-login account"
-              aria-label={`Re-login ${accountLabel}`}
-            >
-              {relogining
-                ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-                : <KeyRound size={14} aria-hidden="true" />}
-            </button>
-          )}
 
           <button
             type="button"

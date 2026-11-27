@@ -28,8 +28,6 @@ pub struct SharedState {
     pub quota_alert_levels: Mutex<HashMap<String, u8>>,
     pub is_quitting: AtomicBool,
     pub http_client: Client,
-    pub available_update: Mutex<Option<crate::portable_updater::UpdateManifest>>,
-    pub update_install_gate: tauri::async_runtime::Mutex<()>,
 }
 
 impl SharedState {
@@ -63,8 +61,6 @@ impl SharedState {
             quota_alert_levels: Mutex::new(HashMap::new()),
             is_quitting: AtomicBool::new(false),
             http_client,
-            available_update: Mutex::new(None),
-            update_install_gate: tauri::async_runtime::Mutex::new(()),
         })
     }
 }
@@ -118,15 +114,6 @@ pub fn lock_startup_error(state: &Arc<SharedState>) -> AppResult<MutexGuard<'_, 
         .startup_error
         .lock()
         .map_err(|_| AppError::msg("State lock poisoned (startup recovery)"))
-}
-
-pub fn lock_available_update(
-    state: &Arc<SharedState>,
-) -> AppResult<MutexGuard<'_, Option<crate::portable_updater::UpdateManifest>>> {
-    state
-        .available_update
-        .lock()
-        .map_err(|_| AppError::msg("State lock poisoned (available update)"))
 }
 
 #[cfg(test)]

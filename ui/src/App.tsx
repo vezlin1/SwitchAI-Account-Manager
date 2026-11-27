@@ -10,12 +10,11 @@ import { ErrorBanner, TextInputContextMenu } from './components/common'
 import { AccountsTab } from './components/accounts/AccountsTab'
 import { useAutoRefreshStatus } from './hooks/useAutoRefreshStatus'
 import { useAppData } from './hooks/useAppData'
-import { usePlatform } from './hooks/usePlatform'
+import { isMac } from './utils/platform'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { usePrivacy } from './context/usePrivacy'
-import type { AccountProvider, UpdateCheckResult } from './types'
+import type { AccountProvider } from './types'
 import { AppTitleBar } from './components/layout/AppTitleBar'
-import { UpdateCoordinator } from './components/layout/UpdateCoordinator'
 import { StartupRecoveryGate } from './components/layout/StartupRecoveryGate'
 
 const SettingsModal = lazy(() =>
@@ -44,7 +43,6 @@ function App() {
     openRecoveryDataDirectory
   } = useAppData()
   const autoRefresh = useAutoRefreshStatus(startup?.autoRefresh ?? null)
-  const { isMac } = usePlatform()
   const { privacyMode, setPrivacyMode } = usePrivacy()
   const [activeProvider, setActiveProvider] = useState<AccountProvider>(() => {
     if (typeof window !== 'undefined') {
@@ -58,14 +56,11 @@ function App() {
     return 'codex'
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [updateModalOpen, setUpdateModalOpen] = useState(false)
-  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
   const syncedProviderRef = useRef<AccountProvider | null>(null)
   const [privacyError, setPrivacyError] = useState<string | null>(null)
   const pendingPrivacyRef = useRef<boolean | null>(null)
-  const updateAckSentRef = useRef(false)
 
   const enabledProviders = useMemo<AccountProvider[]>(() => {
     const list = data?.appSettings?.enabledProviders
@@ -134,12 +129,6 @@ function App() {
     }
   }, [data?.appSettings, privacyMode, setPrivacyMode, saveAppSettings, setData])
 
-  useEffect(() => {
-    if (updateAckSentRef.current || !data || loading || startup?.mode !== 'ready' || data.appSettings.privacyMigrationPending) return
-    updateAckSentRef.current = true
-    void api.acknowledgeUpdateStartup().catch(() => undefined)
-  }, [data, loading, startup?.mode])
-
   const handleTogglePrivacyMode = useCallback(() => {
     const next = !privacyMode
     pendingPrivacyRef.current = next
@@ -192,7 +181,7 @@ function App() {
   ), [reload])
 
   // Global Keyboard Shortcuts
-  const isModalOpen = settingsOpen || updateModalOpen || startup?.mode === 'recovery_required'
+  const isModalOpen = settingsOpen || startup?.mode === 'recovery_required'
   const shortcuts = useMemo(
     () => ({
       'mod+,': () => setSettingsOpen((prev) => !prev),
@@ -231,25 +220,12 @@ function App() {
           <SettingsModal
             settings={data.appSettings}
             accounts={data.accounts}
-            status={autoRefresh.status}
             onClose={() => setSettingsOpen(false)}
             onSave={saveAppSettings}
             onRefreshStatus={autoRefresh.refreshStatus}
-            onOpenUpdateModal={(info) => {
-              setUpdateInfo(info)
-              setUpdateModalOpen(true)
-            }}
-            appVersion={appVersion}
           />
         </Suspense>
       )}
-
-      <UpdateCoordinator
-        updateModalOpen={updateModalOpen}
-        setUpdateModalOpen={setUpdateModalOpen}
-        updateInfo={updateInfo}
-        setUpdateInfo={setUpdateInfo}
-      />
 
       <TextInputContextMenu />
 
@@ -264,8 +240,6 @@ function App() {
             gemini: data?.accounts.filter((a) => a.provider === 'gemini').length ?? 0
           }}
           privacyMode={privacyMode}
-          updateAvailable={Boolean(updateInfo?.updateAvailable)}
-          updateVersion={updateInfo?.version}
           closeToTray={data?.appSettings.closeToTray}
           onSelectProvider={handleSelectProvider}
           onTogglePrivacyMode={handleTogglePrivacyMode}

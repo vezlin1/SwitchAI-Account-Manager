@@ -290,26 +290,7 @@ pub fn recommended_account_for_provider(
 }
 
 pub fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>, data: &AppData) -> AppResult<Menu<R>> {
-    use tauri::Manager;
-    let available_update_version = app.try_state::<Arc<SharedState>>().and_then(|state| {
-        state
-            .available_update
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|manifest| manifest.version.clone()))
-    });
-
     let mut builder = MenuBuilder::new(app);
-    if let Some(version) = available_update_version {
-        let update_item = MenuItemBuilder::with_id(
-            "open_update",
-            format!("★ SwitchAI Update Available (v{version})"),
-        )
-        .build(app)
-        .map_err(|error| AppError::msg(format!("Failed to build tray update item: {error}")))?;
-        builder = builder.item(&update_item);
-        builder = builder.separator();
-    }
 
     let codex_enabled = data
         .app_settings

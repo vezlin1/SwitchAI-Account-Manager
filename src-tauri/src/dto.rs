@@ -56,10 +56,6 @@ pub struct AccountIssuesDto {
     pub subscription: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
@@ -86,35 +82,10 @@ pub struct AppSettingsDto {
     pub gemini_switch_targets: Vec<String>,
     #[serde(default = "default_enabled_providers")]
     pub enabled_providers: Vec<String>,
-    #[serde(default = "default_true")]
-    pub auto_check_updates: bool,
-    #[serde(default)]
-    pub ignored_update_version: Option<String>,
     #[serde(default)]
     pub privacy_mode: bool,
     #[serde(default)]
     pub privacy_migration_pending: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateCheckResultDto {
-    pub update_available: bool,
-    pub version: String,
-    pub current_version: String,
-    pub release_date: Option<String>,
-    pub release_notes: Option<String>,
-    pub download_size: Option<u64>,
-    #[serde(default)]
-    pub staged_ready: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateProgressDto {
-    pub downloaded_bytes: u64,
-    pub total_bytes: Option<u64>,
-    pub percent: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,8 +261,6 @@ impl From<&AppSettings> for AppSettingsDto {
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version.clone(),
             privacy_mode: settings.privacy_mode,
             privacy_migration_pending: settings.privacy_migration_pending,
         }
@@ -310,8 +279,6 @@ impl From<AppSettingsDto> for AppSettings {
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version,
             privacy_mode: settings.privacy_mode,
             privacy_migration_pending: settings.privacy_migration_pending,
         }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   BarChart3,
@@ -14,15 +14,17 @@ import {
 } from 'lucide-react'
 import type { Account } from '../../types'
 import { formatSubscriptionPlan, readableStatusError } from '../../utils/dateUtils'
+import { accountAttention, quotaUpdateBlocked, type AccountAttention, type AccountRefreshNotice } from '../../utils/accountFeedback'
+import { useTimeValue } from '../../hooks/useSharedTicker'
 import { QuotaCell } from './QuotaCell'
-import { quotaColumnsForAccounts, quotaWindowForColumn } from '../../utils/quotaWindows'
+import { quotaColumnsForAccounts, quotaIsStale, quotaWindowForColumn } from '../../utils/quotaWindows'
 import { SubscriptionDateControl } from './SubscriptionDateControl'
 import { EventTime } from './EventTime'
-import { QuotaFreshness } from './QuotaFreshness'
 import { usePrivacy } from '../../context/usePrivacy'
 
 type AccountDetailsProps = {
   account: Account
+  refreshNotice?: AccountRefreshNotice
   isActive: boolean
   isRecommended: boolean
   busyKeys: ReadonlySet<string>
@@ -33,14 +35,9 @@ type AccountDetailsProps = {
   onDetectSubscription: (accountId: string) => Promise<void>
 }
 
-function statusDetails(account: Account, isRefreshing = false): { label: string; tone: string; message: string } {
-  if (account.tokenHealth.status === 'needs_relogin') {
-    return {
-      label: 'Re-login required',
-      tone: 'danger',
-      message: readableStatusError(account.tokenHealth.lastError) ?? 'The saved session can no longer be refreshed.'
-    }
-  }
+function statusDetails(
+  account: Account, attention: AccountAttention | null, isRefreshing: boolean, isStale: boolean
+): { label: string; tone: 'healthy' | 'loading' | 'warning' | 'neutral'; message: string } {
   if (isRefreshing) {
     return {
       label: 'Checking status…',
@@ -48,27 +45,29 @@ function statusDetails(account: Account, isRefreshing = false): { label: string;
       message: 'Checking authentication health and latest quota limits…'
     }
   }
-  if (account.tokenHealth?.status === 'unknown' || (!account.tokenHealth?.lastCheckedAt && !account.quota)) {
-    return { label: 'Not checked', tone: 'warning', message: 'Refresh this account to check its current status and limits.' }
-  }
-  const quotaIssue = readableStatusError(account.issues?.quota)
-  if (quotaIssue) {
-    return { label: 'Quota refresh error', tone: 'danger', message: quotaIssue }
-  }
-  const subscriptionIssue = readableStatusError(account.issues?.subscription)
-  if (subscriptionIssue) {
+  if (attention?.kind === 'verify') {
     return {
-      label: 'Subscription refresh error',
+      label: 'Verification required',
       tone: 'warning',
-      message: subscriptionIssue
+      message: 'Open Antigravity with this Google account, complete verification, then retry the quota check.'
     }
   }
-  if (account.tokenHealth.status === 'network_error' || account.tokenHealth.status === 'server_error') {
+  if (attention) {
+    const label = attention.kind === 'relogin' ? 'Sign-in required'
+      : attention.kind === 'subscription' ? 'Plan refresh failed'
+      : attention.kind === 'notice' ? 'Refresh warning'
+      : 'Quota refresh failed'
     return {
-      label: 'Connection warning',
+      label,
       tone: 'warning',
-      message: readableStatusError(account.tokenHealth.lastError) ?? 'The last background check could not be completed.'
+      message: readableStatusError(attention.message) ?? label
     }
+  }
+  if (isStale) {
+    return { label: 'Saved quota', tone: 'neutral', message: 'Refresh this account to see its current limits.' }
+  }
+  if (!account.quota) {
+    return { label: 'No quota yet', tone: 'neutral', message: 'Refresh this account to check its limits.' }
   }
   return {
     label: 'Healthy',
@@ -81,6 +80,7 @@ function statusDetails(account: Account, isRefreshing = false): { label: string;
 
 export function AccountDetails({
   account,
+  refreshNotice,
   isActive,
   isRecommended,
   busyKeys,
@@ -104,7 +104,10 @@ export function AccountDetails({
     busyKeys.has(`relogin:${account.id}`) ||
     busyKeys.has(`account:${account.id}:quota`) ||
     busyKeys.has(`account:${account.id}:subscription`)
-  const status = statusDetails(account, isRefreshingAccount)
+  const attention = accountAttention(account, refreshNotice)
+  const updateBlocked = quotaUpdateBlocked(attention)
+  const isStale = useTimeValue(useCallback(() => quotaIsStale(account.quota), [account.quota]), Boolean(account.quota))
+  const status = statusDetails(account, attention, isRefreshingAccount, isStale)
   const busy = isRefreshingAccount
     || busyKeys.has(`switch:${account.id}`)
     || busyKeys.has(`delete:${account.id}`)
@@ -153,9 +156,10 @@ export function AccountDetails({
   }
 
   const copyStatusMessage = async () => {
-    if (!status.message) return
+    const message = attention?.message ?? status.message
+    if (!message) return
     try {
-      await navigator.clipboard.writeText(status.message)
+      await navigator.clipboard.writeText(message)
       setCopiedStatus(true)
       setTimeout(() => setCopiedStatus(false), 2000)
     } catch {
@@ -198,7 +202,7 @@ export function AccountDetails({
                 {account.provider === 'gemini' ? 'Active in Antigravity' : 'Active in Codex'}
               </span>
             )}
-            {isRecommended && (
+            {isRecommended && !isStale && !updateBlocked && (
               <span className="account-detail-badge account-detail-badge-recommended">
                 <Sparkles size={12} aria-hidden="true" /> Best reserve
               </span>
@@ -215,7 +219,7 @@ export function AccountDetails({
             disabled={busy}
           >
             {refreshingQuota ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-            Refresh quota
+            {updateBlocked ? 'Retry quota' : 'Refresh quota'}
           </button>
           {account.tokenHealth.status === 'needs_relogin' ? (
             <button
@@ -263,8 +267,9 @@ export function AccountDetails({
                   return (
                     <div className="account-detail-quota-row" key={column.key}>
                       <QuotaCell
-                        value={window?.usedPercent}
-                        resetAt={window?.resetAt}
+                        window={window}
+                        fetchedAt={account.quota?.fetchedAt ?? null}
+                        updateBlocked={updateBlocked}
                         title={column.cellTitle}
                         isRefreshing={isRefreshingAccount}
                       />
@@ -337,7 +342,7 @@ export function AccountDetails({
               </div>
               <div><dt>First login</dt><dd><EventTime timestamp={account.createdAt} /></dd></div>
               <div><dt>Last login</dt><dd><EventTime timestamp={account.lastLoginAt} /></dd></div>
-              <div><dt>Quota updated</dt><dd><QuotaFreshness account={account} prefix={false} /></dd></div>
+              <div><dt>Quota updated</dt><dd><EventTime timestamp={account.quota?.fetchedAt} /></dd></div>
             </dl>
           </section>
 

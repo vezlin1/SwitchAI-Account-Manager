@@ -13,8 +13,6 @@ export type AppTitleBarProps = {
   activeProvider: AccountProvider
   accountCounts: { codex: number; gemini: number }
   privacyMode: boolean
-  updateAvailable: boolean
-  updateVersion?: string
   closeToTray?: boolean
   onSelectProvider: (provider: AccountProvider) => void
   onTogglePrivacyMode: () => void
@@ -28,8 +26,6 @@ export const AppTitleBar = memo(function AppTitleBar({
   activeProvider,
   accountCounts,
   privacyMode,
-  updateAvailable,
-  updateVersion,
   closeToTray = false,
   onSelectProvider,
   onTogglePrivacyMode,
@@ -190,24 +186,12 @@ export const AppTitleBar = memo(function AppTitleBar({
         </button>
 
         <button
-          className={`header-icon-btn ${isMac ? 'mr-3' : 'mr-1'} relative`}
+          className={`header-icon-btn ${isMac ? 'mr-3' : 'mr-1'}`}
           onClick={onOpenSettings}
-          title={
-            updateAvailable
-              ? `Settings (Update available v${updateVersion ?? ''})`
-              : isMac
-                ? 'Settings (⌘,)'
-                : 'Settings (Ctrl+,)'
-          }
+          title={isMac ? 'Settings (⌘,)' : 'Settings (Ctrl+,)'}
           aria-label="Settings"
         >
           <Settings size={14} />
-          {updateAvailable && (
-            <span
-              className="absolute top-1 right-1 w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.9)] animate-pulse"
-              aria-hidden="true"
-            />
-          )}
         </button>
 
         {!isMac && (

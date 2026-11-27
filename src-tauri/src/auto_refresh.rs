@@ -52,8 +52,14 @@ type RefreshGate = Arc<tauri::async_runtime::Mutex<()>>;
 #[derive(Debug, Clone)]
 pub struct RefreshAllResult {
     pub state: AppData,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<RefreshWarning>,
     pub failed_account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RefreshWarning {
+    pub account_id: Option<String>,
+    pub message: String,
 }
 
 struct RefreshWorkItem {
@@ -67,7 +73,7 @@ struct RefreshRunOutcome {
     succeeded: u32,
     failed: u32,
     failed_account_ids: Vec<String>,
-    warnings: Vec<String>,
+    warnings: Vec<RefreshWarning>,
 }
 
 fn provider_key(provider: AccountProvider) -> &'static str {
@@ -566,6 +572,13 @@ async fn run_refresh_accounts_for_provider(
         }
     }
 
+    let reconcile_warnings: Vec<_> = reconcile_warnings
+        .into_iter()
+        .map(|message| RefreshWarning {
+            account_id: None,
+            message,
+        })
+        .collect();
     if work_items.is_empty() {
         mark_refresh_started(state);
         let outcome = RefreshRunOutcome {
@@ -722,21 +735,35 @@ async fn refresh_all_accounts_inner(
     for handle in handles {
         match handle.await {
             Ok((account_id, Ok(refresh))) => {
+                outcome
+                    .warnings
+                    .extend(refresh.warnings.into_iter().map(|message| RefreshWarning {
+                        account_id: Some(account_id.clone()),
+                        message,
+                    }));
                 if refresh.succeeded {
                     outcome.succeeded = outcome.succeeded.saturating_add(1);
                 } else {
                     outcome.failed = outcome.failed.saturating_add(1);
                     outcome.failed_account_ids.push(account_id);
                 }
-                outcome.warnings.extend(refresh.warnings);
             }
             Ok((account_id, Err(error))) => {
                 outcome.failed = outcome.failed.saturating_add(1);
-                log::warn!("Account refresh failed: {}", error.user_message());
+                let message = error.user_message();
+                log::warn!("Account refresh failed: {message}");
+                outcome.warnings.push(RefreshWarning {
+                    account_id: Some(account_id.clone()),
+                    message,
+                });
                 outcome.failed_account_ids.push(account_id);
             }
             Err(_) => {
                 outcome.failed = outcome.failed.saturating_add(1);
+                outcome.warnings.push(RefreshWarning {
+                    account_id: None,
+                    message: "A quota refresh task stopped unexpectedly.".to_string(),
+                });
                 outcome
                     .failed_account_ids
                     .push("unknown-worker".to_string());
@@ -1273,7 +1300,11 @@ fn mark_refresh_finished(
             succeeded: outcome.succeeded,
             failed: outcome.failed,
             failed_account_ids: outcome.failed_account_ids,
-            warnings: outcome.warnings,
+            warnings: outcome
+                .warnings
+                .into_iter()
+                .map(|warning| warning.message)
+                .collect(),
         });
     }
     if error.is_some() || runtime.in_flight_runs == 0 {
@@ -1483,7 +1514,10 @@ mod tests {
                 succeeded: 2,
                 failed: 1,
                 failed_account_ids: vec!["account-b".to_string()],
-                warnings: vec!["quota refresh failed".to_string()],
+                warnings: vec![super::RefreshWarning {
+                    account_id: Some("account-b".to_string()),
+                    message: "quota refresh failed".to_string(),
+                }],
             }),
         )
         .expect("mark refresh finished");

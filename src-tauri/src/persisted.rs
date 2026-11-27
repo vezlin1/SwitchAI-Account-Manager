@@ -126,10 +126,6 @@ struct PersistedQuotaInfo {
     fetched_at: i64,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_skip_unsupported_region_refresh() -> bool {
     true
 }
@@ -152,10 +148,6 @@ struct PersistedAppSettings {
     gemini_switch_targets: Vec<String>,
     #[serde(default = "default_enabled_providers")]
     enabled_providers: Vec<String>,
-    #[serde(default = "default_true")]
-    auto_check_updates: bool,
-    #[serde(default)]
-    ignored_update_version: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     privacy_mode: Option<bool>,
@@ -279,8 +271,6 @@ impl From<&AppSettings> for PersistedAppSettings {
             last_active_provider: settings.last_active_provider.clone(),
             gemini_switch_targets: settings.gemini_switch_targets.clone(),
             enabled_providers: settings.enabled_providers.clone(),
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version.clone(),
             privacy_mode: (!settings.privacy_migration_pending).then_some(settings.privacy_mode),
         }
     }
@@ -298,8 +288,6 @@ impl From<PersistedAppSettings> for AppSettings {
             last_active_provider: settings.last_active_provider,
             gemini_switch_targets: settings.gemini_switch_targets,
             enabled_providers: settings.enabled_providers,
-            auto_check_updates: settings.auto_check_updates,
-            ignored_update_version: settings.ignored_update_version,
             privacy_mode: settings.privacy_mode.unwrap_or(true),
             privacy_migration_pending: settings.privacy_mode.is_none(),
         }
@@ -597,7 +585,9 @@ mod tests {
         let json = json!({
             "autoRefreshEnabled": false,
             "autoRefreshIntervalMinutes": 30,
-            "closeToTray": false
+            "closeToTray": false,
+            "autoCheckUpdates": false,
+            "ignoredUpdateVersion": "1.3.1"
         });
 
         let persisted: PersistedAppSettings =
@@ -607,10 +597,11 @@ mod tests {
         assert!(!settings.auto_refresh_enabled);
         assert_eq!(settings.auto_refresh_interval_minutes, 30);
         assert!(!settings.close_to_tray);
-        assert!(settings.auto_check_updates);
-        assert_eq!(settings.ignored_update_version, None);
         assert!(settings.privacy_mode);
         assert!(settings.privacy_migration_pending);
+        let saved = serde_json::to_value(PersistedAppSettings::from(&settings)).unwrap();
+        assert!(saved.get("autoCheckUpdates").is_none());
+        assert!(saved.get("ignoredUpdateVersion").is_none());
     }
     #[test]
     fn privacy_migration_preserves_missing_and_explicit_preferences() {

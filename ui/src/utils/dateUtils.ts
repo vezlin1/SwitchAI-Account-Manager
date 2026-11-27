@@ -99,17 +99,20 @@ function computeReadableStatusError(raw: string): string {
     return 'unsupported region'
   }
 
-  if (lower.includes('refresh skipped')) {
-    return 'refresh skipped (VPN required)'
+  if (lower.includes('refresh skipped') && lower.includes('vpn')) {
+    return 'Refresh skipped (VPN required)'
+  }
+
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return 'Request timed out'
   }
 
   if (
-    lower.includes('timed out')
-    || lower.includes('connection refused')
+    lower.includes('connection refused')
     || lower.includes('connection failed')
     || lower.includes('error sending request for url')
   ) {
-    return 'connection blocked / VPN required'
+    return 'Could not reach the provider'
   }
 
   const structuredMessage =

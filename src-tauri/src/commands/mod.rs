@@ -2,13 +2,11 @@ pub mod accounts;
 pub mod oauth;
 pub mod refresh;
 pub mod system;
-pub mod updater;
 
 pub use accounts::*;
 pub use oauth::*;
 pub use refresh::*;
 pub use system::*;
-pub use updater::*;
 
 use crate::dto::CommandWarningDto;
 use crate::errors::{AppError, AppResult, IpcErrorDto, to_command_error};

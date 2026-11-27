@@ -288,6 +288,7 @@ export function AccountsTab({
           <Suspense fallback={null}>
             <AccountDetails
               account={detailsAccount}
+              refreshNotice={actions.getRefreshNotice(detailsAccount)}
               isActive={activeAccountId === detailsAccount.id}
               isRecommended={recommendation?.id === detailsAccount.id}
               busyKeys={accountBusyKeys}
@@ -384,6 +385,9 @@ export function AccountsTab({
             onOpenDetails={openDetails}
             onSwitch={handleSwitch}
             onRelogin={handleRelogin}
+            getRefreshNotice={actions.getRefreshNotice}
+            onRefreshQuota={actions.refreshAccount}
+            onDetectSubscription={actions.detectSubscription}
             onRemove={handleRemove}
             onToggleAccountInAll={toggleAccountInAll}
             onAddAccount={() => void oauth.startLogin(undefined, currentProvider)}

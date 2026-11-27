@@ -821,8 +821,50 @@ a {
   color: rgb(var(--ag-warning));
 }
 
-.account-status-danger {
-  color: rgb(var(--ag-danger));
+.account-status-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 132px;
+  font-size: 11.5px;
+}
+
+.account-status-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.35;
+}
+
+.account-status-action,
+.account-status-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 24px;
+  min-inline-size: 24px;
+  border-radius: 5px;
+  color: rgb(var(--ag-muted));
+  cursor: pointer;
+}
+
+.account-status-action {
+  padding-inline: 6px;
+  border: 1px solid rgb(var(--ag-border));
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.account-status-action:hover:not([aria-disabled="true"]),
+.account-status-copy:hover {
+  background: rgb(var(--ag-surface));
+  color: rgb(var(--ag-text));
+}
+
+.account-status-action[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 /* Action Icon Buttons */

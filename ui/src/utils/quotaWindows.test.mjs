@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { quotaCellsForAccount, quotaColumnsForAccounts, quotaWindowForColumn } from './quotaWindows.ts'
+import { quotaCellsForAccount, quotaColumnsForAccounts, quotaIsStale, quotaResetTime, quotaWindowForColumn, quotaWindowIsStale } from './quotaWindows.ts'
 
 function window(limitWindowSeconds, usedPercent = 25) {
   return {
@@ -102,4 +102,18 @@ test('metadata-only windows are hidden when every value is unavailable', () => {
   const unavailable = quota(window(7 * 24 * 60 * 60, null), window(30 * 24 * 60 * 60, null))
 
   assert.deepEqual(quotaColumnsForAccounts([account('unavailable', unavailable)]), [])
+})
+
+test('a reset after the snapshot makes saved quota stale when it is reached', () => {
+  const active = { ...window(18_000), fetchedAt: 1_000, resetAt: 1_100 }
+  assert.equal(quotaWindowIsStale(active, null, 1_099), false)
+  assert.equal(quotaWindowIsStale(active, null, 1_100), true)
+  assert.equal(quotaIsStale(quota(active), 1_100), true)
+})
+
+test('an obsolete reset timestamp does not invalidate a newly fetched value', () => {
+  const active = { ...window(18_000), fetchedAt: 1_000, resetAt: 900 }
+  assert.equal(quotaResetTime(active, null), null)
+  assert.equal(quotaWindowIsStale(active, null, 1_001), false)
+  assert.equal(quotaWindowIsStale(active, null, 4_600), true)
 })
