@@ -106,7 +106,8 @@ adding the same Google account again.
 - View the real quota windows returned by each provider.
 - See plan details, reset times, and accounts that need a new sign-in.
 - Refresh one account, all accounts, or let SwitchAI refresh them on a schedule.
-- Search, reorder, and filter accounts by subscription.
+- See which account is best to use next, weighing plan size and limits that reset soon.
+- Search, reorder, and filter accounts by subscription or by your own tags.
 - Choose which installed Antigravity apps should receive an account switch.
 - Use the system tray for quick status and background refresh.
 - Recover from a damaged state file using the built-in backup.

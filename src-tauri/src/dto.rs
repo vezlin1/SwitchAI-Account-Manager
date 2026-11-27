@@ -277,7 +277,10 @@ impl From<&Account> for AccountDto {
             subscription_plan: match account.provider {
                 crate::models::AccountProvider::Codex => crate::subscription::saved_plan_label(
                     account.subscription_plan.as_deref(),
-                    account.quota.as_ref().and_then(|quota| quota.plan_type.as_deref()),
+                    account
+                        .quota
+                        .as_ref()
+                        .and_then(|quota| quota.plan_type.as_deref()),
                 ),
                 crate::models::AccountProvider::Gemini => account.subscription_plan.clone(),
             },

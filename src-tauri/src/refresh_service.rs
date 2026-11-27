@@ -698,7 +698,8 @@ fn apply_quota_update(
         match update.quota_result {
             Ok(quota) => {
                 if let Some(plan_type) = quota.plan_type.as_ref() {
-                    account.subscription_plan = Some(crate::subscription::plan_code_label(plan_type));
+                    account.subscription_plan =
+                        Some(crate::subscription::plan_code_label(plan_type));
                     account.subscription_detected_at = Some(checked_at);
                 }
                 account.quota = Some(quota);
@@ -845,7 +846,10 @@ pub(crate) fn apply_subscription_result(
     if let Some(plan) = info.plan.as_ref() {
         account.subscription_plan = crate::subscription::saved_plan_label(
             Some(plan),
-            account.quota.as_ref().and_then(|quota| quota.plan_type.as_deref()),
+            account
+                .quota
+                .as_ref()
+                .and_then(|quota| quota.plan_type.as_deref()),
         );
     }
     if let Some(expires_at) = info.expires_at {
@@ -1728,7 +1732,11 @@ mod tests {
 
     #[test]
     fn quota_refresh_detects_changes_between_pro_tiers() {
-        for (code, plan) in [("prolite", "Pro 100"), ("pro", "Pro 200"), ("promax", "Pro 500")] {
+        for (code, plan) in [
+            ("prolite", "Pro 100"),
+            ("pro", "Pro 200"),
+            ("promax", "Pro 500"),
+        ] {
             let mut data = AppData {
                 accounts: vec![account("source")],
                 ..AppData::default()

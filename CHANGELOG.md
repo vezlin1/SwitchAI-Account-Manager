@@ -5,6 +5,21 @@
 This file lists changes that are useful to SwitchAI users. Release dates are
 added when a version is published.
 
+## 1.4.0 — 2026-11-28
+
+### What's New:
+* **Smarter Best-Account Pick:** recommendations weigh plan size (30% of Pro 200 is more than 90% of Plus), spend weekly limits that reset within a day first, treat a limit whose reset time has passed as full again, and never suggest a used-up account. The tray and the window always agree.
+* **Choose What Counts in Antigravity:** recommend by Gemini models, Claude & GPT models, or whichever is tighter.
+* **Account Tags:** group accounts under your own tags, filter the list by them, and decide whether a tag's accounts also show in All and refresh only inside the tag.
+* **Calmer Account List:** a small Best badge marks the account to use next, status appears only when an account needs attention, used-up limits say when they are back ("Back in 39m") while the account steps back, and any row can be dragged to reorder.
+* **Quieter Quota Alerts:** no repeated alerts on every start, low-quota alerts only for the account in use with the best reserve suggested, and a note when another account has quota again.
+* **Safer Switching:** ChatGPT on Windows is asked to close before it is force-closed, and SwitchAI warns when Codex CLI or an IDE extension keeps using the previous account until restarted.
+* **More Accurate Plans and Limits:** Pro 100, Pro 200 and Pro 500 are told apart, the plan is read for the right workspace, refresh warnings appear on the affected account, and missing Gemini reset times are recovered.
+* **Faster With Many Accounts:** quicker startup and quota refresh, with long lists shown in pages.
+* **Clearer Status and Tray:** "Updated 6 min ago · next in 10m" instead of a bare interval, a labelled privacy toggle, and a tray menu in plain text with the system check mark instead of emoji.
+* **Manual Updates:** the built-in updater is removed; download new versions from GitHub Releases.
+* Updated rustls to address RUSTSEC-2026-0285, plus general polish and stability improvements.
+
 ## 1.3.0 — 2026-09-14
 
 ### What's New:
